@@ -373,6 +373,25 @@ enum MapGen {
             }
             return nil
         }
+        // a clearance-aware cell for a LARGE occupant (the Queen — radius 0.72):
+        // the most-open interior cell of the room, scored by its 3×3 walkable
+        // neighbourhood, so she never spawns wedged into a wall (which would put
+        // the exit-gating boss permanently out of reach).
+        func openCell(in r: Room) -> Int? {
+            guard r.w >= 3, r.h >= 3 else { return nil }
+            var best = -1, bestScore = -1
+            for yy in (r.y + 1)..<(r.y + r.h - 1) { for xx in (r.x + 1)..<(r.x + r.w - 1) {
+                let i = map.idx(xx, yy)
+                if map.wall[i] != 0 || map.doors[i] != nil || map.hazard[i] { continue }
+                var open = 0
+                for oy in -1...1 { for ox in -1...1 where map.inBounds(xx + ox, yy + oy) {
+                    let n = map.idx(xx + ox, yy + oy)
+                    if map.wall[n] == 0 && map.doors[n] == nil { open += 1 }
+                } }
+                if open > bestScore { bestScore = open; best = i }
+            } }
+            return best >= 0 ? best : nil
+        }
         // the Queen lairs in the DARKEST room — not by rule the exit room, but
         // wherever the gloom is deepest on this level (she loathes the light, so
         // she'll have found the blackest space). Mean baked luminance picks it.
@@ -408,7 +427,8 @@ enum MapGen {
                 // exactly one Queen per level, in the darkest room — the objective
                 // that gates the exit, wherever in the citadel she's holed up
                 if ri == queenRoomIdx {
-                    monsters.append(MonsterSpawn(kind: .queen, pos: center(randCell(in: r) ?? map.idx(r.cx, r.cy))))
+                    let qc = openCell(in: r) ?? randCell(in: r) ?? map.idx(r.cx, r.cy)
+                    monsters.append(MonsterSpawn(kind: .queen, pos: center(qc)))
                 }
                 let count = rng.i(1, 2 + level / 2)
                 for _ in 0..<count {

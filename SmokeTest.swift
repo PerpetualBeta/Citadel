@@ -153,6 +153,20 @@ enum SmokeTest {
             check(qw.queenDefeated, "a burned Queen meets the objective (exit unlocks)")
         } else { check(false, "level seeded a Queen") }
 
+        // 2g2. the Queen (radius 0.72) must spawn with clearance — never wedged in
+        // a wall. She gates the exit, so an unreachable Queen = an unwinnable level.
+        var queenWedged = 0
+        for lvl in 1...6 {
+            let w = World(level: lvl, colonyIndex: lvl - 1, seed: UInt64(lvl) &* 71 &+ 3)
+            guard let q = w.monsters.first(where: { $0.kind == .queen }) else { continue }
+            let cx = Int(q.pos.x), cy = Int(q.pos.y)
+            if w.map.blocksMovement(cx, cy) { queenWedged += 1; continue }    // standing in solid
+            let nbrsOpen = [(cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)]
+                .reduce(0) { $0 + (w.map.blocksMovement($1.0, $1.1) ? 0 : 1) }
+            if nbrsOpen < 3 { queenWedged += 1 }                              // boxed against walls
+        }
+        check(queenWedged == 0, "the Queen always spawns with clearance (\(queenWedged) wedged)")
+
         // 2h. resource props — fuel drums (refuel + shoot-to-detonate) and the
         // deployable proximity mine.
         var drumLevels = 0, drumOnItem = 0
