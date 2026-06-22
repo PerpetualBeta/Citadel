@@ -155,12 +155,15 @@ enum SmokeTest {
 
         // 2h. resource props — fuel drums (refuel + shoot-to-detonate) and the
         // deployable proximity mine.
-        var drumLevels = 0
+        var drumLevels = 0, drumOnItem = 0
         for lvl in 1...6 {
             let w = World(level: lvl, colonyIndex: lvl - 1, seed: UInt64(lvl) &* 53 &+ 9)
             if !w.drums.isEmpty { drumLevels += 1 }
+            // a SOLID drum sitting on a pickup walls it off — must never happen
+            for d in w.drums { for it in w.items where vlen(d.pos - it.pos) < 0.9 { drumOnItem += 1 } }
         }
         check(drumLevels == 6, "every level places fuel drums (\(drumLevels)/6)")
+        check(drumOnItem == 0, "no fuel drum is stacked on a pickup (\(drumOnItem) overlaps)")
 
         // a shot drum ruptures in a fierce blast that clears nearby aliens
         let dw = World(level: 2, colonyIndex: 0, seed: 1234)

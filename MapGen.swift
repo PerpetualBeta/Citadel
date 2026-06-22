@@ -443,11 +443,19 @@ enum MapGen {
         if rooms.count > 1 {
             let drumCount = rng.i(2, 3 + level / 2)
             for _ in 0..<drumCount {
-                let r = rooms[rng.i(1, rooms.count - 1)]
-                guard let c = randCell(in: r) else { continue }
-                let p = center(c)
-                if drums.contains(where: { vlen($0 - p) < 1.0 }) { continue }   // no stacked drums
-                drums.append(p)
+                // a drum is SOLID, so it must never sit on a pickup (it would wall
+                // the item off completely), on the spawn, or on another drum. Try a
+                // handful of cells before giving up on this drum.
+                for _ in 0..<10 {
+                    let r = rooms[rng.i(1, rooms.count - 1)]
+                    guard let c = randCell(in: r) else { continue }
+                    let p = center(c)
+                    if drums.contains(where: { vlen($0 - p) < 1.0 }) { continue }       // no stacked drums
+                    if items.contains(where: { vlen($0.pos - p) < 1.3 }) { continue }   // never block a pickup
+                    if vlen(map.playerStart - p) < 1.5 { continue }                     // clear of the spawn
+                    drums.append(p)
+                    break
+                }
             }
         }
         return (monsters, items, drums)
