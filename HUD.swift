@@ -95,6 +95,43 @@ struct HUD {
         c.hLine(x, x + w - 1, y + h - 1, packRGBA(66, 68, 80)); c.vLine(x + w - 1, y, y + h - 1, packRGBA(66, 68, 80))
     }
 
+    /// Objective compass — a single rotating arrow that points to the living
+    /// Queen (the kill-and-burn target that gates the exit), then swings to the
+    /// exit switch once she is ash. The arrow reddens as the Queen closes in.
+    /// "Up" is dead ahead; bearing is the target's angle relative to facing.
+    private func drawObjectiveCompass(_ world: World, _ c: Canvas2D, _ bx: Int, _ by: Int, _ bw: Int, _ bh: Int) {
+        let p = world.player
+        var target: SIMD2<Float>?
+        var live = false
+        if let q = world.monsters.first(where: { $0.kind == .queen && $0.alive }) { target = q.pos; live = true }
+        else if world.map.exitCell >= 0 {
+            let e = world.map.exitCell, w = world.map.w
+            target = SIMD2(Float(e % w) + 0.5, Float(e / w) + 0.5)
+        }
+        let label = live ? "QUEEN" : "EXIT"
+        guard let t = target else { return }
+        let to = t - p.pos, dist = vlen(to)
+        let ahead = SIMD2<Float>(cos(p.dir), sin(p.dir))
+        // bearing: 0 = dead ahead; cross>0 = target is to the right (matches the
+        // raycaster's own sprite projection, so the arrow agrees with the world).
+        let rel = atan2(ahead.x * to.y - ahead.y * to.x, ahead.x * to.x + ahead.y * to.y)
+        let F = SIMD2<Float>(sin(rel), -cos(rel)), perp = SIMD2<Float>(cos(rel), sin(rel))
+        let near = max(0, min(1, 1 - dist / 6))
+        let col = live ? mixRGBA(packRGBA(238, 156, 56), packRGBA(255, 56, 36), near) : packRGBA(96, 200, 255)
+        let cx = bx + bw / 2, cy = by + (bh - uiS(11)) / 2
+        let r = max(uiS(8), min(bw, bh - uiS(13)) / 2 - uiS(2))
+        let L = Float(r) * 0.95, headBase = L - Float(r) * 0.6
+        for oy in -r...r { for ox in -r...r where ox * ox + oy * oy <= r * r {
+            let fwd = Float(ox) * F.x + Float(oy) * F.y
+            let side = abs(Float(ox) * perp.x + Float(oy) * perp.y)
+            var inside = false
+            if fwd >= headBase && fwd <= L { inside = side <= Float(r) * 0.52 * ((L - fwd) / (L - headBase)) }   // arrowhead
+            else if fwd >= -L * 0.72 && fwd < headBase { inside = side <= Float(r) * 0.17 }                       // shaft
+            if inside { c.plot(cx + ox, cy + oy, col) }
+        } }
+        c.labelCentered2(label, bx, bw, by + bh - uiS(11), size: uiSf(10), color: col, weight: .bold)
+    }
+
     // ── status bar — five clean, non-overlapping zones (authored in 640-logical,
     //    scaled through uiS). AMMO | HEALTH | FACE | ARMOUR | ARSENAL. ────────────
     private func drawStatusBar(_ world: World, _ c: Canvas2D) {
@@ -140,15 +177,12 @@ struct HUD {
         let hCol = p.health < 25 ? packRGBA(232, 64, 52) : packRGBA(232, 234, 240)
         drawNum("\(p.health)%", uiS(108), uiS(98), hCol)
 
-        // FACE — centered focal point, scaled to FIT the bar with margin
-        // (derive from barH so it never overflows at any resolution).
-        let face = Sprites.shared.face(bracket: p.healthBracket, dir: p.faceDir)
-        let fs = max(1, (barH - uiS(20)) / face.h), fw = face.w * fs, fh = face.h * fs
-        let fx = (W - fw) / 2, fy = barY + (barH - fh) / 2
-        c.fillRect(fx - uiS(5), fy - uiS(3), fw + uiS(10), fh + uiS(6), packRGBA(22, 22, 28))
-        c.hLine(fx - uiS(5), fx + fw + uiS(4), fy - uiS(3), packRGBA(14, 14, 18)); c.vLine(fx - uiS(5), fy - uiS(3), fy + fh + uiS(2), packRGBA(14, 14, 18))
-        c.hLine(fx - uiS(5), fx + fw + uiS(4), fy + fh + uiS(2), packRGBA(76, 78, 92)); c.vLine(fx + fw + uiS(4), fy - uiS(3), fy + fh + uiS(2), packRGBA(76, 78, 92))
-        c.blitBitmap(face.pixels, face.w, face.h, fx, fy, scale: fs)
+        // OBJECTIVE COMPASS (replaces the marine mugshot) — a dial that points to
+        // the living Queen, then to the exit switch once she has been burned to ash.
+        let cbw = uiS(60), cbh = barH - uiS(14)
+        let cbx = (W - cbw) / 2, cby = barY + uiS(7)
+        recess(c, cbx, cby, cbw, cbh)
+        drawObjectiveCompass(world, c, cbx, cby, cbw, cbh)
 
         c.label("ARMOUR", uiS(414), topY, size: labSize, color: lab, weight: .semibold)
         recess(c, uiS(412), boxY, uiS(96), boxH)

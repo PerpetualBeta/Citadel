@@ -194,6 +194,55 @@ enum GPURaymarch {
         return s;
     }
 
+    // ── PBR material params + micro-relief (the "walls & materials" model) ──────
+    // Per-surface roughness/metalness, mirroring BeautyProof's material(): grimy
+    // iron is a dirty half-metal, brushed steel / pipes are cleaner metal, glass
+    // is a smooth dielectric, stone & concrete are matte. (x = rough, y = metal.)
+    static inline float2 wallMaterial(uint id) {
+        switch (id) {
+            case 2u:  return float2(0.36, 0.70);   // brushed steel — the good rooms
+            case 5u:  return float2(0.34, 0.65);   // ribbed conduit metal
+            case 6u:  return float2(0.28, 0.80);   // pipework — smooth metal
+            case 7u:  return float2(0.18, 0.25);   // reinforced glass — smooth dielectric
+            case 8u:  return float2(0.92, 0.00);   // hewn rock — matte
+            case 9u:  return float2(0.66, 0.35);   // rock + steel struts
+            case 10u: return float2(0.50, 0.20);   // computer banks — screens
+            case 12u: case 13u: case 14u: case 15u: return float2(0.50, 0.50);  // blast doors — painted steel
+            case 16u: return float2(0.50, 0.45);   // exit switch panel
+            default:  return float2(0.58, 0.50);   // iron plate / steel panel / lit panel / hazard — grimy iron
+        }
+    }
+    // floor + ceiling flats: metal deck / grate are metal, concrete / stone matte.
+    static inline float2 flatMaterial(uint id) {
+        switch (id) {
+            case 1u: return float2(0.44, 0.65);    // metal deck plate
+            case 2u: return float2(0.55, 0.55);    // walkway grate
+            case 4u: return float2(0.55, 0.25);    // ceiling tech
+            case 5u: return float2(0.82, 0.08);    // dark ceiling
+            case 6u: case 7u: return float2(0.92, 0.00);   // stone / rock — matte
+            default: return float2(0.82, 0.05);    // concrete — matte
+        }
+    }
+    // perturb the normal along the gradient of surface noise → grain/rivets that
+    // actually catch the light (BeautyProof.bumped, in-kernel). tU/tV span the
+    // surface; smoother materials bump less (polished = flatter).
+    static inline float3 bumpNormal(float2 uv, float3 n, float3 tU, float3 tV, float scale, float amt) {
+        float e = 0.06;
+        float gx = fbm2((uv + float2(e, 0.0)) * scale) - fbm2((uv - float2(e, 0.0)) * scale);
+        float gy = fbm2((uv + float2(0.0, e)) * scale) - fbm2((uv - float2(0.0, e)) * scale);
+        float2 g = float2(gx, gy) / (2.0 * e);
+        return normalize(n - amt * (tU * g.x + tV * g.y));
+    }
+    // Fresnel-weighted Blinn-Phong specular lobe (BeautyProof's spec term).
+    static inline float3 specBP(float3 n, float3 V, float3 Ld, float rough, float3 f0) {
+        float3 H = normalize(Ld + V);
+        float ndh = max(0.0, dot(n, H));
+        float hdv = max(0.0, dot(H, V));
+        float specPow = mix(8.0, 340.0, pow(1.0 - rough, 1.4));
+        float3 fres = f0 + (float3(1.0) - f0) * pow(1.0 - hdv, 5.0);
+        return fres * (pow(ndh, specPow) * (specPow + 8.0) / 25.0);
+    }
+
     // cheap one-bounce environment shade for wet-floor reflections (grid only,
     // no AO/shadow/creatures) — the lit corridor + glowing panels mirrored back.
     static inline float3 reflectShade(float3 ro, float3 rd, texture2d<float> dt, sampler s, sampler ts,
@@ -226,6 +275,15 @@ enum GPURaymarch {
             int2 c = clamp(int2(floor(p.xz)), int2(0), dim - 1);
             uint id = ceilId.read(uint2(c)).r;
             alb = flatArr.sample(ts, p.xz, id).rgb;
+            if (isLampCell(c)) {                              // the wet floor must mirror the bright lamps
+                float2 ctr = float2(c) + 0.5;
+                float mm = max(abs(p.x - ctr.x), abs(p.z - ctr.y));
+                if (mm < LAMP_HALF) {
+                    float face = 1.0 - smoothstep(LAMP_HALF * 0.42, LAMP_HALF, mm);
+                    alb = mix(float3(0.06, 0.06, 0.08), LAMP_WARM, face);
+                    emis = 7.5 * face;
+                }
+            }
         }
         float3 sect = lightTex.sample(s, p.xz / mapWH).rgb;
         return (alb * (sect * 0.9 + emis)) * exp(-t * 0.05);
@@ -242,19 +300,20 @@ enum GPURaymarch {
         float3 acc = float3(0.0); float trans = 1.0;
         for (int i = 0; i < steps; i++) {
             float3 p = ro + rd * t;
-            float dens = 0.004 + 0.014 * clamp(1.4 - p.y, 0.0, 1.0);   // base + steam near the floor
-            float3 g = lightTex.sample(s, p.xz / mapWH).rgb * 0.25;
+            float dens = 0.003 + 0.010 * clamp(1.4 - p.y, 0.0, 1.0);   // base + steam near the floor (trimmed — many lights now)
+            float3 sg = lightTex.sample(s, p.xz / mapWH).rgb;       // ambient haze — desaturated so big rooms
+            float3 g = mix(float3(dot(sg, float3(0.30, 0.59, 0.11))), sg, 0.5) * 0.20;   // don't fog one solid hue
             for (int li = 0; li < nL; li++) {
                 float3 tl = lights[li].posR.xyz - p;
                 float f = 1.0 - dot(tl, tl) * lights[li].posR.w;
-                if (f > 0.0) g += lights[li].colI.rgb * (lights[li].colI.w * f * f);
+                if (f > 0.0) g += lights[li].colI.rgb * (lights[li].colI.w * f * f * 0.30);   // many emitters now → don't fog
             }
             acc += g * (dens * ds * trans);
             trans *= exp(-dens * ds);
             t += ds;
             if (trans < 0.03) break;
         }
-        return acc * 0.5;
+        return acc * 0.7;
     }
 
     kernel void raymarch(uint2 gid [[thread_position_in_grid]],
@@ -301,11 +360,25 @@ enum GPURaymarch {
             float gd = gridSDF(p, dt, s, mapWH, ceilH);
             float itemMat = 0.0;
             float4 cf = (nMon > 0) ? creatureField(p, nMon, mons, shapes, itemMat) : float4(0.0, 0.0, 0.0, 1e9);
-            float3 alb; float emis = 0.0; bool reflective = false; bool isItem = false; bool isProj = false;
+            float3 alb; float emis = 0.0; bool reflective = false; bool isItem = false; bool isProj = false; bool isCreature = false;
+            float rough = 0.7, metal = 0.0;   // PBR surface params, set per surface below
             if (cf.w < gd) {                                     // a creature / pickup / projectile surface
                 alb = cf.rgb;
                 isItem = itemMat > 0.5 && itemMat < 1.5;         // c.z = 1 → pickup
                 isProj = itemMat > 1.5;                          // c.z = 2 → glowing projectile orb
+                isCreature = !isItem && !isProj;                 // c.z = 0 → living flesh
+                if (isCreature) {
+                    rough = 0.34; metal = 0.0;                   // glossy WET CHITIN
+                    // scaly micro-relief — breaks the gloss into wet organic scales
+                    // (a smooth glossy SDF reads as PLASTIC; xenomorph hide is scaled)
+                    float2 ua = float2(p.x + p.z, p.y - p.x) * 11.0;
+                    float e = 0.5;
+                    float gx = fbm2(ua + float2(e, 0.0)) - fbm2(ua - float2(e, 0.0));
+                    float gy = fbm2(ua + float2(0.0, e)) - fbm2(ua - float2(0.0, e));
+                    float3 t1 = normalize(cross(n, float3(0.0, 1.0, 0.0)) + float3(0.001, 0.0, 0.0));
+                    float3 t2 = cross(n, t1);
+                    n = normalize(n - (t1 * gx + t2 * gy) * 0.6);
+                }
             } else {
                 float dW = wallDist(dt, s, p.xz, mapWH);
                 float dF = p.y, dC = ceilH - p.y;
@@ -333,22 +406,55 @@ enum GPURaymarch {
                     alb = mix(alb, alb * float3(0.52, 0.47, 0.42), streak * 0.6);   // grime bleeding down
                     float blood = smoothstep(0.55, 0.82, fbm2(float2(along * 2.1 + 7.0, p.y * 1.9))) * clamp(1.3 - p.y * 2.2, 0.0, 1.0);
                     alb = mix(alb, float3(0.2, 0.03, 0.022), blood * 0.85);    // dried blood up the base
-                } else if (dF <= dC) {                           // floor — wet, reflective
+                    // material + micro-relief — a grimy-iron sheen, with grain
+                    // breaking up the highlight (was flat, matte, light-frozen)
+                    float2 wm = wallMaterial(id); rough = wm.x; metal = wm.y;
+                    float3 tU = (abs(n.x) > abs(n.z)) ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+                    n = bumpNormal(float2(along, p.y), n, tU, float3(0.0, 1.0, 0.0), 2.6, 0.16 * smoothstep(0.15, 0.55, rough));
+                } else if (dF <= dC) {                           // floor
                     int2 c = clamp(int2(floor(p.xz)), int2(0), dim - 1);
                     uint id = floorId.read(uint2(c)).r;
                     alb = flatArr.sample(ts, p.xz, id).rgb;
                     emis = flatEmissive(id);
-                    reflective = true;
-                    if (id == 3u || id == 8u) {                  // nukage / blood — live rippling surface
+                    bool liquid = (id == 3u || id == 8u);        // nukage / blood pools — liquid at any depth
+                    float wet = max(U.extra.y, liquid ? 1.0 : 0.0);   // depths flood (extra.y); pools always wet
+                    reflective = wet > 0.01;                     // a dry industrial deck does NOT mirror
+                    float2 fm = flatMaterial(id); rough = fm.x; metal = fm.y;
+                    if (liquid) {                                // hazard pool — live rippling surface
+                        // organic, non-repeating ripples: two layers of FLOWING value
+                        // noise at incommensurate speeds/directions (was two crossed
+                        // sines → an obvious uniform grid). The normal follows the
+                        // noise gradient, so the surface churns like a real liquid.
                         float2 q = p.xz;
-                        n = normalize(n + float3(cos(q.x * 7.3 + time * 1.7), 0.0,
-                                                 cos(q.y * 6.1 - time * 2.0)) * 0.18);   // moving ripples
-                        if (id == 3u) emis *= 0.7 + 0.6 * (0.5 + 0.5 * sin(q.x * 3.1 + q.y * 2.7 + time * 2.2));
-                    } else if (id != 2u) {                       // dry floors take soot + blood (not the grates)
-                        float fscorch = smoothstep(0.46, 0.82, fbm2(p.xz * 1.9 + 40.0));
-                        alb *= 1.0 - 0.62 * fscorch;
-                        float fblood = smoothstep(0.56, 0.84, fbm2(p.xz * 1.5 + 21.0));
-                        alb = mix(alb, float3(0.17, 0.024, 0.02), fblood * 0.72);
+                        float2 w1 = q * 3.1 + float2(time * 0.55, time * -0.41);
+                        float2 w2 = q * 6.9 + float2(time * -0.33, time * 0.49);
+                        float e = 0.09;
+                        float gx = (fbm2(w1 + float2(e, 0.0)) - fbm2(w1 - float2(e, 0.0)))
+                                 + 0.5 * (fbm2(w2 + float2(e, 0.0)) - fbm2(w2 - float2(e, 0.0)));
+                        float gz = (fbm2(w1 + float2(0.0, e)) - fbm2(w1 - float2(0.0, e)))
+                                 + 0.5 * (fbm2(w2 + float2(0.0, e)) - fbm2(w2 - float2(0.0, e)));
+                        n = normalize(n + float3(gx, 0.0, gz) * 2.4);   // churning ripples from flowing noise
+                        if (id == 3u) {                          // nukage glow — pulses irregularly, not a clean sine
+                            float pulse = fbm2(q * 1.6 + float2(time * 0.5, time * 0.37));
+                            emis *= 0.5 + 1.0 * pulse;
+                        }
+                        alb *= 0.55;
+                        rough = 0.10; metal = 0.0;               // a glassy hazard-liquid surface
+                    } else if (wet > 0.01) {                     // the flooded depths — standing water over the deck
+                        float2 q = p.xz;
+                        n = normalize(n + float3(cos(q.x * 5.1 + time * 1.1), 0.0,
+                                                 cos(q.y * 4.7 - time * 1.3)) * (0.10 * wet));   // slow standing-water ripples
+                        alb *= mix(1.0, 0.5, wet);               // the water darkens the deck beneath it
+                        rough = mix(rough, 0.08, wet); metal = 0.0;   // standing water glazes the deck glossy
+                    } else {                                     // DRY industrial deck
+                        if (id != 2u) {                          // soot + dried blood (not the open grates)
+                            float fscorch = smoothstep(0.46, 0.82, fbm2(p.xz * 1.9 + 40.0));
+                            alb *= 1.0 - 0.62 * fscorch;
+                            float fblood = smoothstep(0.56, 0.84, fbm2(p.xz * 1.5 + 21.0));
+                            alb = mix(alb, float3(0.17, 0.024, 0.02), fblood * 0.72);
+                        }
+                        // micro-relief on the deck — tread / grain catches the lamps
+                        n = bumpNormal(p.xz, n, float3(1.0, 0.0, 0.0), float3(0.0, 0.0, 1.0), 2.2, 0.09);
                     }
                     // located damage — blood at exact kill sites, scorch under
                     // corpses that burned out (a runtime world-space decal channel,
@@ -371,6 +477,7 @@ enum GPURaymarch {
                     int2 c = clamp(int2(floor(p.xz)), int2(0), dim - 1);
                     uint id = ceilId.read(uint2(c)).r;
                     alb = flatArr.sample(ts, p.xz, id).rgb;
+                    float2 cm = flatMaterial(id); rough = cm.x; metal = cm.y;
                     // a lamp sits in every other open ceiling cell (the cell over a
                     // ceiling point is always open), so lamps follow the layout
                     if (isLampCell(c)) {
@@ -379,7 +486,7 @@ enum GPURaymarch {
                         if (m < LAMP_HALF) {
                             float face = 1.0 - smoothstep(LAMP_HALF * 0.42, LAMP_HALF, m);   // long soft edge, not a hard square
                             alb = mix(float3(0.06, 0.06, 0.08), LAMP_WARM, face);   // dark housing → warm face
-                            emis = 3.6 * face * fixtureFlicker(float2(c), time);
+                            emis = 7.5 * face * fixtureFlicker(float2(c), time);   // HDR — blooms + mirrors in the wet floor
                         }
                     }
                 }
@@ -409,15 +516,43 @@ enum GPURaymarch {
             col = lit * exp(-t * 0.032);
           } else {
             float3 sect = min(lightTex.sample(s, p.xz / mapWH).rgb, float3(1.0));  // baked sector light (clamped)
+            // the flat fill keeps its brightness but sheds most of its SATURATION —
+            // colour is the point lights' job now, directionally; a fixture no longer
+            // washes its whole room one hue through the baked bleed.
+            float secLum = dot(sect, float3(0.30, 0.59, 0.11));
+            float3 sectFill = mix(float3(secLum), sect, 0.5);
             float ao = calcAO(p, n, dt, s, mapWH, ceilH);
+            float3 V = -rd;
+            float3 f0 = mix(float3(0.04), alb, metal);           // dielectric 4% → metallic = albedo-tinted
+            float3 diffAlb = alb * (1.0 - 0.6 * metal);          // grimy metals keep some diffuse (not pure)
+            if (isCreature) { diffAlb = alb * 0.15; f0 = float3(0.09); }   // NEAR-BLACK body (survives bright light); the wet scaly highlights + rim do the modelling
             // hemisphere-tinted ambient: cool on up-facing, warm bounce underneath
             float hemiUp = 0.5 + 0.5 * n.y;
             float3 ambTint = mix(float3(0.82, 0.90, 1.06), float3(1.08, 0.97, 0.82), hemiUp);
-            float3 toL = ro + float3(0.0, 0.22, 0.0) - p;        // headlamp near the marine
-            float dist = length(toL);
-            float ndl = max(0.0, dot(n, toL / dist));
-            float atten = 1.0 / (1.0 + dist * dist * 0.45);
-            float3 lit = alb * (sect * ambTint * 0.46 * ao + WARM * (ndl * atten * 0.78));
+            // ── auto-headlamp: the marine's helmet lamp — a cool LED forward CONE
+            //    (+ a small feet-spill) whose gain ramps with how dark the cell he
+            //    stands in is: it idles in lit rooms and does the seeing in unlit
+            //    ones. Matches the raycaster's lamp (reach 8.5, ~28° inner/66° outer).
+            const float3 LAMP = float3(0.78, 0.85, 1.00);
+            float3 toH = ro - p; float hd = length(toH);         // lamp at the eye
+            float3 Lh = hd > 1e-4 ? toH / hd : float3(0.0, 1.0, 0.0);
+            float cosA = dot(-Lh, U.fwd.xyz);                    // angle off the beam axis
+            float cone = smoothstep(0.40, 0.88, cosA);           // ~66° outer → ~28° inner, soft edge
+            float distF = max(0.0, 1.0 - hd / 8.5);
+            float feet = hd < 2.2 ? (1.0 - hd / 2.2) : 0.0;      // omni spill at the marine's feet
+            float beam = cone * distF * distF + 0.6 * feet * feet;
+            // auto-gain from the baked light the marine is standing in. Kept clearly
+            // PRESENT everywhere (high floor) and ramped further up in true darkness —
+            // the GPU scene carries far more competing light than the raycaster
+            // (emitter point lights + lamp pools), so a lamp that idled like the
+            // raycaster's just vanished. This reads as the marine's own beam.
+            float plum = dot(min(lightTex.sample(s, ro.xz / mapWH).rgb, float3(1.0)), float3(0.299, 0.587, 0.114));
+            float lampGain = (0.55 + 0.45 * clamp((0.62 - plum) / 0.50, 0.0, 1.0)) * 1.6;
+            float3 head = LAMP * (lampGain * beam);
+            float ndl = max(0.0, dot(n, Lh));
+            float3 lit = diffAlb * sectFill * ambTint * 0.26 * ao   // dim, desaturated flat fill — point lights carry the key
+                       + (diffAlb * ndl + specBP(n, V, Lh, rough, f0)) * head;
+            if (isCreature) lit += diffAlb * (pow(max(0.0, dot(V, -Lh)), 2.0) * 0.5 * ao) * head;   // flesh backscatter
             lit += alb * emis;                                   // emissive surfaces glow
             // warm pooled downlight from the nearest ceiling lamp (over an open
             // cell) — gives rooms their lit pools without baking per-lamp lights
@@ -426,7 +561,7 @@ enum GPURaymarch {
                 // pools OVERLAP into smooth falloff instead of hard per-cell squares
                 int2 dim2 = int2(mapWH);
                 int lx0 = (int(floor(p.x)) / 2) * 2, lz0 = (int(floor(p.z)) / 2) * 2;   // even = lamp cells
-                float3 pool = float3(0.0);
+                float3 pool = float3(0.0), poolSpec = float3(0.0);
                 for (int dz = -2; dz <= 2; dz += 2) {
                     for (int dx = -2; dx <= 2; dx += 2) {
                         int cx = lx0 + dx, cz = lz0 + dz;
@@ -434,17 +569,24 @@ enum GPURaymarch {
                         if (wallId.read(uint2(uint(cx), uint(cz))).r != 0u) continue;   // lamp only over open cell
                         float3 tl = float3(float(cx) + 0.5, ceilH - 0.04, float(cz) + 0.5) - p;
                         float d2 = dot(tl, tl), dl = sqrt(d2);
-                        float nl = max(0.0, dot(n, tl / dl));
-                        float atn = 1.0 / (1.0 + d2 * 1.35);
+                        float3 Ld = tl / dl;
+                        float nl = max(0.0, dot(n, Ld));
+                        float atn = 1.0 / (1.0 + d2 * 2.6);    // tighter pools → dark between lamps in open rooms
+                        float fdrop = fixtureFlicker(float2(float(cx), float(cz)), time);
                         // directional pool on floors + a soft omni term so walls near
                         // a lamp brighten and fall off with distance
-                        pool += LAMP_WARM * ((1.9 * nl + 0.5) * atn * fixtureFlicker(float2(float(cx), float(cz)), time));
+                        pool += LAMP_WARM * ((1.9 * nl + 0.5) * atn * fdrop);
+                        poolSpec += specBP(n, V, Ld, rough, f0) * LAMP_WARM * (atn * fdrop);   // metallic glints under the lamps
                     }
                 }
-                lit += alb * pool * ao;
+                lit += (diffAlb * pool + poolSpec) * ao * 0.42;   // warm pools + spec; the colored sector field leads
             }
-            // dynamic lights — muzzle flash + projectiles, lit + soft-shadowed
+            // dynamic + emitter lights — the dramatic shaded point lights raking
+            // the walls (warm keys, teal/red fills) plus muzzle flash + projectiles.
+            // Only the leading `nShadow` (the bright keys) cast a soft shadow — the
+            // colour fills are unshadowed, cheap, exactly like the beauty proof.
             int nL = int(U.grid.w);
+            int nShadow = int(U.extra.z);
             for (int li = 0; li < nL; li++) {
                 float3 tl = lights[li].posR.xyz - p;
                 float d2 = dot(tl, tl);
@@ -452,19 +594,42 @@ enum GPURaymarch {
                 if (f <= 0.0) continue;
                 float dl = sqrt(d2);
                 float3 Ld = tl / dl;
+                float3 lcol = lights[li].colI.rgb * (lights[li].colI.w * f * f);
+                // flesh sub-surface backscatter — strongest when the light is BEHIND
+                // the creature (translucent rim glow), so it's taken before the
+                // front-face cull and left unshadowed (light transmits through flesh)
+                if (isCreature) lit += diffAlb * (pow(max(0.0, dot(V, -Ld)), 2.0) * 0.5 * ao) * lcol;
                 float nl = max(0.0, dot(n, Ld));
                 if (nl <= 0.0) continue;
-                float shd = softShadow(p + n * 0.02, Ld, dl - 0.05, 18.0, dt, s, mapWH, ceilH);
-                if (shd <= 0.0) continue;
-                lit += alb * lights[li].colI.rgb * (lights[li].colI.w * f * f * nl * shd);
+                float shd = 1.0;
+                if (li < nShadow) {
+                    shd = softShadow(p + n * 0.02, Ld, dl - 0.05, 18.0, dt, s, mapWH, ceilH);
+                    if (shd <= 0.0) continue;
+                }
+                lit += (diffAlb * nl + specBP(n, V, Ld, rough, f0)) * lcol * shd;
             }
             // wet-floor reflection — one grid-only bounce, Fresnel-weighted
             if (reflective) {
                 float3 R = reflect(rd, n);
                 float3 rc = reflectShade(p + n * 0.02, R, dt, s, ts, mapWH, ceilH, lightTex,
                                          wallArr, flatArr, wallId, floorId, ceilId);
-                float fres = mix(0.0, 0.16, pow(1.0 - max(0.0, dot(n, -rd)), 4.0));   // faint wet sheen, not a mirror
-                lit = mix(lit, rc * 0.6, fres);
+                float fres = mix(0.22, 0.90, pow(1.0 - max(0.0, dot(n, -rd)), 4.0));   // a genuinely wet, reflective floor
+                lit = mix(lit, rc, fres);
+            }
+            // keep the creature a DARK, MENACING threat. The flat room light (ambient
+            // + lamp pools + headlamp) was washing the carapace pale — "blancmange",
+            // not the locked dark look. So pull the lit body down hard into shadow,
+            // keep a cold WET rim on the silhouette, and bleed deep red into the
+            // crevices (organic-SDF "bleed"): a glistening threat in the dark, not a
+            // brightly-lit blob. (The raycaster gets this for free from its baked sprite.)
+            if (isCreature) {
+                // the glossy wet-chitin highlights (accumulated above) already model
+                // the form on the dark body — add only a subtle cold edge so the
+                // silhouette reads in the dark, plus a faint organic 'bleed' deep in
+                // the crevices. No body-darkening here: diffAlb already did that.
+                float rim = pow(1.0 - max(0.0, dot(n, V)), 4.0);
+                lit += rim * float3(0.10, 0.14, 0.18) * (0.4 + 0.6 * ao)              // clean cold wet silhouette edge
+                     + float3(0.10, 0.009, 0.007) * (1.0 - ao) * 0.5;                 // faint sub-surface bleed
             }
             col = lit * exp(-t * 0.032);                         // aerial falloff into dread-dark
           }
@@ -496,16 +661,16 @@ enum GPURaymarch {
             float l = dot(c, float3(0.299, 0.587, 0.114));
             bloom += max(0.0, l - 1.35) / max(l, 0.001) * c;
         }
-        float3 col = (base + bloom * (0.42 / 24.0)) * 0.92;      // bloom add + exposure
+        float3 col = (base + bloom * (0.42 / 24.0)) * 0.58;      // bloom add + exposure (low-key, moody)
         // teal/amber grade — lift the shadows cool, warm the highlights (the
         // colorimetric move that gives the beauty proof its filmic mood)
         float lum = dot(col, float3(0.299, 0.587, 0.114));
-        col = mix(col * float3(0.90, 0.975, 1.07), col * float3(1.09, 1.0, 0.88), clamp(lum, 0.0, 1.0));
+        col = mix(col * float3(0.84, 0.96, 1.16), col * float3(1.14, 1.0, 0.80), clamp(lum, 0.0, 1.0));
         col *= 1.05;
         col = (col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14);   // ACES
         col = pow(clamp(col, 0.0, 1.0), float3(1.0 / 2.2));
         float2 d = uv * 2.0 - 1.0;
-        col *= 1.0 - 0.28 * dot(d, d);                           // vignette
+        col *= 1.0 - 0.34 * dot(d, d);                           // vignette
         ldr.write(float4(col, 1.0), gid);
     }
     """
@@ -535,25 +700,42 @@ enum GPURaymarch {
         for q in 0..<n { f[off + q * stride] = d[q] }
     }
 
+    /// True when a door's jambs lie on the x-axis (walls at x±1) — so its panels
+    /// part along x. Otherwise they part along z.
+    private static func doorSlidesAlongX(_ map: GameMap, _ cx: Int, _ cy: Int) -> Bool {
+        let lx = map.inBounds(cx - 1, cy) && map.wall[map.idx(cx - 1, cy)] != 0
+        let rx = map.inBounds(cx + 1, cy) && map.wall[map.idx(cx + 1, cy)] != 0
+        return lx && rx
+    }
+
     /// Distance (world units) from every sub-cell texel to the nearest wall.
+    /// Doors are sampled at sub-cell resolution as CENTRE-SPLIT sliding panels: the
+    /// parted gap (empty) grows from the cell centre out to the jambs as `open` →
+    /// passThreshold, so the door visibly slides apart in the march / AO / shadows /
+    /// reflections — not a binary pop. (The caller rebuilds the field as it slides.)
     static func buildDistanceField(_ map: GameMap) -> (data: [Float], sw: Int, sh: Int) {
         let S = sub
         let sw = map.w * S, sh = map.h * S
         let big: Float = Float(sw * sw + sh * sh)
+        let invS = 1 / Float(S)
         var f = [Float](repeating: 0, count: sw * sh)
         for j in 0..<sh {
-            let cy = j / S
+            let cy = j / S, sj = j % S
             for i in 0..<sw {
-                let cx = i / S
+                let cx = i / S, si = i % S
                 let ci = map.idx(cx, cy)
                 var solid = map.wall[ci] != 0
-                if solid, let d = map.doors[ci], d.open >= GameMap.passThreshold { solid = false }  // open doors = empty
+                if solid, let d = map.doors[ci] {
+                    let part = min(1, d.open / GameMap.passThreshold)        // 0 closed … 1 fully parted
+                    // sub-cell centre along the slide axis; empty inside the gap
+                    let c = (doorSlidesAlongX(map, cx, cy) ? Float(si) : Float(sj)) * invS + invS * 0.5
+                    if abs(c - 0.5) < 0.5 * part { solid = false }           // inside the parted centre gap
+                }
                 f[j * sw + i] = solid ? 0 : big
             }
         }
         for j in 0..<sh { edt1d(&f, sw, 1, j * sw) }       // rows
         for i in 0..<sw { edt1d(&f, sh, sw, i) }           // columns
-        let invS = 1 / Float(S)
         for k in 0..<f.count { f[k] = sqrt(f[k]) * invS }  // texel² → world distance
         return (f, sw, sh)
     }
@@ -832,6 +1014,32 @@ enum GPURaymarch {
         return (mons, shapes)
     }
 
+    /// Build the kernel light buffer: the emitter point lights culled to what can
+    /// reach the camera, ordered shadow-casters-first (so `extra.z` can gate which
+    /// few march a shadow), the muzzle/projectile lights appended, capped to the
+    /// buffer budget. Returns the packed lights and how many lead lights shadow.
+    static func packLights(_ emitters: [Lighting.PointLight], camera: SIMD2<Float>,
+                           muzzle: [GPULight] = [], maxLights: Int = 16, maxShadow: Int = 3) -> (lights: [GPULight], shadowCount: Int) {
+        func toGPU(_ l: Lighting.PointLight) -> GPULight {
+            GPULight(posR: SIMD4(l.pos.x, l.pos.y, l.pos.z, 1 / (l.radius * l.radius)),
+                     colI: SIMD4(l.color.x, l.color.y, l.color.z, l.intensity))
+        }
+        func d2(_ l: Lighting.PointLight) -> Float { simd_length_squared(SIMD2(l.pos.x, l.pos.z) - camera) }
+        // only fixtures whose reach can touch the camera neighbourhood matter
+        let near = emitters.filter { d2($0) < ($0.radius + 6) * ($0.radius + 6) }
+        let keys  = near.filter { $0.shadow }.sorted { d2($0) < d2($1) }
+        let fills = near.filter { !$0.shadow }.sorted { d2($0) < d2($1) }
+        // shadowed keys first (capped), then the muzzle lights (also shadowed — they
+        // are the player's own dramatic light), then the cheap unshadowed colour fills
+        let shadowKeys = Array(keys.prefix(maxShadow))
+        var ordered = shadowKeys.map(toGPU)
+        ordered.append(contentsOf: muzzle)
+        let shadowCount = ordered.count                        // keys + muzzle all shadow
+        ordered.append(contentsOf: fills.map(toGPU))
+        if ordered.count > maxLights { ordered = Array(ordered.prefix(maxLights)) }
+        return (ordered, min(shadowCount, ordered.count))
+    }
+
     /// Compile both compute pipelines (raymarch → HDR, post → LDR), shared by the live renderer.
     static func makePipelines(_ device: MTLDevice) -> (raymarch: MTLComputePipelineState, post: MTLComputePipelineState)? {
         guard let lib = try? device.makeLibrary(source: kernelSource, options: nil),
@@ -870,6 +1078,41 @@ enum GPURaymarch {
         return tex
     }
 
+    /// Camera at the mouth of the longest *narrow* corridor in the map, looking
+    /// straight down its long axis — a dark receding hallway directly comparable
+    /// to the BeautyProof corridor hero. (The player's spawn lands in a bright,
+    /// wide open room, which is useless for judging the moody-corridor target
+    /// look — that mismatch is why earlier GPU stills read as "a bright test room".)
+    static func bestCorridorView(_ map: GameMap) -> (pos: SIMD2<Float>, dir: Float, depth: Int)? {
+        @inline(__always) func open(_ x: Int, _ y: Int) -> Bool {
+            x >= 0 && y >= 0 && x < map.w && y < map.h && map.wall[map.idx(x, y)] == 0
+        }
+        let dirs: [(dx: Int, dy: Int, ang: Float)] = [
+            (1, 0, 0), (-1, 0, .pi), (0, 1, .pi / 2), (0, -1, -.pi / 2)]
+        var best: (score: Float, pos: SIMD2<Float>, dir: Float, depth: Int)?
+        for y in 0..<map.h {
+            for x in 0..<map.w where open(x, y) {
+                for d in dirs {
+                    if open(x - d.dx, y - d.dy) { continue }        // camera sits at a closed end
+                    var len = 0, cx = x, cy = y
+                    while open(cx, cy) && len < 64 { cx += d.dx; cy += d.dy; len += 1 }
+                    if len < 5 { continue }
+                    let px = d.dy, py = d.dx                         // perpendicular axis
+                    var width = 1, k = 1
+                    while open(x + px * k, y + py * k) { width += 1; k += 1 }
+                    k = 1
+                    while open(x - px * k, y - py * k) { width += 1; k += 1 }
+                    let score = Float(len) - Float(width) * 1.5      // long + narrow wins
+                    if best == nil || score > best!.score {
+                        best = (score, SIMD2(Float(x) + 0.5, Float(y) + 0.5), d.ang, len)
+                    }
+                }
+            }
+        }
+        guard let b = best else { return nil }
+        return (b.pos, b.dir, b.depth)
+    }
+
     static func run(outDir: String?) {
         guard let device = MTLCreateSystemDefaultDevice() else { print("Citadel: no Metal device"); return }
         let dir = URL(fileURLWithPath: outDir ?? NSHomeDirectory() + "/Desktop/Citadel-GPU")
@@ -880,12 +1123,16 @@ enum GPURaymarch {
         guard let (pipe, post) = makePipelines(device) else { print("Citadel: kernel build failed"); return }
         let wallArr = makeTextureArray(device, Textures.shared.walls)
         let flatArr = makeTextureArray(device, Textures.shared.flats)
+        var perfMedians: [(level: Int, ms: Double)] = []
 
-        // a few real levels, from the player's spawn
-        for level in [1, 4, 7] {
+        // sample the building's depth range: floor 1 (dry surface), floor 4 (dry
+        // workings), floor 8 (the flooded lowest floor) — so the A/B covers both
+        // the dry industrial deck and the standing-water depths
+        for level in [1, 4, 8] {
             let world = World(level: level, colonyIndex: level - 1, seed: 1234 &+ UInt64(level))
             let map = world.map
             let (df, sw, sh) = buildDistanceField(map)
+            let elights = Lighting.pointLights(map)            // the level's fixtures as dramatic point lights
 
             // distance-field texture (R32Float)
             let dtDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r32Float, width: sw, height: sh, mipmapped: false)
@@ -916,6 +1163,105 @@ enum GPURaymarch {
             let floorIdT = makeIdTexture(device, map.floor, map.w, map.h)
             let ceilIdT = makeIdTexture(device, map.ceil, map.w, map.h)
 
+            let tg = MTLSize(width: 16, height: 16, depth: 1)
+            let groups = MTLSize(width: (W + 15) / 16, height: (H + 15) / 16, depth: 1)
+
+            // One reusable run of the live two-pass kernel (raymarch → HDR, post →
+            // LDR) against this level's textures; returns GPU execution time (ms)
+            // from the command-buffer timestamps, so the very same call renders a
+            // shot AND measures the per-frame GPU cost for the 60 fps validation.
+            func dispatch(_ u0: Uniforms, _ dyn0: [GPULight], _ monBuf: MTLBuffer, _ shpBuf: MTLBuffer, _ decals0: [SIMD4<Float>]) -> Double {
+                var u = u0, dyn = dyn0, decals = decals0
+                let cmd = queue.makeCommandBuffer()!
+                let enc = cmd.makeComputeCommandEncoder()!
+                enc.setComputePipelineState(pipe)
+                enc.setTexture(dtTex, index: 0); enc.setTexture(liTex, index: 1); enc.setTexture(hdrTex, index: 2)
+                enc.setTexture(wallArr, index: 3); enc.setTexture(flatArr, index: 4)
+                enc.setTexture(wallIdT, index: 5); enc.setTexture(floorIdT, index: 6); enc.setTexture(ceilIdT, index: 7)
+                enc.setTexture(depthTex, index: 8)
+                enc.setBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
+                enc.setBytes(&dyn, length: MemoryLayout<GPULight>.stride * dyn.count, index: 1)
+                enc.setBuffer(monBuf, offset: 0, index: 2); enc.setBuffer(shpBuf, offset: 0, index: 3)
+                enc.setBytes(&decals, length: MemoryLayout<SIMD4<Float>>.stride * decals.count, index: 4)
+                enc.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)
+                enc.endEncoding()
+                let penc = cmd.makeComputeCommandEncoder()!
+                penc.setComputePipelineState(post)
+                penc.setTexture(hdrTex, index: 0); penc.setTexture(outTex, index: 1)
+                penc.setBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
+                penc.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)
+                penc.endEncoding()
+                cmd.commit()
+                cmd.waitUntilCompleted()
+                return (cmd.gpuEndTime - cmd.gpuStartTime) * 1000.0
+            }
+            func writePNG(_ name: String) {
+                let buf = UnsafeMutablePointer<UInt32>.allocate(capacity: W * H)
+                outTex.getBytes(buf, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
+                Captures.writePNG(buf, w: W, h: H, scale: 1, to: dir.appendingPathComponent(name))
+                buf.deallocate()
+            }
+            let nilMon = device.makeBuffer(bytes: [GMonster(a: .zero, b: .zero, c: .zero)], length: MemoryLayout<GMonster>.stride, options: .storageModeShared)!
+            let nilShp = device.makeBuffer(bytes: [GShape(a: .zero, b: .zero, col: .zero)], length: MemoryLayout<GShape>.stride, options: .storageModeShared)!
+
+            // ── (1) clean corridor A/B shot — environment only (no prop clutter,
+            //        no creatures), camera at the mouth of the longest narrow
+            //        corridor looking down it. This is THE still to judge beside
+            //        BeautyProof's corridor hero (grade / materials / wet floor /
+            //        volumetrics), with nothing else competing for attention. ──
+            if let cor = bestCorridorView(map) {
+                let dx = cos(cor.dir), dy = sin(cor.dir), plane = RenderConfig.cameraPlane
+                let (clights, cshadow) = packLights(elights, camera: cor.pos)   // the fixtures' shaded keys/fills
+                let cbuf = clights.isEmpty ? [GPULight(posR: .zero, colI: .zero)] : clights
+                let cu = Uniforms(
+                    ro: SIMD4(cor.pos.x, 0.5, cor.pos.y, 2.3),
+                    fwd: SIMD4(dx, 0, dy, 0),
+                    right: SIMD4(-sin(cor.dir) * plane, 0, cos(cor.dir) * plane, 0),
+                    up: SIMD4(0, 1, 0, 0),
+                    params: SIMD4(Float(W), Float(H), Float(RenderConfig.horizon), 1.0),
+                    grid: SIMD4(Float(map.w), Float(map.h), 0, Float(clights.count)),   // emitter lights, no creatures
+                    extra: SIMD4(0, Lighting.floodLevel(level: level), Float(cshadow), 0))   // .y = flooding · .z = shadow-casters
+                _ = dispatch(cu, cbuf, nilMon, nilShp, [.zero])
+                writePNG(String(format: "gpu-corridor-%d.png", level))
+            }
+
+            // ── (1b) creature hero shot — a single Queen a few cells down the same
+            //        corridor, facing the camera: the headlamp keys her front, a cold
+            //        back-light throws a rim, and the native SDF flesh (sub-surface +
+            //        silhouette) reads against the dark. The direct A/B to BeautyProof's
+            //        creature close-up — the dramatic subject the new lights exist for. ──
+            if let cor = bestCorridorView(map) {
+                let dx = cos(cor.dir), dy = sin(cor.dir), plane = RenderConfig.cameraPlane
+                let cdir = SIMD2<Float>(dx, dy), cside = SIMD2<Float>(-dy, dx)
+                let cpos = cor.pos + cdir * 2.6                       // close enough to read, framed down the hall
+                var q = Monster(kind: .queen, pos: cpos)
+                q.dir = cor.dir + .pi                                 // facing back toward the camera
+                q.animTime = 0.25
+                var drone = Monster(kind: .alien, pos: cpos - cside * 1.7 + cdir * 0.5)   // a drone flanking her
+                drone.dir = cor.dir + .pi + 0.3
+                drone.animTime = 0.75
+                var (qmons, qshapes) = packCreatures([q, drone])
+                if qmons.isEmpty { qmons = [GMonster(a: .zero, b: .zero, c: .zero)] }
+                if qshapes.isEmpty { qshapes = [GShape(a: .zero, b: .zero, col: .zero)] }
+                let qMonBuf = device.makeBuffer(bytes: qmons, length: MemoryLayout<GMonster>.stride * qmons.count, options: .storageModeShared)!
+                let qShpBuf = device.makeBuffer(bytes: qshapes, length: MemoryLayout<GShape>.stride * qshapes.count, options: .storageModeShared)!
+                // GAMEPLAY lighting — what the player actually sees: the in-kernel
+                // headlamp keys her front, the level's emitter lights give context.
+                // No studio key, so this is the true test of the dark-menace shading.
+                let (ql0, qsh) = packLights(elights, camera: cpos)
+                let qlights = ql0.isEmpty ? [GPULight(posR: .zero, colI: .zero)] : ql0
+                let cu = Uniforms(
+                    ro: SIMD4(cor.pos.x, 0.5, cor.pos.y, 2.3),
+                    fwd: SIMD4(dx, 0, dy, 0),
+                    right: SIMD4(-sin(cor.dir) * plane, 0, cos(cor.dir) * plane, 0),
+                    up: SIMD4(0, 1, 0, 0),
+                    params: SIMD4(Float(W), Float(H), Float(RenderConfig.horizon), 1.0),
+                    grid: SIMD4(Float(map.w), Float(map.h), Float(qmons.count), Float(ql0.count)),
+                    extra: SIMD4(0, Lighting.floodLevel(level: level), Float(qsh), 0))
+                _ = dispatch(cu, qlights, qMonBuf, qShpBuf, [.zero])
+                writePNG(String(format: "gpu-creature-%d.png", level))
+            }
+
             // camera = the live raycaster's basis, as a 3-D frame
             let p = world.player
             let dirX = cos(p.dir), dirY = sin(p.dir)
@@ -934,9 +1280,10 @@ enum GPURaymarch {
             let fwd2 = SIMD2<Float>(dirX, dirY), side = SIMD2<Float>(-dirY, dirX)
             let lpos = p.pos + fwd2 * 2.4 + side * 0.7
             let radT: Float = 6.0
-            var dyn = [GPULight(posR: SIMD4(lpos.x, 0.55, lpos.y, 1 / (radT * radT)),
-                                colI: SIMD4(1.0, 0.8, 0.5, 2.4))]
-            u.grid.w = 1
+            let muzzle = [GPULight(posR: SIMD4(lpos.x, 0.55, lpos.y, 1 / (radT * radT)),
+                                   colI: SIMD4(1.0, 0.8, 0.5, 2.4))]
+            let (dyn, dynShadow) = packLights(elights, camera: p.pos, muzzle: muzzle)   // fixtures + the muzzle flash
+            u.grid.w = Float(dyn.count)
 
             // a test creature ahead, facing the camera, to verify the native SDF
             // path — one dying (verifies the pool fix) and one alive
@@ -973,49 +1320,45 @@ enum GPURaymarch {
                 SIMD4(p.pos.x + fwd2.x * 2.0, p.pos.y + fwd2.y * 2.0, 0.85, -0.9),                      // blood
                 SIMD4(p.pos.x + fwd2.x * 2.6, p.pos.y + fwd2.y * 2.6, 1.0, 0.95)]                       // scorch under the rubble
             u.extra.x = Float(decals.count)
+            u.extra.y = Lighting.floodLevel(level: level)         // .y = floor flooding (depths only)
+            u.extra.z = Float(dynShadow)                          // .z = leading lights that cast a shadow
             if decals.isEmpty { decals = [SIMD4(0, 0, 0, 0)] }
             if cmons.isEmpty { cmons = [GMonster(a: .zero, b: .zero, c: .zero)] }
             if cshapes.isEmpty { cshapes = [GShape(a: .zero, b: .zero, col: .zero)] }
             let monBuf = device.makeBuffer(bytes: cmons, length: MemoryLayout<GMonster>.stride * cmons.count, options: .storageModeShared)
             let shpBuf = device.makeBuffer(bytes: cshapes, length: MemoryLayout<GShape>.stride * cshapes.count, options: .storageModeShared)
 
-            let cmd = queue.makeCommandBuffer()!
-            let enc = cmd.makeComputeCommandEncoder()!
-            enc.setComputePipelineState(pipe)
-            enc.setTexture(dtTex, index: 0)
-            enc.setTexture(liTex, index: 1)
-            enc.setTexture(hdrTex, index: 2)
-            enc.setTexture(wallArr, index: 3)
-            enc.setTexture(flatArr, index: 4)
-            enc.setTexture(wallIdT, index: 5)
-            enc.setTexture(floorIdT, index: 6)
-            enc.setTexture(ceilIdT, index: 7)
-            enc.setTexture(depthTex, index: 8)
-            enc.setBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
-            enc.setBytes(&dyn, length: MemoryLayout<GPULight>.stride * dyn.count, index: 1)
-            enc.setBuffer(monBuf, offset: 0, index: 2)
-            enc.setBuffer(shpBuf, offset: 0, index: 3)
-            enc.setBytes(&decals, length: MemoryLayout<SIMD4<Float>>.stride * decals.count, index: 4)
-            let tg = MTLSize(width: 16, height: 16, depth: 1)
-            let groups = MTLSize(width: (W + 15) / 16, height: (H + 15) / 16, depth: 1)
-            enc.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)
-            enc.endEncoding()
-            let penc = cmd.makeComputeCommandEncoder()!
-            penc.setComputePipelineState(post)
-            penc.setTexture(hdrTex, index: 0)
-            penc.setTexture(outTex, index: 1)
-            penc.setBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
-            penc.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)
-            penc.endEncoding()
-            cmd.commit()
-            cmd.waitUntilCompleted()
+            // ── (2) content shot — the spawn view loaded with one of everything
+            //        (creatures, pickups, debris, projectiles, decals, a muzzle
+            //        light) to verify every SDF path renders. ──
+            _ = dispatch(u, dyn, monBuf!, shpBuf!, decals)
+            writePNG(String(format: "gpu-content-%d.png", level))
+            print("  wrote gpu-corridor-\(level).png + gpu-content-\(level).png  (grid \(map.w)×\(map.h), DT \(sw)×\(sh))")
 
-            let buf = UnsafeMutablePointer<UInt32>.allocate(capacity: W * H)
-            outTex.getBytes(buf, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
-            Captures.writePNG(buf, w: W, h: H, scale: 1, to: dir.appendingPathComponent(String(format: "gpu-stage1-depth%d.png", level)))
-            buf.deallocate()
-            print("  wrote gpu-stage1-depth\(level).png  (grid \(map.w)×\(map.h), DT \(sw)×\(sh))")
+            // ── 60 fps validation (#49): time the full-content frame — the
+            //    heaviest representative of a real combat frame — at the live
+            //    960×480 viewport. Reports GPU execution time only; the per-frame
+            //    distance-field rebuild is a separate CPU cost (flagged below). ──
+            var times: [Double] = []
+            for i in 0..<125 {
+                let ms = dispatch(u, dyn, monBuf!, shpBuf!, decals)
+                if i >= 5 { times.append(ms) }       // drop warm-up frames
+            }
+            times.sort()
+            let med = times[times.count / 2]
+            let p95 = times[min(times.count - 1, Int(Double(times.count) * 0.95))]
+            print(String(format: "  perf L%d: median %.2f ms → %.0f fps · p95 %.2f ms · best %.2f ms  [%d×%d, full content, GPU-time]",
+                         level, med, 1000.0 / med, p95, times.first ?? 0, W, H))
+            perfMedians.append((level, med))
         }
-        print("Citadel: GPU Stage-1 renders written to \(dir.path)")
+        let worst = perfMedians.map { $0.ms }.max() ?? 0
+        let verdict = worst <= 16.67
+            ? "PASS — every level's median frame is under the 16.67 ms / 60 fps budget"
+            : String(format: "OVER the 60 fps budget on the worst level (%.2f ms > 16.67 ms)", worst)
+        print(String(format: "Citadel: GPU renders + perf written to %@", dir.path))
+        print(String(format: "  60 fps verdict: %@ (worst median %.2f ms → %.0f fps)",
+                     verdict, worst, worst > 0 ? 1000.0 / worst : 0))
+        print("  NB: GPU-time only — the live renderer also rebuilds the distance field")
+        print("      per frame (CPU); cache it across frames where the doors haven't moved.")
     }
 }

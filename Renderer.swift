@@ -32,6 +32,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var wallArrTex, flatArrTex: MTLTexture?           // procedural texture set (built once)
     private var wallIdTex, floorIdTex, ceilIdTex: MTLTexture? // per-level material-id grids
     private var gpuMapW = 0, gpuMapH = 0
+    private var gpuEmitterLights: [Lighting.PointLight] = []   // the level's fixtures as dramatic point lights
     private var gpuDoorSig: UInt64 = 0
     private var gpuWorldID: ObjectIdentifier?
     private var gpuReady = false
@@ -174,6 +175,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private func tickPlaying(_ dt: Float) {
         guard let world = world else { state = .title; return }
         world.update(dt: dt, input: input, audio: audio)
+        let cue = world.audioCue()       // drive the reactive ambient bed from live danger
+        audio.setTension(threat: cue.threat, queen: cue.queen, health: cue.health, combat: cue.combat)
         renderWorld(world)
         hud.draw(world, into: canvas)
 
@@ -237,7 +240,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         input.resetControls()
         deathTimer = 0
         state = .playing
-        audio.startMusic(.level)
+        audio.startMusic(.level, depth: level)
     }
 
     private func nextLevel() {
@@ -250,7 +253,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         input.resetControls()
         deathTimer = 0
         state = .playing
-        audio.startMusic(.level)
+        audio.startMusic(.level, depth: level)
     }
 
     private func applyCarry() {
@@ -342,13 +345,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         gpuRenderWorld(world)
     }
 
-    /// Order-independent signature of which door cells are currently passable —
-    /// the distance field only needs rebuilding when one of these flips.
+    /// Order-independent signature of the doors' current visual state — the
+    /// distance field is rebuilt when this changes. `open` is quantised so a
+    /// sliding door refreshes the field ~16 times as it parts (smooth animation),
+    /// yet the signature is stable once every door is fully closed or fully open.
     private func doorSignature(_ map: GameMap) -> UInt64 {
         var h: UInt64 = 0
         for (i, d) in map.doors {
             var k = UInt64(bitPattern: Int64(i)) &* 2654435761
-            k ^= (d.open >= GameMap.passThreshold ? 1 : 0)
+            let q = UInt64(max(0, min(16, (d.open / GameMap.passThreshold * 16).rounded())))
+            k ^= (q &* 0x9E3779B1)
             h ^= (k | 1)
         }
         return h
@@ -384,6 +390,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         wallIdTex = GPURaymarch.makeIdTexture(device, map.wall, map.w, map.h)
         floorIdTex = GPURaymarch.makeIdTexture(device, map.floor, map.w, map.h)
         ceilIdTex = GPURaymarch.makeIdTexture(device, map.ceil, map.w, map.h)
+        gpuEmitterLights = Lighting.pointLights(map)        // fixtures → dramatic point lights (culled per frame)
         gpuDoorSig = doorSignature(map)
         gpuReady = dtTex != nil && liTex != nil && gpuViewTex != nil && gpuHDRTex != nil && gpuDepthTex != nil
                 && wallArrTex != nil && flatArrTex != nil && wallIdTex != nil && gpuPostPipe != nil
@@ -486,9 +493,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             params: SIMD4(Float(RenderConfig.width), Float(RenderConfig.viewHeight), Float(RenderConfig.horizon), 1),
             grid: SIMD4(Float(gpuMapW), Float(gpuMapH), world.elapsed, 0),
             extra: SIMD4(0, 0, 0, 0))
-        var dyn = gatherDynLights(world)
+        // dramatic lighting = the level's fixtures (warm keys shadow, colour fills
+        // don't) culled to the player, plus the player's own muzzle/projectile glows
+        // appended after — so extra.z gates the few shadow-casters to the emitter keys.
+        let (emit, eshadow) = GPURaymarch.packLights(gpuEmitterLights, camera: p.pos, maxLights: 11)
+        var dyn = emit
+        dyn.append(contentsOf: gatherDynLights(world))
         if dyn.count > 16 { dyn = Array(dyn.prefix(16)) }
         u.grid.w = Float(dyn.count)
+        u.extra.z = Float(eshadow)                                                   // leading emitter keys cast shadows
         if dyn.isEmpty { dyn = [GPURaymarch.GPULight(posR: .zero, colI: .zero)] }   // ≥1 elem for setBytes
         var (cmons, cshapes) = GPURaymarch.packCreatures(visibleCreatures(world))
         let (imons, ishapes) = GPURaymarch.packItems(visibleItems(world), time: world.elapsed)
@@ -507,6 +520,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // located damage decals (blood at kills, scorch under burned-out corpses)
         var decals = world.decals
         u.extra.x = Float(decals.count)
+        u.extra.y = Lighting.floodLevel(level: world.level)                          // floor flooding (lowest floors only)
         if decals.isEmpty { decals = [SIMD4<Float>(0, 0, 0, 0)] }                     // ≥1 elem for setBytes
         if cmons.isEmpty { cmons = [GPURaymarch.GMonster(a: .zero, b: .zero, c: .zero)] }
         if cshapes.isEmpty { cshapes = [GPURaymarch.GShape(a: .zero, b: .zero, col: .zero)] }

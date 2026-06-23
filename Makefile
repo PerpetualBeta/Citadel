@@ -6,8 +6,11 @@
 # rendered into a 320×200 framebuffer — Doom's native resolution — and upscaled
 # nearest-neighbour, aspect-correct, for the period-correct pixelated look.
 #
-# Like Strataris, EVERYTHING is generated in code: no textures, no sprites,
-# no audio files, no fonts, no models. The whole game is a few hundred KB.
+# Graphics are generated in code (no textures, sprites, fonts or models).
+# AUDIO is the deliberate exception: Citadel ships real open-source sample
+# assets (Resources/Audio/, see CREDITS.md + docs/audio-sourcing.md) — the
+# atmosphere leans too hard on sound to synthesise. The from-scratch synth in
+# AudioEngine.swift remains only as a per-event fallback for missing samples.
 #
 # Release pipeline delegated to the shared `release.mk` from
 # PerpetualBeta/jorvik-release.

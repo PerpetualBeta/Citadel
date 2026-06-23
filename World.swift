@@ -69,6 +69,7 @@ final class World {
     let colonyIndex: Int
     let colonyName: String
     var elapsed: Float = 0
+    var combatHeat: Float = 0      // 0…1 recent weapon-fire / damage; feeds the reactive audio bed, decays each frame
 
     var killCount = 0
     let monsterTotal: Int
@@ -161,6 +162,7 @@ final class World {
 
     func update(dt: Float, input: InputState, audio: AudioEngine) {
         elapsed += dt
+        combatHeat = max(0, combatHeat - dt * 0.7)        // combat tension cools over ~1.5 s
         for i in messages.indices { messages[i].time -= dt }
         messages.removeAll { $0.time <= 0 }
 
@@ -406,6 +408,7 @@ final class World {
             return
         }
         player.fireCD = def.interval
+        combatHeat = min(1, combatHeat + 0.22)            // each shot stokes the reactive bed
         player.muzzle = 0.07
         player.fireAnim = min(0.2, def.interval * 0.6)
         if def.ammo != .none { player.ammo[def.ammo.rawValue] -= def.ammoPerShot }
@@ -1230,6 +1233,7 @@ final class World {
             dmg = amt - absorbed
         }
         player.health -= dmg
+        combatHeat = 1                                    // a hit spikes the music to full
         player.hurtFlash = 1
         player.facePain = 0.5
         if player.health <= 0 {
@@ -1239,5 +1243,25 @@ final class World {
         } else {
             audio.playerPain()
         }
+    }
+
+    /// The live signal that drives the reactive ambient bed (all 0…1). The swarm's
+    /// proximity is the main lever — the mix thickens as drones close in — while
+    /// the Queen radiates dread from further out and recent combat lifts it briefly.
+    func audioCue() -> (threat: Float, queen: Float, health: Float, combat: Float) {
+        var threat: Float = 0, queen: Float = 0, pressing = 0
+        for m in monsters where m.alive && m.awake {
+            let d = vlen(m.pos - player.pos)
+            if m.kind == .queen {
+                queen = max(queen, max(0, 1 - d / 18))            // her dread reaches far
+            } else {
+                let prox = max(0, 1 - d / 10)
+                threat = max(threat, prox)
+                if prox > 0.05 { pressing += 1 }
+            }
+        }
+        threat = min(1, threat + 0.10 * Float(max(0, pressing - 1)))   // a pack presses harder than one
+        let health = Float(max(0, player.health)) / Float(player.maxHealth)
+        return (threat, queen, health, min(1, combatHeat))
     }
 }
