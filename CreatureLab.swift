@@ -645,10 +645,11 @@ enum CreatureLab {
                 let y = 1.04 + Float(ri) * 0.12 + bob, z = -Float(ri) * 0.03
                 for sx in [Float(-1), 1] { s.append(C(SIMD3(0, y, z - 0.1), SIMD3(sx * 0.16, y - 0.02, z + 0.04), 0.03, 0.012, dark, 0.02)) }
             }
-            // ── dorsal back-pipes (two pairs, biomechanical) ──
+            // ── dorsal back-pipes — sweep them BACK low over the spine, not up beside
+            //    the head (where, head-on, they read as a teddy bear's ears) ──
             for sx in [Float(-1), 1] {
-                s.append(C(SIMD3(sx * 0.1, 1.42 + bob, 0.12), SIMD3(sx * 0.14, 1.86 + bob, 0.34), 0.05, 0.035, dark, 0.03))
-                s.append(C(SIMD3(sx * 0.2, 1.36 + bob, 0.12), SIMD3(sx * 0.26, 1.74 + bob, 0.34), 0.045, 0.03, dark, 0.03))
+                s.append(C(SIMD3(sx * 0.1, 1.42 + bob, 0.14), SIMD3(sx * 0.17, 1.62 + bob, 0.72), 0.05, 0.03, dark, 0.03))
+                s.append(C(SIMD3(sx * 0.2, 1.36 + bob, 0.14), SIMD3(sx * 0.29, 1.52 + bob, 0.66), 0.045, 0.026, dark, 0.03))
             }
             // ── long spindly arms swinging to the floor, ending in raking claws ──
             for sx in [Float(-1), 1] {
@@ -660,28 +661,31 @@ enum CreatureLab {
                 s.append(C(elbow, wrist, 0.034, 0.024, carapace))
                 for f in 0..<4 { let o = Float(f) - 1.5; s.append(C(wrist, wrist + SIMD3(sx * 0.02 + o * 0.035, -0.22, -0.24), 0.016, 0.0, carapace, 0.012)) }
             }
-            // ── neck + the iconic elongated domed skull (eyeless) ──
-            s.append(C(SIMD3(0, 1.46 + bob, -0.14 - lunge), SIMD3(0, 1.5 + bob, -0.34 - lunge), 0.1, 0.1, carapace))
-            s.append(C(SIMD3(0, 1.5 + bob, -0.42 - lunge), SIMD3(0, 1.62 + bob, 0.6 - lunge * 0.5), 0.16, 0.055, carapace, 0.12))   // long smooth cranium swept back
-            s.append(C(SIMD3(0, 1.62 + bob, 0.5 - lunge * 0.5), SIMD3(0, 1.54 + bob, 1.06 - lunge * 0.5), 0.07, 0.0, carapace, 0.07))   // tapered dome tip
-            s.append(S(SIMD3(0, 1.48 + bob, -0.42 - lunge), 0.15, carapace))                          // skull mass
-            // jutting lipless jaw + small teeth
-            s.append(C(SIMD3(0, 1.42 + bob, -0.42 - lunge), SIMD3(0, 1.32 + bob, -0.66 - lunge), 0.11, 0.06, carapace))
-            s.append(S(SIMD3(0, 1.36 + bob, -0.6 - lunge), 0.06 + atk * 0.04, maw, 0.03))
-            for tt in 0..<7 { let x = -0.06 + Float(tt) * 0.02; s.append(C(SIMD3(x, 1.4 + bob, -0.62 - lunge), SIMD3(x, 1.32 + bob, -0.64 - lunge), 0.011, 0.0, bone, 0.008)) }
-            // inner jaw — the second mouth, protrudes on the strike
-            let ij = -0.62 - lunge - atk * 0.16
-            s.append(C(SIMD3(0, 1.36 + bob, -0.6 - lunge), SIMD3(0, 1.35 + bob, ij), 0.03, 0.02, maw, 0.02))
-            for c in 0..<3 { let x = Float(c - 1) * 0.02; s.append(C(SIMD3(x, 1.36 + bob, ij), SIMD3(x, 1.34 + bob, ij - 0.05), 0.01, 0.0, bone, 0.008)) }
-            // a thread of drool stretching from the jaw
-            let ddrool = SIMD3<Float>(150, 168, 176)
-            for ds in 0..<2 {
-                let x = Float(ds) * 0.05 - 0.025
-                let len = 0.1 + 0.18 * abs(sin(ph * 2 * .pi + Float(ds) * 1.6))
-                let tip = SIMD3(x, 1.3 + bob - len, -0.58 - lunge)
-                s.append(C(SIMD3(x, 1.32 + bob, -0.58 - lunge), tip, 0.012, 0.004, ddrool, 0.015))
-                s.append(S(tip, 0.016, ddrool, 0.015))   // hanging bead
+            // ── neck + a long, low skull that THRUSTS forward at the prey ──
+            s.append(C(SIMD3(0, 1.46 + bob, -0.14 - lunge), SIMD3(0, 1.5 + bob, -0.34 - lunge), 0.1, 0.1, carapace))   // neck
+            // cranium = a low wedge driving forward, swept back into a crest (no dome)
+            s.append(C(SIMD3(0, 1.5 + bob, -0.54 - lunge), SIMD3(0, 1.64 + bob, 0.6 - lunge * 0.5), 0.135, 0.045, carapace, 0.08))   // upper skull → crest
+            s.append(C(SIMD3(0, 1.4 + bob, -0.64 - lunge), SIMD3(0, 1.5 + bob, 0.12 - lunge * 0.5), 0.105, 0.07, carapace, 0.06))    // lower skull, jutting forward
+            s.append(C(SIMD3(0, 1.64 + bob, 0.42 - lunge * 0.5), SIMD3(0, 1.46 + bob, 1.12 - lunge * 0.5), 0.05, 0.0, carapace, 0.05))  // crest tip, swept back
+            // a segmented sagittal crest — raised vertebral ridges down the skull, so
+            // the head reads ribbed and predatory rather than a smooth shell
+            for cr in 0..<4 { let z = -0.36 + Float(cr) * 0.22; s.append(S(SIMD3(0, 1.61 + bob - Float(cr) * 0.012, z - lunge * 0.5), 0.042 - Float(cr) * 0.006, carapace, 0.02)) }
+            // a heavy brow jutting forward over deep, wide-set sockets — a permanent scowl
+            s.append(C(SIMD3(-0.15, 1.48 + bob, -0.58 - lunge), SIMD3(0.15, 1.48 + bob, -0.58 - lunge), 0.05, 0.05, carapace, 0.02))   // brow bar
+            for sx in [Float(-1), 1] { s.append(S(SIMD3(sx * 0.085, 1.43 + bob, -0.6 - lunge), 0.046, dark, 0.02)) }   // sunken sockets
+            // ── a long lipless jaw + a wide GAPING maw, long interlocking fangs ──
+            s.append(C(SIMD3(0, 1.42 + bob, -0.5 - lunge), SIMD3(0, 1.27 + bob, -0.84 - lunge), 0.105, 0.058, carapace))   // jaw, thrust forward-down
+            let mawR = 0.11 + atk * 0.07
+            s.append(S(SIMD3(0, 1.34 + bob, -0.74 - lunge), mawR, maw, 0.03))   // wide gaping mouth
+            for tt in 0..<6 {
+                let x = -0.078 + Float(tt) * 0.031
+                s.append(C(SIMD3(x, 1.41 + bob, -0.76 - lunge), SIMD3(x * 1.12, 1.29 + bob, -0.82 - lunge), 0.017, 0.0, bone, 0.006))        // long upper fang, curving in
+                s.append(C(SIMD3(x + 0.015, 1.25 + bob, -0.8 - lunge), SIMD3(x + 0.015, 1.37 + bob, -0.84 - lunge), 0.015, 0.0, bone, 0.006))  // long lower fang
             }
+            // inner jaw — the xenomorph second mouth, lunges out on the strike
+            let ij = -0.82 - lunge - atk * 0.2
+            s.append(C(SIMD3(0, 1.34 + bob, -0.74 - lunge), SIMD3(0, 1.33 + bob, ij), 0.036, 0.024, maw, 0.02))
+            for c in 0..<3 { let x = Float(c - 1) * 0.024; s.append(C(SIMD3(x, 1.34 + bob, ij), SIMD3(x, 1.32 + bob, ij - 0.06), 0.013, 0.0, bone, 0.007)) }
             // ── long segmented bladed tail sweeping back and up ──
             var tp = SIMD3<Float>(0, 0.92 + bob, 0.18)
             let pts = [SIMD3<Float>(0.12, 0.82, 0.6), SIMD3<Float>(0.28, 0.92, 0.98), SIMD3<Float>(0.4, 1.3, 1.12), SIMD3<Float>(0.5, 1.7, 1.0)]
@@ -772,17 +776,8 @@ enum CreatureLab {
             let ij = -0.78 - lunge - atk * 0.18                                                        // inner jaw
             s.append(C(SIMD3(0, 1.84, -0.76 - lunge), SIMD3(0, 1.83, ij), 0.04, 0.025, maw, 0.02))
             for c in 0..<3 { let x = Float(c - 1) * 0.025; s.append(C(SIMD3(x, 1.84, ij), SIMD3(x, 1.82, ij - 0.06), 0.012, 0.0, bone, 0.01)) }
-            // ── drooling mucus: strands of slime stretch from the maw, a bead at
-            //    the tip, lengthening and snapping back over the cycle ──
-            let drool = SIMD3<Float>(150, 168, 176)
-            for ds in 0..<3 {
-                let x = Float(ds - 1) * 0.06
-                let len = 0.18 + 0.34 * abs(sin(ph * 2 * .pi + Float(ds) * 1.4))
-                let topY: Float = 1.78 - lunge, topZ: Float = -0.76 - lunge
-                let tip = SIMD3(x + sin(ph * 2 * .pi + Float(ds)) * 0.02, topY - len, topZ)
-                s.append(C(SIMD3(x, topY, topZ), tip, 0.018, 0.006, drool, 0.02))
-                s.append(S(tip, 0.024, drool, 0.02))   // hanging bead
-            }
+            // (no drool — strands hanging off the front of the face read as "snot",
+            //  not menace; a dry fanged maw is more frightening)
             // ── THE CROWN CREST — a big flat shield, ribs fused into one plate,
             //    swept wide and back over the body (the Queen's signature) ──
             let cbase = SIMD3<Float>(0, 2.06, -0.36 - lunge)

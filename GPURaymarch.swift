@@ -769,19 +769,25 @@ enum GPURaymarch {
         for m in monsters {
             let sl = poseShapes(m)
             if sl.isEmpty || shapes.count + sl.count > shapeBudget { continue }
-            var loY: Float = 1e9, hiY: Float = -1e9
+            var loY: Float = 1e9, hiY: Float = -1e9, maxR: Float = 0
             for sh in sl {
                 let r = max(sh.r1, sh.r2)
                 loY = min(loY, min(sh.a.y, sh.b.y) - r)
                 hiY = max(hiY, max(sh.a.y, sh.b.y) + r)
+                maxR = max(maxR, r)
             }
             let bodyH = max(0.1, hiY - loY), boundCY = (loY + hiY) / 2
+            // `hw` (horizontal footprint, for the wall clamp below) counts only the
+            // BULK — shapes at least half the creature's thickest radius. Thin spikes,
+            // claws and the long swept tail can extend past the body without reading
+            // as "poking through a wall", and counting them shrank the whole creature.
+            let bulkR = maxR * 0.5
             var boundR: Float = 0, hw: Float = 0
             for sh in sl {
                 boundR = max(boundR, simd_length(SIMD3(sh.a.x, sh.a.y - boundCY, sh.a.z)) + sh.r1)
                 boundR = max(boundR, simd_length(SIMD3(sh.b.x, sh.b.y - boundCY, sh.b.z)) + sh.r2)
-                hw = max(hw, simd_length(SIMD2(sh.a.x, sh.a.z)) + sh.r1)   // horizontal half-width
-                hw = max(hw, simd_length(SIMD2(sh.b.x, sh.b.z)) + sh.r2)
+                if sh.r1 >= bulkR { hw = max(hw, simd_length(SIMD2(sh.a.x, sh.a.z)) + sh.r1) }
+                if sh.r2 >= bulkR { hw = max(hw, simd_length(SIMD2(sh.b.x, sh.b.z)) + sh.r2) }
             }
             boundR += 0.06
             // Reproduce the sprite's apparent size: the bake tile spanned viewH
