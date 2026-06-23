@@ -11,31 +11,46 @@ but is listed here as a courtesy and for provenance.
 
 ## Audio
 
-**CC0 placeholder set in place.** The sounds currently in `Resources/Audio/` are a
-starter set from **Kenney — Sci-Fi Sounds (1.0)**, dedicated to the public domain
-under **CC0 1.0** (<https://creativecommons.org/publicdomain/zero/1.0/>), created
-and distributed by **Kenney** (<https://www.kenney.nl>). CC0 needs no attribution;
-Kenney is credited here as a courtesy. These are placeholders to prove the pipeline
-and set the tone — swap any for finals using the same base name.
+**Complete CC0 sound set in place** — all assets below are **CC0 1.0 / public domain**
+(<https://creativecommons.org/publicdomain/zero/1.0/>), so no attribution is
+required; sources are credited here as a courtesy and for provenance. They're
+placeholders that prove the pipeline and set the tone — swap any for a final using
+the same base filename.
 
-| File(s) | Sound | Source pack | Original sample | Author | Licence |
-|---------|-------|-------------|-----------------|--------|---------|
-| plasma, plasma1, plasma2 | plasma rifle | Kenney Sci-Fi Sounds | laserSmall_000–002 | Kenney | CC0 |
-| rocket | rocket launch | Kenney Sci-Fi Sounds | laserLarge_000 | Kenney | CC0 |
-| flamethrower, flamethrower1 | flame burst | Kenney Sci-Fi Sounds | thrusterFire_000/002 | Kenney | CC0 |
-| explosion, explosion1, explosion2 | explosion | Kenney Sci-Fi Sounds | explosionCrunch_000/002, lowFrequency_explosion_000 | Kenney | CC0 |
-| door_open | door slide | Kenney Sci-Fi Sounds | doorOpen_000 | Kenney | CC0 |
-| drone_sight | drone notices you | Kenney Sci-Fi Sounds | slime_000 | Kenney | CC0 |
-| drone_pain | drone hit | Kenney Sci-Fi Sounds | slime_001 | Kenney | CC0 |
-| drone_death, drone_death1 | drone dies | Kenney Sci-Fi Sounds | slime_001, impactMetal_000 | Kenney | CC0 |
-| bed_drone | ambient: room tone | Kenney Sci-Fi Sounds | spaceEngineLow_000 | Kenney | CC0 |
-| bed_pulse | ambient: throb | Kenney Sci-Fi Sounds | engineCircular_000 | Kenney | CC0 |
-| bed_tension | ambient: unease | Kenney Sci-Fi Sounds | computerNoise_001 | Kenney | CC0 |
-| bed_swarm | ambient: peak dread | Kenney Sci-Fi Sounds | spaceEngineLarge_000 | Kenney | CC0 |
+**Sources:** Kenney — *Sci-Fi Sounds*, *Interface Sounds*, *Impact Sounds*
+(<https://www.kenney.nl>, CC0) · SRG774 — *Dark Sci-Fi Audio Pack*
+(<https://opengameart.org/content/dark-sci-fi-audio-pack>, CC0) · *Derelict* from the
+*CC0 - Dark Music* collection (<https://opengameart.org/content/cc0-dark-music>, CC0) ·
+HaelDB — *Male Grunt/Yelling sounds* (<https://opengameart.org/content/male-gruntyelling-sounds>, CC0) ·
+rubberduck — *80 CC0 creature SFX* #1 & #2 (<https://opengameart.org/content/80-cc0-creature-sfx>, CC0) ·
+Ogrebane — *Monster Sound Effects 2* (<https://opengameart.org/content/monster-sound-effects-2>, CC0).
 
-_Still on the synth fallback (no sample yet): queen_sight/pain/death, pickup,
-secret, exit, locked, player_pain, player_death. The bed loops are short SFX clips
-standing in for proper seamless loops — expect a faint seam until replaced._
+| File(s) | Sound | Source | Original |
+|---------|-------|--------|----------|
+| plasma, plasma1, plasma2 | plasma rifle | Kenney Sci-Fi Sounds | laserSmall_000–002 |
+| rocket | rocket launch | Kenney Sci-Fi Sounds | laserLarge_000 |
+| flamethrower, flamethrower1 | flame burst | Kenney Sci-Fi Sounds | thrusterFire_000/002 |
+| explosion, explosion1, explosion2 | explosion | Kenney Sci-Fi Sounds | explosionCrunch_000/002, lowFrequency_explosion_000 |
+| door_open | door slide | Kenney Sci-Fi Sounds | doorOpen_000 |
+| hiss (×9, random — drone + Queen, sight & pain) | alien hiss | rubberduck 80 CC0 creature SFX | spit_01/02, breath, alien_01–06 |
+| drone_death (×13, random) | drone death — raspy gasp | Ogrebane Monster SFX 2 | monster-1, 5–11, 13–17 |
+| queen_death (×3, random) | Queen death — frightful squeal | rubberduck 80 CC0 creature SFX #2 | alien_07/08/09 |
+| pickup, pickup1 | item / ammo pickup | Kenney Interface Sounds | confirmation_001/002 |
+| secret | secret found | Kenney Interface Sounds | glass_001 |
+| exit | level exit reached | Kenney Interface Sounds | bong_001 |
+| locked | locked door / denied | Kenney Interface Sounds | error_004 |
+| player_pain (×11, random) | marine hurt by an alien | HaelDB Male Grunt/Yelling | assorted male yells |
+| player_death | marine death cry | HaelDB Male Grunt/Yelling | yell10 |
+| bed_drone | ambient bed: room tone (always on) | SRG774 Dark Sci-Fi Audio Pack | sector |
+| bed_swarm | ambient bed: tension layer (fades in as the swarm nears) | SRG774 Dark Sci-Fi Audio Pack | urgent |
+| music_title | title-screen theme (loops; click-free, fades to a breath each cycle) | OpenGameArt CC0 - Dark Music | Derelict |
+
+The reactive bed currently has **two layers** (drone + swarm crossfaded by threat);
+`bed_pulse` / `bed_tension` are unfilled, so those layers are silent for now.
+
+_Every sound above is now a real CC0 sample; the synth in AudioEngine.swift is only a safety
+fallback for a missing file. Aliens HISS (no roar); the Queen dies with a squeal, the drone
+with a raspy gasp; the marine grunts and dies in a real voice._
 
 ### How to fill this in
 - **CC0**: source URL + author (if known). No obligation, but list it.

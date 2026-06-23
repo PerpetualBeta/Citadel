@@ -34,8 +34,8 @@ final class AudioEngine {
     // random) for ext in wav/caf/aiff/aif/m4a/mp3. `bed_*` / `music_title` loop.
     enum Sound: CaseIterable {
         case plasma, flamethrower, rocket
-        case droneSight, dronePain, droneDeath
-        case queenSight, queenPain, queenDeath
+        case hiss                  // shared alien hiss pool: drone + Queen, sight + pain (random)
+        case droneDeath, queenDeath
         case explosion, doorOpen, locked, pickup, secret, exit, playerPain, playerDeath
         case musicTitle, bedDrone, bedPulse, bedTension, bedSwarm
 
@@ -44,11 +44,8 @@ final class AudioEngine {
             case .plasma: return "plasma"
             case .flamethrower: return "flamethrower"
             case .rocket: return "rocket"
-            case .droneSight: return "drone_sight"
-            case .dronePain: return "drone_pain"
+            case .hiss: return "hiss"
             case .droneDeath: return "drone_death"
-            case .queenSight: return "queen_sight"
-            case .queenPain: return "queen_pain"
             case .queenDeath: return "queen_death"
             case .explosion: return "explosion"
             case .doorOpen: return "door_open"
@@ -78,7 +75,7 @@ final class AudioEngine {
         var gain: Float {
             switch self {
             case .explosion, .playerDeath, .rocket: return 1.0
-            case .queenDeath, .queenSight: return 0.95
+            case .queenDeath: return 0.95
             case .plasma, .droneDeath, .exit: return 0.9
             case .flamethrower: return 0.55
             default: return 0.8
@@ -169,7 +166,7 @@ final class AudioEngine {
     private func loadBank() {
         for s in Sound.allCases {
             var bufs: [AVAudioPCMBuffer] = []
-            for cand in [s.base] + (1...4).map({ "\(s.base)\($0)" }) {
+            for cand in [s.base] + (1...16).map({ "\(s.base)\($0)" }) {   // base + up to 16 random variants
                 if let b = findAndLoad(cand) { bufs.append(b) }
             }
             if !bufs.isEmpty { bank[s] = bufs }
@@ -245,9 +242,9 @@ final class AudioEngine {
         }
     }
     func enemyShot(_ k: MonsterKind) { synthEnemyShot(k) }   // vestigial — no caste fires
-    func monsterPain(_ k: MonsterKind)  { play(k == .queen ? .queenPain  : .dronePain)  { self.synthMonsterPain(k) } }
+    func monsterPain(_ k: MonsterKind)  { play(.hiss) { self.synthMonsterPain(k) } }       // aliens hiss when hit
     func monsterDeath(_ k: MonsterKind) { play(k == .queen ? .queenDeath : .droneDeath) { self.synthMonsterDeath(k) } }
-    func monsterSight(_ k: MonsterKind) { play(k == .queen ? .queenSight : .droneSight) { self.synthMonsterSight(k) } }
+    func monsterSight(_ k: MonsterKind) { play(.hiss) { self.synthMonsterSight(k) } }       // aliens hiss when they notice you
     func explosion()   { play(.explosion)   { self.synthExplosion() } }
     func doorOpen()    { play(.doorOpen)    { self.synthDoorOpen() } }
     func locked()      { play(.locked)      { self.synthLocked() } }
