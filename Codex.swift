@@ -90,11 +90,22 @@ enum FrontEnd {
     static func levelComplete(_ c: Canvas2D, world: World, t: Float) {
         backdrop(c, t, top: packRGBA(6, 16, 10), bottom: packRGBA(10, 30, 16))
         c.labelCentered("CITADEL FLOOR CLEARED", uiS(74), size: uiSf(42), color: packRGBA(120, 230, 150), weight: .heavy, shadow: true, glow: packRGBA(10, 50, 24))
-        c.labelCentered("\(world.colonyName) · DEPTH \(world.level)", uiS(126), size: uiSf(22), color: ink, weight: .semibold)
+        c.labelCentered("\(world.colonyName) · FLOOR \(Progression.floorInBuilding(world.level))", uiS(126), size: uiSf(22), color: ink, weight: .semibold)
         statRow(c, "KILLS", "\(world.killCount) / \(world.monsterTotal)", uiS(184))
         if world.secretTotal > 0 { statRow(c, "SECRETS", "\(world.secretsFound) / \(world.secretTotal)", uiS(216)) }
         statRow(c, "SCORE", "\(world.score)", world.secretTotal > 0 ? uiS(248) : uiS(216), color: amber)
         if Int(t * 2) % 2 == 0 { c.labelCentered("PRESS  FIRE  TO  DESCEND", uiS(308), size: uiSf(28), color: amber, weight: .bold) }
+    }
+
+    // Citadel secured → the teleport jump to the next planet (shown between buildings).
+    static func teleport(_ c: Canvas2D, world: World, t: Float) {
+        backdrop(c, t, top: packRGBA(8, 10, 28), bottom: packRGBA(14, 16, 46))   // cold blue — a jump, not a descent
+        c.labelCentered("CITADEL SECURED", uiS(60), size: uiSf(44), color: packRGBA(150, 200, 255), weight: .heavy, shadow: true, glow: packRGBA(18, 30, 72))
+        c.labelCentered("\(world.colonyName) has fallen. The teleporter spins up.", uiS(116), size: uiSf(20), color: ink, weight: .medium)
+        c.labelCentered("TELEPORTING TO", uiS(172), size: uiSf(20), color: dim, weight: .semibold)
+        c.labelCentered(Progression.planetName(world.level + 1), uiS(202), size: uiSf(54), color: amber, weight: .heavy, shadow: true, glow: packRGBA(60, 48, 0))
+        statRow(c, "SCORE", "\(world.score)", uiS(286), color: amber)
+        if Int(t * 2) % 2 == 0 { c.labelCentered("PRESS  FIRE  TO  JUMP", uiS(328), size: uiSf(28), color: amber, weight: .bold) }
     }
 
     private static func statRow(_ c: Canvas2D, _ k: String, _ v: String, _ y: Int, color: UInt32 = 0xFFEEEEEE) {

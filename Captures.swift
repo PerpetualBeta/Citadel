@@ -6,6 +6,7 @@
 
 import Foundation
 import AppKit
+import Metal
 
 enum Captures {
     static func run(outDir: String?) {
@@ -24,6 +25,9 @@ enum Captures {
 
         let hs = HighScores()
         let audio = AudioEngine()
+        // render the 3-D view through the GPU renderer (every Mac has a Metal device)
+        let gpu = MTLCreateSystemDefaultDevice().flatMap { GPUWorldRenderer(device: $0) }
+        func draw3D(_ w: World, into c: Canvas2D) { _ = gpu?.render(w, into: c) }
 
         // title
         let title = Canvas2D(); FrontEnd.title(title, t: 0.2, hs: hs); save(title, "title")
@@ -57,7 +61,7 @@ enum Captures {
             }
         }
         let game = Canvas2D()
-        Raycaster().render(world, into: game)
+        draw3D(world, into: game)
         HUD().draw(world, into: game)
         save(game, "combat")
 
@@ -78,7 +82,7 @@ enum Captures {
         }
         world.player.muzzle = 0
         let dark = Canvas2D()
-        Raycaster().render(world, into: dark)
+        draw3D(world, into: dark)
         HUD().draw(world, into: dark)
         writePNG(dark.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: scale,
                  to: dir.appendingPathComponent("10-atmosphere.png"))
@@ -111,7 +115,7 @@ enum Captures {
             break
         }
         let door = Canvas2D()
-        Raycaster().render(dworld, into: door)
+        draw3D(dworld, into: door)
         HUD().draw(dworld, into: door)
         writePNG(door.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: scale,
                  to: dir.appendingPathComponent("12-door.png"))

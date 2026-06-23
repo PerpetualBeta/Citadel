@@ -15,15 +15,6 @@ enum FeatureFlags {
     /// the Desktop.
     static var screenshotKey: Bool { d.bool(forKey: "ScreenshotKey") }
 
-    /// Renderer pivot: draw the 3-D view with the GPU SDF raymarcher (GPURaymarch
-    /// kernel) instead of the CPU raycaster. NOW THE DEFAULT (the pivot's target
-    /// renderer). The CPU raycaster stays as an explicit opt-out fallback —
-    ///   defaults write cc.jorviksoftware.Citadel MetalRenderer -bool false
-    /// — until it's removed (#50). Read live, so toggling takes effect next frame.
-    static var metalRenderer: Bool {
-        d.object(forKey: "MetalRenderer") == nil ? true : d.bool(forKey: "MetalRenderer")
-    }
-
     /// Start the Sparkle auto-updater. Off by default in development — the
     /// appcast isn't published yet, so the automatic startup check would throw a
     /// missing-feed dialog. The "Check for Updates…" menu still works on demand.

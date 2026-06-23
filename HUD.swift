@@ -65,7 +65,7 @@ struct HUD {
             c.label(m.text, uiS(10), y, size: uiSf(20), color: col, weight: .semibold)
             y += uiS(24)
         }
-        c.labelRight("\(world.colonyName) · DEPTH \(world.level)", W - uiS(10), uiS(10), size: uiSf(19), color: packRGBA(150, 174, 224), weight: .semibold)
+        c.labelRight("\(world.colonyName) · FLOOR \(Progression.floorInBuilding(world.level))", W - uiS(10), uiS(10), size: uiSf(19), color: packRGBA(150, 174, 224), weight: .semibold)
         c.labelRight("KILLS \(world.killCount)/\(world.monsterTotal)", W - uiS(10), uiS(34), size: uiSf(16), color: packRGBA(150, 150, 162), weight: .medium)
         drawResourceGauges(world.player, c)
     }

@@ -42,9 +42,12 @@ SWIFT_SOURCES    := main.swift \
                     Mesh3D.swift \
                     MonsterBake.swift \
                     GameMap.swift \
+                    Progression.swift \
                     MapGen.swift \
                     Lighting.swift \
-                    Raycaster.swift \
+                    WorldLight.swift \
+                    SpriteCompositor.swift \
+                    GPUWorldRenderer.swift \
                     Player.swift \
                     Weapon.swift \
                     Monster.swift \
@@ -68,7 +71,6 @@ SWIFT_SOURCES    := main.swift \
                     ArtPreview.swift \
                     CreatureLab.swift \
                     MaterialPreview.swift \
-                    LightPreview.swift \
                     BeautyProof.swift \
                     GPURaymarch.swift
 

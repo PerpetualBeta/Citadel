@@ -199,6 +199,34 @@ enum SmokeTest {
         check(rw.player.ammoCount(.fuel) > fuel0, "a drum refuels the flamethrower (\(fuel0) → \(rw.player.ammoCount(.fuel)))")
         check(rw.drums.first.map { $0.fuel < 150 } ?? true, "the drum's reserve drains as it refuels")
 
+        // every level places a couple of plasma recharge sockets (the anti-softlock)
+        var socketLevels = 0
+        for lv in 1...6 {
+            let w = World(level: lv, colonyIndex: lv - 1, seed: UInt64(lv) &* 33 &+ 9)
+            if !w.sockets.isEmpty { socketLevels += 1 }
+        }
+        check(socketLevels == 6, "every level places recharge sockets (\(socketLevels)/6)")
+        // standing in a socket pumps cells into a dry plasma rifle, draining the socket
+        let cw = World(level: 1, colonyIndex: 0, seed: 1234)
+        cw.sockets = [Socket(pos: cw.player.pos, charge: 135)]
+        cw.player.ammo[AmmoType.cells.rawValue] = 0
+        for _ in 0..<60 { cw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+        check(cw.player.ammoCount(.cells) > 0, "a socket recharges the dry plasma rifle (0 → \(cw.player.ammoCount(.cells)))")
+        check(cw.sockets.first.map { $0.charge < 135 } ?? true, "the socket's reserve drains as it recharges")
+
+        // building / floor / planet progression — the campaign structure
+        check(Progression.floorInBuilding(1) == 1 && Progression.floorInBuilding(8) == 8, "floors run 1…8 within a citadel")
+        check(Progression.floorInBuilding(9) == 1, "floor 9 resets to floor 1 of the next citadel")
+        check(Progression.planetIndex(1) == 0 && Progression.planetIndex(8) == 0, "all 8 floors of citadel 1 share one planet")
+        check(Progression.planetIndex(9) == 1, "clearing floor 8 advances to the next planet")
+        check(Progression.planetIndex(Progression.floorsPerBuilding * 6 + 1) == 0, "the six planets cycle (planet 7 == planet 1)")
+        check(Progression.isLastFloor(8) && !Progression.isLastFloor(7), "floor 8 is the teleport floor")
+        // each citadel resets surface→depths — lighting AND materials, in step
+        check(Lighting.ambient(level: 1).z > Lighting.ambient(level: 8).z, "a citadel descends bright→dark")
+        check(Lighting.ambient(level: 9) == Lighting.ambient(level: 1), "the next citadel's floor 1 is back at the surface tier")
+        check(MapGen.theme(0, level: 9).floor == MapGen.theme(0, level: 1).floor, "materials reset surface→depths each citadel")
+        check(MapGen.theme(0, level: 8).floor != MapGen.theme(0, level: 1).floor, "the lowest floor's materials differ from the surface")
+
         // deploy a proximity mine, walk a drone onto it → it arms and detonates
         let mw = World(level: 1, colonyIndex: 0, seed: 88)
         mw.player.mines = 3
@@ -233,10 +261,10 @@ enum SmokeTest {
             let cx = RenderConfig.width / 2
             let cz = Canvas2D()
             zmap.doors[di]!.open = 0
-            Raycaster().render(zw, into: cz)
+            SpriteCompositor().overlayThings(zw, into: cz)       // fills the z-buffer via the centre-split DDA
             let zClosed = cz.zbuffer[cx]
             zmap.doors[di]!.open = 0.6
-            Raycaster().render(zw, into: cz)
+            SpriteCompositor().overlayThings(zw, into: cz)
             let zOpen = cz.zbuffer[cx]
             check(zOpen > zClosed + 0.5, "a parted door reveals the room behind it (depth \(String(format: "%.1f", zClosed)) → \(String(format: "%.1f", zOpen)))")
             sawDoor = true
@@ -244,13 +272,14 @@ enum SmokeTest {
         }
         check(sawDoor, "found a clean door to exercise the centre-split")
 
-        // 3. CPU render path (no Metal needed)
+        // 3. world render path — the GPU SDF renderer
         let canvas = Canvas2D()
-        Raycaster().render(world, into: canvas)
+        let gpu = MTLCreateSystemDefaultDevice().flatMap { GPUWorldRenderer(device: $0) }
+        _ = gpu?.render(world, into: canvas)
         HUD().draw(world, into: canvas)
         var nonBlack = 0
         for i in 0..<(RenderConfig.width * RenderConfig.height) where (canvas.framebuffer[i] & 0x00FF_FFFF) != 0 { nonBlack += 1 }
-        check(nonBlack > 5000, "raycaster + HUD drew a frame (\(nonBlack) lit pixels)")
+        check(nonBlack > 5000, "world render + HUD drew a frame (\(nonBlack) lit pixels)")
 
         // front-end screens shouldn't crash
         FrontEnd.title(canvas, t: 1.0, hs: HighScores(fileURL: tmpURL()))

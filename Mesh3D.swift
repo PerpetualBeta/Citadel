@@ -315,7 +315,7 @@ enum MeshItems {
 }
 
 // ── World props (placed by MapGen, persist & react in World) ─────────────────
-enum PropKind: Int, CaseIterable { case fuelDrum, proxMine }
+enum PropKind: Int, CaseIterable { case fuelDrum, proxMine, socket }
 
 enum MeshProps {
     static func sprite(_ k: PropKind) -> Sprite {
@@ -329,6 +329,11 @@ enum MeshProps {
             // a low puck on the floor — steeper top-down so the trigger lamp shows
             let px = MeshRender.render(mine(), pitch: -0.66, yaw: 0.4, t: SIMD3(0, 0.04, 2.7), f: 84, w: 54, h: 40)
             return Sprite(w: 54, h: 40, pixels: px)
+        case .socket:
+            // a plasma recharge pedestal — a standing charging station with a
+            // glowing energy cell, framed like the drum (a prop you walk up to)
+            let px = MeshRender.render(socket(), pitch: -0.16, yaw: 0.5, t: SIMD3(0, -0.08, 4.1), f: 96, w: 60, h: 96)
+            return Sprite(w: 60, h: 96, pixels: px)
         }
     }
 
@@ -354,6 +359,18 @@ enum MeshProps {
         for a in stride(from: Float(0), to: 6.28, by: 1.05) {   // stubby trigger prongs
             m.box(SIMD3(cos(a) * 0.42, 0.0, sin(a) * 0.42), SIMD3(0.07, 0.14, 0.07), dk)
         }
+        return m
+    }
+
+    private static func socket() -> Model3 {
+        var m = Model3()
+        let metal = packRGBA(74, 82, 96), dark = packRGBA(42, 46, 56)
+        let cell = packRGBA(120, 230, 255), glow = packRGBA(190, 245, 255)
+        m.cylY(0, 0, -1.0, -0.55, 0.48, 12, dark)      // wide base
+        m.cylY(0, 0, -0.55, 0.30, 0.26, 12, metal)     // column
+        m.box(SIMD3(0, 0.62, 0), SIMD3(0.5, 0.62, 0.36), cell)        // the glowing energy cell
+        m.box(SIMD3(0, 0.62, 0.20), SIMD3(0.34, 0.46, 0.06), glow)    // bright front face
+        m.cylY(0, 0, 0.96, 1.10, 0.30, 10, metal)      // cap
         return m
     }
 }

@@ -11,6 +11,7 @@
 // fills rather than Bresenham lines; only the player arrow is diagonal.
 
 import Foundation
+import Metal
 
 enum Automap {
     static let W = RenderConfig.width
@@ -93,7 +94,7 @@ enum Automap {
 
         // header + footer
         c.labelCentered("AUTOMAP", uiS(16), size: uiSf(30), color: amber, weight: .heavy)
-        c.labelCentered("\(world.colonyName) · DEPTH \(world.level)", uiS(50), size: uiSf(16), color: dim, weight: .semibold)
+        c.labelCentered("\(world.colonyName) · FLOOR \(Progression.floorInBuilding(world.level))", uiS(50), size: uiSf(16), color: dim, weight: .semibold)
         let pct = totalFloor > 0 ? Int((Float(explored) / Float(totalFloor) * 100).rounded()) : 0
         c.labelRight("EXPLORED \(pct)%", W - side, uiS(22), size: uiSf(15), color: dim, weight: .medium)
         keyLegend(c, world.player.keys, side, uiS(22))
@@ -158,11 +159,12 @@ enum Automap {
     static func run(outDir: String?) {
         let dir = URL(fileURLWithPath: outDir ?? NSHomeDirectory() + "/Desktop/Citadel-Automap")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let gpu = MTLCreateSystemDefaultDevice().flatMap { GPUWorldRenderer(device: $0) }
         for (name, frac) in [("full", 1.0), ("partial", 0.45)] {
             let world = World(level: 3, colonyIndex: 2, seed: 4242)
             revealFraction(world.map, frac)
             let canvas = Canvas2D()
-            Raycaster().render(world, into: canvas)
+            _ = gpu?.render(world, into: canvas)
             draw(world, into: canvas, t: 0.0)
             Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.height,
                               scale: 1, to: dir.appendingPathComponent("automap-\(name).png"))

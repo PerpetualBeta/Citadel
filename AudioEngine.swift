@@ -146,8 +146,13 @@ final class AudioEngine {
         }
 
         loadBank()
-        engine.prepare()
-        try? engine.start()
+        // CITADEL_MUTE (headless / CI / office): never start the engine, so no
+        // output device is opened and nothing can make a sound — guaranteed silent,
+        // not merely volume-0. Playback helpers all guard on engine.isRunning.
+        if ProcessInfo.processInfo.environment["CITADEL_MUTE"] == nil {
+            engine.prepare()
+            try? engine.start()
+        }
         applyGains()
         if engine.isRunning { for n in sfxPool { n.play() } }   // idle, ready to schedule
     }

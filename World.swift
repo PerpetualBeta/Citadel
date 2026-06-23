@@ -56,6 +56,15 @@ struct Mine {
     var triggered = false        // set by a nearby blast → detonates next tick
 }
 
+/// A fixed plasma recharge station. Stand at it to top up the rifle's energy
+/// cells from its finite reserve — a couple per level so running the rifle dry
+/// against the plasma-only Queen can't softlock the run. Indestructible.
+struct Socket {
+    var pos: SIMD2<Float>
+    var charge: Int              // energy cells left to dispense
+    var pulse: Float = 0         // glow pulse accumulator (renderer reads it)
+}
+
 final class World {
     let map: GameMap
     var player: Player
@@ -94,6 +103,7 @@ final class World {
     // ── resource props ──
     var drums: [Drum] = []             // fuel drums (refuel + shootable bombs)
     var deployedMines: [Mine] = []     // proximity mines the marine has dropped
+    var sockets: [Socket] = []         // fixed plasma recharge stations (anti-softlock)
 
     // resource-prop tuning — one table so balancing lives in one place
     private let drumFuel = 150               // flamethrower fuel a full drum holds
@@ -106,8 +116,15 @@ final class World {
     private let mineTriggerRange: Float = 0.7
     private let mineBlastRadius: Float = 2.4
     private let mineBlastDamage = 85
+    // a socket holds ~3 Queen-kills of plasma (derived from her HP ÷ plasma damage)
+    // — enough to recover a dry rifle and still finish her, without trivialising the
+    // cell economy. Dispenses fast while you stand in it.
+    private let socketCharge = MonsterKind.queen.def.maxHealth / WeaponKind.plasma.def.damage * 3
+    private let socketRechargeRate: Float = 80   // cells/sec dispensed while standing in a socket
+    private let socketRange: Float = 0.8
     private var prevDeploy = false           // edge-track the mine-deploy button
     private var refueling = false            // edge-track standing at a drum (for the message)
+    private var recharging = false           // edge-track standing in a socket (for the message)
     private var minesHintGiven = false       // show the "press G" hint once, on first mines
 
     // ── runtime battle-damage decal channel (world-space, stamped by events) ──
@@ -137,12 +154,13 @@ final class World {
         for s in gen.monsters { monsters.append(Monster(kind: s.kind, pos: s.pos)) }
         for s in gen.items { items.append(Item(kind: s.kind, pos: s.pos, bob: rng.f(0, 6.28))) }
         for d in gen.drums { drums.append(Drum(pos: d, fuel: drumFuel, health: drumHealth)) }
+        for s in gen.sockets { sockets.append(Socket(pos: s, charge: socketCharge)) }
         self.monsterTotal = monsters.count
         buildSteamVents()
         buildSparkSites()
         buildDebris()
         if FeatureFlags.allWeapons { grantAllWeapons() }
-        message("RETAKE \(colonyName) — DEPTH \(level)")
+        message("RETAKE \(colonyName) — FLOOR \(Progression.floorInBuilding(level))")
     }
 
     private func grantAllWeapons() {
@@ -219,6 +237,7 @@ final class World {
         updateParticles(dt: dt)
         pickups(audio: audio)
         refuelAtDrums(dt: dt, audio: audio)
+        rechargeAtSockets(dt: dt, audio: audio)
         hazardTick(dt: dt, audio: audio)
         emitSteam(dt: dt)
         emitQueenDrips(dt: dt)
@@ -955,6 +974,29 @@ final class World {
         }
         if didRefuel && !refueling { message("REFUELLING FROM THE DRUM"); audio.pickup() }
         refueling = didRefuel
+    }
+
+    /// Stand in a recharge socket → it pumps energy cells into the plasma rifle (up
+    /// to its cap) from the socket's finite reserve, the cell glow pulsing as it
+    /// works; once drained it's a dead fixture. The marine's lifeline when the
+    /// cells run out against a plasma-only Queen.
+    private func rechargeAtSockets(dt: Float, audio: AudioEngine) {
+        var didCharge = false
+        let ci = AmmoType.cells.rawValue, cap = AmmoType.cells.capacity
+        for i in sockets.indices {
+            sockets[i].pulse += dt
+            if didCharge || sockets[i].charge <= 0 || player.ammo[ci] >= cap { continue }
+            if vlen(sockets[i].pos - player.pos) < socketRange {
+                let take = min(max(1, Int(socketRechargeRate * dt)), min(cap - player.ammo[ci], sockets[i].charge))
+                if take > 0 {
+                    player.ammo[ci] += take; sockets[i].charge -= take
+                    player.pickupFlash = max(player.pickupFlash, 0.18)
+                    didCharge = true
+                }
+            }
+        }
+        if didCharge && !recharging { message("RECHARGING PLASMA CELLS"); audio.pickup() }
+        recharging = didCharge
     }
 
     private func projColor(_ k: ProjectileKind) -> UInt32 {

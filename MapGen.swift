@@ -18,13 +18,12 @@ struct GeneratedLevel {
     let monsters: [MonsterSpawn]
     let items: [ItemSpawn]
     let drums: [SIMD2<Float>]      // fuel-drum props (refuel + shootable bombs)
+    let sockets: [SIMD2<Float>]    // plasma recharge stations (top up cells; anti-softlock)
     let colonyName: String
     let secretCount: Int
 }
 
 enum MapGen {
-    static let colonies = ["DEMETER", "TANTALUS", "BOREAS", "PANDORA", "VULCAN", "VESPER"]
-
     struct Theme {
         let walls: [WallTex]
         let accent: WallTex
@@ -42,7 +41,7 @@ enum MapGen {
     static func theme(_ ci: Int, level: Int) -> Theme {
         let accents: [WallTex] = [.computer, .glass, .hazard, .litPanel]
         let acc = accents[ci % accents.count]
-        switch level {
+        switch Progression.floorInBuilding(level) {   // material tier resets each citadel
         case 1...2:   // surface facility — clean, lit, working
             return Theme(walls: [.brushedSteel, .steelPanel, .litPanel], accent: acc,
                          floor: .metalFloor, ceil: .ceilTech, hazardFloor: .nukage)
@@ -230,11 +229,11 @@ enum MapGen {
         Lighting.bake(map, level: level)
 
         // ── spawns ──
-        let (monsters, items, drums) = populate(map: map, rooms: rooms, level: level, theme: th,
+        let (monsters, items, drums, sockets) = populate(map: map, rooms: rooms, level: level, theme: th,
                                                 keyCells: keyCells, exitRoomIndex: rooms.count - 1, rng: &rng)
 
-        return GeneratedLevel(map: map, monsters: monsters, items: items, drums: drums,
-                              colonyName: colonies[colonyIndex % colonies.count], secretCount: secretCount)
+        return GeneratedLevel(map: map, monsters: monsters, items: items, drums: drums, sockets: sockets,
+                              colonyName: Progression.planets[colonyIndex % Progression.planets.count], secretCount: secretCount)
     }
 
     // a per-attempt scratch (single-threaded generation)
@@ -359,10 +358,11 @@ enum MapGen {
 
     private static func populate(map: GameMap, rooms: [Room], level: Int, theme: Theme,
                                  keyCells: [KeyColor: Int], exitRoomIndex: Int, rng: inout Rng)
-        -> ([MonsterSpawn], [ItemSpawn], [SIMD2<Float>]) {
+        -> ([MonsterSpawn], [ItemSpawn], [SIMD2<Float>], [SIMD2<Float>]) {
         var monsters: [MonsterSpawn] = []
         var items: [ItemSpawn] = []
         var drums: [SIMD2<Float>] = []
+        var sockets: [SIMD2<Float>] = []
 
         func center(_ cell: Int) -> SIMD2<Float> { SIMD2(Float(cell % map.w) + 0.5, Float(cell / map.w) + 0.5) }
         func randCell(in r: Room) -> Int? {
@@ -478,7 +478,25 @@ enum MapGen {
                 }
             }
         }
-        return (monsters, items, drums)
+        // recharge sockets — a couple of fixed plasma-cell stations per level so a
+        // marine who runs the rifle dry against the (plasma-only) Queen can top up
+        // and isn't softlocked. Spread out, clear of drums / pickups / the spawn.
+        if rooms.count > 1 {
+            for _ in 0..<2 {                                     // "not many, just a couple"
+                for _ in 0..<12 {
+                    let r = rooms[rng.i(1, rooms.count - 1)]
+                    guard let c = randCell(in: r) else { continue }
+                    let p = center(c)
+                    if sockets.contains(where: { vlen($0 - p) < 3.0 }) { continue }      // keep them apart
+                    if drums.contains(where: { vlen($0 - p) < 1.0 }) { continue }
+                    if items.contains(where: { vlen($0.pos - p) < 1.0 }) { continue }
+                    if vlen(map.playerStart - p) < 1.5 { continue }
+                    sockets.append(p)
+                    break
+                }
+            }
+        }
+        return (monsters, items, drums, sockets)
     }
 
     private static func pickItem(level: Int, rng: inout Rng) -> ItemKind {

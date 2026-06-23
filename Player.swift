@@ -3,7 +3,7 @@
 // Position/orientation, the vitals (health + armour), the arsenal and ammo
 // pools, held keys, and the transient view state (weapon bob, muzzle flash,
 // hurt/pickup screen flashes, the HUD face look direction). World mutates it;
-// HUD and Raycaster read it.
+// HUD and the renderer read it.
 
 import Foundation
 import simd

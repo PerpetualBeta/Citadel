@@ -35,11 +35,6 @@ if ProcessInfo.processInfo.environment["CITADEL_MATERIALS"] != nil {
     exit(0)
 }
 
-if let v = ProcessInfo.processInfo.environment["CITADEL_LIGHT"] {
-    LightPreview.run(outDir: v.isEmpty || v == "1" ? nil : v)
-    exit(0)
-}
-
 if let v = ProcessInfo.processInfo.environment["CITADEL_BEAUTY"] {
     BeautyProof.run(outDir: v.isEmpty || v == "1" ? nil : v)
     exit(0)

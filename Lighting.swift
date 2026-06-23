@@ -24,21 +24,15 @@ import simd
 enum Lighting {
 
     // ── per-depth ambient fill ────────────────────────────────────────────────
-    // The colour (and rough level) the unlit world settles to. Mirrors the depth
-    // bands in MapGen.theme so lighting and materials shift together.
-    /// 8 floors per building; clearing all 8 hyperspaces to the next of 6 planets,
-    /// then it repeats forever. Depth fiction (lighting tier + flooding) is keyed to
-    /// the floor WITHIN the building, so every building descends surface→depths and
-    /// resets on arrival at the next planet.
-    static let floorsPerBuilding = 8
-    static func floorInBuilding(_ level: Int) -> Int { ((max(1, level) - 1) % floorsPerBuilding) + 1 }
-
+    // The colour the unlit world settles to. Keyed to the floor WITHIN the citadel
+    // (Progression.floorInBuilding) and mirroring MapGen.theme's depth bands, so
+    // lighting + materials descend surface→depths together and reset each building.
     static func ambient(level: Int) -> SIMD3<Float> {
         // The settling dark is now genuinely DARK — the level reads as
         // intimidating and the headlamp does the seeing. Emitters (panels,
         // computers, the exit switch, hazard pools) are unchanged, so lit
         // fixtures still pool bright and serve as navigational landmarks.
-        switch floorInBuilding(level) {        // 1-2 surface · 3-4 workings · 5-6 deep · 7-8 depths
+        switch Progression.floorInBuilding(level) {  // 1-2 surface · 3-4 workings · 5-6 deep · 7-8 depths
         case 1...2:  return SIMD3(0.25, 0.28, 0.36)   // surface facility — cool worklight, dimmed
         case 3...4:  return SIMD3(0.27, 0.22, 0.16)   // industrial workings — amber sodium grime
         case 5...6:  return SIMD3(0.17, 0.18, 0.24)   // deep workings — cold, failing steel-light
@@ -52,7 +46,7 @@ enum Lighting {
     /// the lowest floors. Keyed to floor-within-building, like `ambient`. (Liquid
     /// pools — nukage, blood — stay locally reflective at any depth; in-shader.)
     static func floodLevel(level: Int) -> Float {
-        switch floorInBuilding(level) {
+        switch Progression.floorInBuilding(level) {
         case 8:  return 0.85                          // the lowest floor — drainage gone, standing water
         case 7:  return 0.30                          // nearing the bottom — water creeping in
         default: return 0.0                           // dry industrial deck
