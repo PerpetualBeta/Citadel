@@ -196,14 +196,30 @@ enum MeshWeapons {
     }
 
     private static func drawFlash(_ px: inout [UInt32], _ w: Int, _ h: Int, _ cx: Int, _ cy: Int, _ r: Int, _ c: UInt32) {
+        // A soft radial bloom: white-hot core fading through the flash colour to
+        // transparent — no hard spikes. Partial alpha on the empty background lets
+        // the HUD blit feather it over the world; over the weapon it composites on.
         let white = packRGBA(255, 255, 244)
-        let mid = mixRGBA(c, white, 0.55)
-        for a in stride(from: 0, to: 360, by: 20) {
-            let rad = Float(a) * .pi / 180
-            let ex = cx + Int(cos(rad) * Float(r + 10)), ey = cy + Int(sin(rad) * Float(r + 10))
-            line(&px, w, h, cx, cy, ex, ey, c)
+        let rad = Float(r) * 1.5                       // halo reaches a little past r
+        let ri = Int(rad.rounded(.up))
+        for j in max(0, cy - ri)...min(h - 1, cy + ri) {
+            for i in max(0, cx - ri)...min(w - 1, cx + ri) {
+                let dx = Float(i - cx), dy = Float(j - cy)
+                let d = (dx * dx + dy * dy).squareRoot()
+                if d >= rad { continue }
+                let t = d / rad                        // 0 core → 1 edge
+                let glowA = (1 - t) * (1 - t)          // soft quadratic falloff
+                if glowA <= 0.004 { continue }
+                let glow = mixRGBA(white, c, min(1, t * 1.5))   // white core → flash colour
+                let idx = j * w + i
+                let ex = px[idx]
+                if (ex >> 24) == 0 {
+                    px[idx] = (UInt32(glowA * 255) << 24) | (glow & 0x00FFFFFF)
+                } else {
+                    px[idx] = 0xFF000000 | (mixRGBA(ex, glow, glowA) & 0x00FFFFFF)
+                }
+            }
         }
-        disc(&px, w, h, cx, cy, r, c); disc(&px, w, h, cx, cy, r * 2 / 3, mid); disc(&px, w, h, cx, cy, r / 3, white)
     }
     private static func disc(_ px: inout [UInt32], _ w: Int, _ h: Int, _ cx: Int, _ cy: Int, _ r: Int, _ c: UInt32) {
         for j in (cy - r)...(cy + r) { for i in (cx - r)...(cx + r) {
