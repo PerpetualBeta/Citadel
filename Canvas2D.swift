@@ -20,7 +20,7 @@ enum RenderConfig {
     // 8:5 aspect and 2:1 viewport are preserved at any scale, so FOV/projection
     // are unchanged; you just get more pixels (smoother light, finer detail).
     //   3/2 → 960×600 · 2/1 → 1280×800 · 1/1 → 640×400
-    static let num = 3, den = 2
+    static let num = 2, den = 1
     static let baseWidth = 640, baseHeight = 400, baseStatusBar = 80
     static let width = baseWidth * num / den                  // 960
     static let height = baseHeight * num / den                // 600

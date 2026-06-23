@@ -13,7 +13,7 @@ enum Captures {
         let dir = URL(fileURLWithPath: outDir ?? FileManager.default.currentDirectoryPath
                         .appending("/docs/screenshots"))
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let scale = 4
+        let scale = ProcessInfo.processInfo.environment["CITADEL_SHOT_SCALE"].flatMap { Int($0) } ?? 4
         var n = 0
         func save(_ c: Canvas2D, _ label: String) {
             n += 1
@@ -131,11 +131,14 @@ enum Captures {
         // weapon contact sheet — every viewmodel at once (grid sized to the count,
         // labels pulled from each weapon's own def so adding a weapon can't desync)
         let wcount = WeaponKind.allCases.count
-        let cols = 3, cw = 214, ch = 184, rows = (wcount + cols - 1) / cols
+        let wspr = WeaponKind.allCases.map { Sprites.shared.weaponFrames($0)[0] }
+        let cols = 3, rows = (wcount + cols - 1) / cols
+        let cw = (wspr.map { $0.w }.max() ?? 1) + 24          // cells sized to the actual
+        let ch = (wspr.map { $0.h }.max() ?? 1) + 28          // sprites (which scale with res)
         let sheet = Canvas2D(width: cols * cw, height: rows * ch)
         sheet.clear(packRGBA(24, 24, 30))
         for (i, k) in WeaponKind.allCases.enumerated() {
-            let spr = Sprites.shared.weaponFrames(k)[0]
+            let spr = wspr[i]
             let gx = (i % cols) * cw, gy = (i / cols) * ch
             sheet.strokeRect(gx + 2, gy + 2, cw - 4, ch - 4, packRGBA(60, 62, 74))
             sheet.blitBitmap(spr.pixels, spr.w, spr.h, gx + (cw - spr.w) / 2, gy + (ch - spr.h) / 2 + 6)
@@ -145,11 +148,13 @@ enum Captures {
         print("  wrote 07-weapons.png")
 
         // item contact sheet
-        let icols = 4, icw = 92, irows = (ItemKind.allCases.count + icols - 1) / icols
+        let icols = 4, irows = (ItemKind.allCases.count + icols - 1) / icols
+        let ispr = ItemKind.allCases.map { Sprites.shared.item($0) }
+        let icw = (ispr.map { max($0.w, $0.h) }.max() ?? 1) + 24   // square cells, sized to sprites
         let isheet = Canvas2D(width: icols * icw, height: irows * icw)
         isheet.clear(packRGBA(26, 26, 32))
-        for (i, k) in ItemKind.allCases.enumerated() {
-            let spr = Sprites.shared.item(k)
+        for (i, _) in ItemKind.allCases.enumerated() {
+            let spr = ispr[i]
             let gx = (i % icols) * icw, gy = (i / icols) * icw
             isheet.strokeRect(gx + 1, gy + 1, icw - 2, icw - 2, packRGBA(56, 58, 70))
             isheet.blitBitmap(spr.pixels, spr.w, spr.h, gx + (icw - spr.w) / 2, gy + (icw - spr.h) / 2)
@@ -172,15 +177,22 @@ enum Captures {
         print("  wrote 09-monsters.png")
 
         // prop contact sheet — the fuel drum + proximity mine
-        let pcw = 120, ph = 150
+        let pspr = PropKind.allCases.map { Sprites.shared.prop($0) }
+        let pcw = (pspr.map { $0.w }.max() ?? 1) + 24
+        let ph = (pspr.map { $0.h }.max() ?? 1) + 28
         let psheet = Canvas2D(width: PropKind.allCases.count * pcw, height: ph)
         psheet.clear(packRGBA(22, 22, 28))
         for (i, k) in PropKind.allCases.enumerated() {
-            let spr = Sprites.shared.prop(k)
+            let spr = pspr[i]
             let gx = i * pcw
             psheet.strokeRect(gx + 1, 1, pcw - 2, ph - 2, packRGBA(56, 58, 70))
             psheet.blitBitmap(spr.pixels, spr.w, spr.h, gx + (pcw - spr.w) / 2, ph - spr.h - 8)
-            let name = k == .fuelDrum ? "FUEL DRUM" : "PROX MINE"
+            let name: String
+            switch k {
+            case .fuelDrum: name = "FUEL DRUM"
+            case .proxMine: name = "PROX MINE"
+            case .socket:   name = "RECHARGE"
+            }
             psheet.label(name, gx + 6, ph - 16, size: 12, color: packRGBA(236, 200, 150), weight: .bold)
         }
         writePNG(psheet.framebuffer, w: PropKind.allCases.count * pcw, h: ph, scale: 2, to: dir.appendingPathComponent("11-props.png"))

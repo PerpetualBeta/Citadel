@@ -62,7 +62,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         return o;
     }
     fragment float4 f_blit(VSOut in [[stage_in]], texture2d<float> tex [[texture(0)]]) {
-        constexpr sampler s(filter::nearest, address::clamp_to_edge);
+        constexpr sampler s(filter::linear, address::clamp_to_edge);
         return tex.sample(s, in.uv);
     }
     """

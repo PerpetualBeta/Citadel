@@ -180,14 +180,19 @@ enum MeshWeapons {
     static func model(_ k: WeaponKind) -> Model3 { build(k).0 }
 
     private static func render(_ model: Model3, muzzle: SIMD3<Float>, flash: UInt32?, recoil: Float) -> Sprite {
+        // Render the viewmodel at the framebuffer scale so the HUD blits it 1:1
+        // (crisp) instead of nearest-upscaling a small source. Scaling w/h and the
+        // focal length together preserves the framing — it's pure supersampling.
+        let s = Float(RenderConfig.num) / Float(RenderConfig.den)
+        let w = Int(Float(TW) * s), h = Int(Float(TH) * s), f = F * s
         let pitch: Float = -0.34 - (recoil > 0 ? 0.05 : 0)   // slight top-down view; barrel still aims forward
         let yaw: Float = 0                                    // centred → points straight at the crosshair
         let t = SIMD3<Float>(0, -1.0, 4.7 - recoil)           // held low-centre; recoil pulls toward camera
-        var px = MeshRender.render(model, pitch: pitch, yaw: yaw, t: t, f: F, w: TW, h: TH)
-        if let fc = flash, let (mx, my) = MeshRender.projectPoint(muzzle, pitch: pitch, yaw: yaw, t: t, f: F, w: TW, h: TH) {
-            drawFlash(&px, TW, TH, mx, my, 20, fc)
+        var px = MeshRender.render(model, pitch: pitch, yaw: yaw, t: t, f: f, w: w, h: h)
+        if let fc = flash, let (mx, my) = MeshRender.projectPoint(muzzle, pitch: pitch, yaw: yaw, t: t, f: f, w: w, h: h) {
+            drawFlash(&px, w, h, mx, my, Int(20 * s), fc)
         }
-        return Sprite(w: TW, h: TH, pixels: px)
+        return Sprite(w: w, h: h, pixels: px)
     }
 
     private static func drawFlash(_ px: inout [UInt32], _ w: Int, _ h: Int, _ cx: Int, _ cy: Int, _ r: Int, _ c: UInt32) {
@@ -253,15 +258,19 @@ enum MeshItems {
         switch k {
         case .weaponRocket: return weaponPickup(.rocket)
         default:
-            let px = MeshRender.render(build(k), pitch: -0.5, yaw: 0.6, t: SIMD3(0, -0.05, 3.3), f: 82, w: 54, h: 54)
-            return Sprite(w: 54, h: 54, pixels: px)
+            let s = Float(RenderConfig.num) / Float(RenderConfig.den)
+            let d = Int(54 * s)
+            let px = MeshRender.render(build(k), pitch: -0.5, yaw: 0.6, t: SIMD3(0, -0.05, 3.3), f: 82 * s, w: d, h: d)
+            return Sprite(w: d, h: d, pixels: px)
         }
     }
 
     private static func weaponPickup(_ wk: WeaponKind) -> Sprite {
         // the held weapon model, laid at a floor-pickup angle
-        let px = MeshRender.render(MeshWeapons.model(wk), pitch: -0.15, yaw: 1.22, t: SIMD3(0, -0.25, 9.5), f: 132, w: 86, h: 56)
-        return Sprite(w: 86, h: 56, pixels: px)
+        let s = Float(RenderConfig.num) / Float(RenderConfig.den)
+        let w = Int(86 * s), h = Int(56 * s)
+        let px = MeshRender.render(MeshWeapons.model(wk), pitch: -0.15, yaw: 1.22, t: SIMD3(0, -0.25, 9.5), f: 132 * s, w: w, h: h)
+        return Sprite(w: w, h: h, pixels: px)
     }
 
     private static func build(_ k: ItemKind) -> Model3 {
@@ -319,21 +328,27 @@ enum PropKind: Int, CaseIterable { case fuelDrum, proxMine, socket }
 
 enum MeshProps {
     static func sprite(_ k: PropKind) -> Sprite {
+        // billboards are scaled to screen size at draw time, so render the source
+        // at the framebuffer scale to give drawSprite a hi-res sprite to sample.
+        let s = Float(RenderConfig.num) / Float(RenderConfig.den)
         switch k {
         case .fuelDrum:
             // a standing industrial drum — viewed near-level so it reads as a
             // floor prop you walk up to, not a top-down pickup
-            let px = MeshRender.render(drum(), pitch: -0.16, yaw: 0.5, t: SIMD3(0, -0.08, 4.1), f: 96, w: 60, h: 96)
-            return Sprite(w: 60, h: 96, pixels: px)
+            let w = Int(60 * s), h = Int(96 * s)
+            let px = MeshRender.render(drum(), pitch: -0.16, yaw: 0.5, t: SIMD3(0, -0.08, 4.1), f: 96 * s, w: w, h: h)
+            return Sprite(w: w, h: h, pixels: px)
         case .proxMine:
             // a low puck on the floor — steeper top-down so the trigger lamp shows
-            let px = MeshRender.render(mine(), pitch: -0.66, yaw: 0.4, t: SIMD3(0, 0.04, 2.7), f: 84, w: 54, h: 40)
-            return Sprite(w: 54, h: 40, pixels: px)
+            let w = Int(54 * s), h = Int(40 * s)
+            let px = MeshRender.render(mine(), pitch: -0.66, yaw: 0.4, t: SIMD3(0, 0.04, 2.7), f: 84 * s, w: w, h: h)
+            return Sprite(w: w, h: h, pixels: px)
         case .socket:
             // a plasma recharge pedestal — a standing charging station with a
             // glowing energy cell, framed like the drum (a prop you walk up to)
-            let px = MeshRender.render(socket(), pitch: -0.16, yaw: 0.5, t: SIMD3(0, -0.08, 4.1), f: 96, w: 60, h: 96)
-            return Sprite(w: 60, h: 96, pixels: px)
+            let w = Int(60 * s), h = Int(96 * s)
+            let px = MeshRender.render(socket(), pitch: -0.16, yaw: 0.5, t: SIMD3(0, -0.08, 4.1), f: 96 * s, w: w, h: h)
+            return Sprite(w: w, h: h, pixels: px)
         }
     }
 

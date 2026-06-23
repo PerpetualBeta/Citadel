@@ -50,11 +50,11 @@ struct HUD {
         let bobX = Int(sin(p.bobPhase) * 7 * p.bob * k)
         let bobY = Int(abs(sin(p.bobPhase * 2)) * 6 * p.bob * k)
         let lower = Int(p.switchAnim * 200 * k)
-        let sw = Int(Float(spr.w) * k), sh = Int(Float(spr.h) * k)
+        let sw = spr.w, sh = spr.h           // viewmodel is rendered at framebuffer scale → blit 1:1
         let dx = (W - sw) / 2 + bobX
         let dy = viewH - sh + bobY + lower + uiS(6)
         if p.muzzle > 0 { c.fillRectBlend(0, viewH - uiS(90), W, uiS(90), packRGBA(255, 228, 150), 0.12) }
-        c.blitBitmapF(spr.pixels, spr.w, spr.h, dx, dy, scale: k)
+        c.blitBitmapF(spr.pixels, spr.w, spr.h, dx, dy, scale: 1)
     }
 
     private func drawMessages(_ world: World, _ c: Canvas2D) {
