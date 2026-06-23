@@ -622,16 +622,22 @@ enum GPURaymarch {
             // keep a cold WET rim on the silhouette, and bleed deep red into the
             // crevices (organic-SDF "bleed"): a glistening threat in the dark, not a
             // brightly-lit blob. (The raycaster gets this for free from its baked sprite.)
+            float3 creatureEdge = float3(0.0);
             if (isCreature) {
-                // the glossy wet-chitin highlights (accumulated above) already model
-                // the form on the dark body — add only a subtle cold edge so the
-                // silhouette reads in the dark, plus a faint organic 'bleed' deep in
-                // the crevices. No body-darkening here: diffAlb already did that.
-                float rim = pow(1.0 - max(0.0, dot(n, V)), 4.0);
-                lit += rim * float3(0.10, 0.14, 0.18) * (0.4 + 0.6 * ao)              // clean cold wet silhouette edge
-                     + float3(0.10, 0.009, 0.007) * (1.0 - ao) * 0.5;                 // faint sub-surface bleed
+                // A cold WET silhouette rim — wider and brighter than before, and
+                // (below) added AFTER the aerial falloff, scaled UP with distance, so
+                // the outline READS at any range and in the dark: a glistening threat
+                // emerging from black, not a creature that vanishes ten cells away.
+                // The body itself stays dark (diffAlb already pulled it down) — the
+                // edge does the reading, so it never becomes a brightly-lit blob.
+                float rim = pow(1.0 - max(0.0, dot(n, V)), 2.2);
+                creatureEdge = rim * float3(0.34, 0.46, 0.58) * (0.5 + 0.5 * ao);     // self-lit cold wet edge
+                lit += float3(0.10, 0.009, 0.007) * (1.0 - ao) * 0.5;                 // faint sub-surface bleed
             }
             col = lit * exp(-t * 0.032);                         // aerial falloff into dread-dark
+            // the silhouette is distance-stable: strengthen it the farther the
+            // creature is, exactly countering the body's fade so it never disappears.
+            if (isCreature) col += creatureEdge * mix(0.55, 1.30, clamp(t / 14.0, 0.0, 1.0));
           }
         } else {
             col = float3(0.010, 0.012, 0.020);
@@ -758,7 +764,7 @@ enum GPURaymarch {
 
     /// Pack visible monsters into GPU buffers: scale each creature to fit the
     /// room height (feet on the floor), bound it, and flatten its shapes.
-    static func packCreatures(_ monsters: [Monster], shapeBudget: Int = 220) -> ([GMonster], [GShape]) {
+    static func packCreatures(_ monsters: [Monster], shapeBudget: Int = 360) -> ([GMonster], [GShape]) {
         var mons: [GMonster] = [], shapes: [GShape] = []
         for m in monsters {
             let sl = poseShapes(m)
@@ -770,10 +776,12 @@ enum GPURaymarch {
                 hiY = max(hiY, max(sh.a.y, sh.b.y) + r)
             }
             let bodyH = max(0.1, hiY - loY), boundCY = (loY + hiY) / 2
-            var boundR: Float = 0
+            var boundR: Float = 0, hw: Float = 0
             for sh in sl {
                 boundR = max(boundR, simd_length(SIMD3(sh.a.x, sh.a.y - boundCY, sh.a.z)) + sh.r1)
                 boundR = max(boundR, simd_length(SIMD3(sh.b.x, sh.b.y - boundCY, sh.b.z)) + sh.r2)
+                hw = max(hw, simd_length(SIMD2(sh.a.x, sh.a.z)) + sh.r1)   // horizontal half-width
+                hw = max(hw, simd_length(SIMD2(sh.b.x, sh.b.z)) + sh.r2)
             }
             boundR += 0.06
             // Reproduce the sprite's apparent size: the bake tile spanned viewH
@@ -784,7 +792,12 @@ enum GPURaymarch {
             let fit = m.def.billboardH / MonsterBake.cdef(m.kind).viewH
             // a burning corpse shrinks toward a charred husk (~⅓ size) and darkens —
             // it doesn't vanish; scorched remains stay on the floor
-            let scale = min(fit, 0.92 / bodyH) * max(0.34, 1 - m.burn * 0.66)
+            var scale = min(fit, 0.92 / bodyH) * max(0.34, 1 - m.burn * 0.66)
+            // Keep the rendered body within the collision radius so it can't bulge
+            // through walls/doors: movement only keeps the CENTER ~radius clear, so a
+            // wide pose (extended claws, the Queen's bulk) would otherwise poke past
+            // the wall it's pressed against. Clamp world half-width (hw·scale) ≤ radius.
+            if hw > 0.001 { scale = min(scale, m.def.radius / hw) }
             let darks = 1 - max(0, min(1, (m.burn - 0.3) / 0.7)) * 0.82      // → charred near-black
             let start = shapes.count
             for sh in sl {

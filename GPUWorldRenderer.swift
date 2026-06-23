@@ -117,8 +117,21 @@ final class GPUWorldRenderer {
             if d > 2 && simd_dot(rel, fwd) < -0.5 { continue }   // clearly behind the camera
             cand.append((m, d))
         }
-        cand.sort { $0.1 < $1.1 }
-        return cand.prefix(6).map { $0.0 }
+        // The Queen is the level objective and the most shape-heavy creature; never
+        // let nearer drones crowd her out of the capped set (she'd wink in and out,
+        // "especially the Queen"). Float her to the front so she's always included
+        // and packed first — guaranteeing she fits the GPU shape budget. Then fill
+        // the remaining slots with the nearest.
+        cand.sort { a, b in
+            let qa = (a.0.kind == .queen), qb = (b.0.kind == .queen)
+            if qa != qb { return qa }
+            return a.1 < b.1
+        }
+        // Cap the render set for perf, but generously: a level-8 room spawns up to
+        // ~6 drones plus the Queen, and neighbours converge — a cap of 6 left the
+        // extras invisible (not in the GPU buffer at all). 10 covers a Queen + a full
+        // pack; only the very farthest of a huge convergence can still drop.
+        return cand.prefix(10).map { $0.0 }
     }
 
     /// Nearest non-taken pickups in view — rendered as SDF objects this frame.
