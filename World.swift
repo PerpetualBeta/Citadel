@@ -104,6 +104,7 @@ final class World {
     var drums: [Drum] = []             // fuel drums (refuel + shootable bombs)
     var deployedMines: [Mine] = []     // proximity mines the marine has dropped
     var sockets: [Socket] = []         // fixed plasma recharge stations (anti-softlock)
+    var props: [Prop] = []             // decorative furniture/fixtures (no collision; set-dressing)
 
     // resource-prop tuning — one table so balancing lives in one place
     private let drumFuel = 150               // flamethrower fuel a full drum holds
@@ -155,6 +156,7 @@ final class World {
         for s in gen.items { items.append(Item(kind: s.kind, pos: s.pos, bob: rng.f(0, 6.28))) }
         for d in gen.drums { drums.append(Drum(pos: d, fuel: drumFuel, health: drumHealth)) }
         for s in gen.sockets { sockets.append(Socket(pos: s, charge: socketCharge)) }
+        self.props = gen.props
         self.monsterTotal = monsters.count
         buildSteamVents()
         buildSparkSites()

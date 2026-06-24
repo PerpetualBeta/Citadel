@@ -50,6 +50,26 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_AUTOMAP"] {
     exit(0)
 }
 
+if let v = ProcessInfo.processInfo.environment["CITADEL_ROOMS"] {
+    RoomShots.run(outDir: v.isEmpty || v == "1" ? nil : v)
+    exit(0)
+}
+
+// Single-instance guard. Two live copies each sphere-trace the scene and contend
+// for the GPU + the per-frame readback — enough stacked instances will drag the
+// whole machine to a beachball (a real hazard during rapid dev relaunches). If
+// another Citadel is already running, hand focus to it and bow out. Headless
+// modes (smoke / captures) have already exited above, so this only gates the GUI.
+if let bundleID = Bundle.main.bundleIdentifier {
+    let mine = NSRunningApplication.current.processIdentifier
+    let other = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+        .first { $0.processIdentifier != mine }
+    if let other {
+        other.activate()
+        exit(0)
+    }
+}
+
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = AppDelegate()

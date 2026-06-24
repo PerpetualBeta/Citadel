@@ -52,6 +52,7 @@ SWIFT_SOURCES    := main.swift \
                     Weapon.swift \
                     Monster.swift \
                     Item.swift \
+                    Prop.swift \
                     Projectile.swift \
                     World.swift \
                     HUD.swift \
@@ -68,6 +69,7 @@ SWIFT_SOURCES    := main.swift \
                     OptionsSheet.swift \
                     SmokeTest.swift \
                     Captures.swift \
+                    RoomShots.swift \
                     ArtPreview.swift \
                     CreatureLab.swift \
                     MaterialPreview.swift \

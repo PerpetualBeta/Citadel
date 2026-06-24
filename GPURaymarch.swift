@@ -360,13 +360,28 @@ enum GPURaymarch {
             float gd = gridSDF(p, dt, s, mapWH, ceilH);
             float itemMat = 0.0;
             float4 cf = (nMon > 0) ? creatureField(p, nMon, mons, shapes, itemMat) : float4(0.0, 0.0, 0.0, 1e9);
-            float3 alb; float emis = 0.0; bool reflective = false; bool isItem = false; bool isProj = false; bool isCreature = false;
+            float3 alb; float emis = 0.0; bool reflective = false; bool isItem = false; bool isProj = false; bool isCreature = false; bool isProp = false;
             float rough = 0.7, metal = 0.0;   // PBR surface params, set per surface below
-            if (cf.w < gd) {                                     // a creature / pickup / projectile surface
+            if (cf.w < gd) {                                     // a creature / pickup / projectile / prop surface
                 alb = cf.rgb;
                 isItem = itemMat > 0.5 && itemMat < 1.5;         // c.z = 1 → pickup
-                isProj = itemMat > 1.5;                          // c.z = 2 → glowing projectile orb
-                isCreature = !isItem && !isProj;                 // c.z = 0 → living flesh
+                isProj = itemMat > 1.5 && itemMat < 2.5;         // c.z = 2 → glowing projectile orb
+                isProp = itemMat > 2.5;                          // c.z = 3 → static furniture / fixture
+                isCreature = itemMat < 0.5;                      // c.z = 0 → living flesh
+                if (isProp) {                                    // MATTE battle-worn steel (low spec → not shiny plastic); a powered screen self-glows
+                    rough = 0.82; metal = 0.12;
+                    bool screen = dot(alb, float3(0.299, 0.587, 0.114)) > 0.95;   // the lit terminal stays clean + bright
+                    if (!screen) {
+                        float gr = fbm2(p.xz * 2.3 + p.y * 1.9);
+                        alb *= 1.0 - 0.45 * smoothstep(0.40, 0.86, gr);             // soot/grime patches
+                        float low = clamp(1.0 - p.y * 2.4, 0.0, 1.0);
+                        float blood = smoothstep(0.62, 0.86, fbm2(p.xz * 1.7 + 12.0)) * low;
+                        alb = mix(alb, float3(0.15, 0.02, 0.018), blood * 0.6);     // dried blood, pooled low
+                        rough = clamp(0.72 + 0.3 * gr, 0.55, 0.97);                 // rough, matte, uneven — kills the sheen
+                    }
+                    float lum = dot(alb, float3(0.299, 0.587, 0.114));
+                    emis = smoothstep(1.0, 1.45, lum) * 2.4;                        // only the powered screen pushes past 1 → glows
+                }
                 if (isCreature) {
                     rough = 0.34; metal = 0.0;                   // glossy WET CHITIN
                     // scaly micro-relief — breaks the gloss into wet organic scales
@@ -993,6 +1008,104 @@ enum GPURaymarch {
             mons.append(GMonster(a: SIMD4(d.pos.x, d.pos.y, 0, 1),
                                  b: SIMD4(Float(start), Float(sl.count), boundR, boundCY),
                                  c: SIMD4(loY, 0, 0, 0)))
+        }
+        return (mons, shapes)
+    }
+
+    // ── environmental props: furniture & fixtures (static SDF, material c.z = 3) ─
+    // Authored feet-on-floor (y≈0) in a 1-unit-tall room (floor 0 → ceiling 1),
+    // FRONT facing local +Z and the wall behind at local −Z, so MapGen orients
+    // each piece by setting yaw = atan2(-inward.x, inward.z). Built from the same
+    // iBox/iCone/iSphere parts as the pickups, but flagged opaque (c.z = 3) so the
+    // kernel shades them as lit industrial steel — a powered terminal screen is
+    // authored over-bright so it self-glows.
+    static func furnitureShapes(_ kind: FurnitureKind) -> [GShape] {
+        let steel = SIMD3<Float>(0.40, 0.42, 0.47), darkM = SIMD3<Float>(0.13, 0.13, 0.16)
+        let d: Float = 0.0025
+        switch kind {
+        case .bunk:                                            // barracks bunk (platform bed) — pillow at the wall (−Z)
+            let mat = SIMD3<Float>(0.34, 0.37, 0.32), blanket = SIMD3<Float>(0.36, 0.25, 0.17)
+            let pillow = SIMD3<Float>(0.60, 0.58, 0.52)
+            let hl: Float = 0.42, hw: Float = 0.20
+            // Lean (5 shapes, no separate legs) — every shape is re-evaluated for any
+            // ray inside the bunk's bounding sphere, so fewer parts = less GPU.
+            return [iBox(SIMD3(0, 0.07, 0), SIMD3(hw + 0.02, 0.07, hl + 0.02), 0.012, steel, 0.006),        // platform base (sits on the deck)
+                    iBox(SIMD3(0, 0.155, 0.02), SIMD3(hw, 0.04, hl - 0.02), 0.03, mat, 0.012),              // mattress
+                    iBox(SIMD3(0, 0.175, 0.16), SIMD3(hw - 0.01, 0.03, hl - 0.22), 0.02, blanket, 0.012),   // blanket, foot half
+                    iBox(SIMD3(0, 0.185, -hl + 0.11), SIMD3(hw - 0.03, 0.034, 0.085), 0.03, pillow, 0.01),  // pillow at the head
+                    iBox(SIMD3(0, 0.22, -hl - 0.01), SIMD3(hw + 0.02, 0.14, 0.02), 0.01, steel, 0.005)]     // headboard against the wall
+        case .desk:                                            // office desk + still-powered terminal facing the room
+            let top = SIMD3<Float>(0.37, 0.38, 0.41), screen = SIMD3<Float>(0.42, 1.55, 1.25)
+            return [iBox(SIMD3(0, 0.30, 0), SIMD3(0.36, 0.018, 0.19), 0.008, top, 0.005),                  // desk top
+                    iBox(SIMD3(0, 0.15, -0.15), SIMD3(0.34, 0.15, 0.018), 0.004, top * 0.8, 0.005),        // modesty panel (wall side)
+                    iBox(SIMD3(-0.30, 0.15, 0.13), SIMD3(0.025, 0.15, 0.025), 0.004, steel, d),            // front legs
+                    iBox(SIMD3( 0.30, 0.15, 0.13), SIMD3(0.025, 0.15, 0.025), 0.004, steel, d),
+                    iBox(SIMD3(0, 0.45, -0.05), SIMD3(0.155, 0.115, 0.045), 0.01, darkM, 0.005),           // monitor housing
+                    iBox(SIMD3(0, 0.45, 0.0), SIMD3(0.125, 0.092, 0.012), 0.004, screen, d),               // glowing screen (faces +Z)
+                    iBox(SIMD3(0, 0.315, 0.06), SIMD3(0.10, 0.012, 0.05), 0.004, darkM, d)]                // keyboard
+        case .chair:                                           // office chair (back at −Z so it tucks into a desk)
+            let c = SIMD3<Float>(0.19, 0.20, 0.23)
+            return [iBox(SIMD3(0, 0.21, 0), SIMD3(0.115, 0.02, 0.115), 0.02, c, 0.008),                    // seat
+                    iBox(SIMD3(0, 0.33, -0.10), SIMD3(0.115, 0.115, 0.018), 0.02, c, 0.008),               // backrest
+                    iCone(SIMD3(0, 0.0, 0), SIMD3(0, 0.20, 0), 0.024, 0.03, darkM),                        // post
+                    iBox(SIMD3(0, 0.02, 0), SIMD3(0.10, 0.014, 0.10), 0.01, darkM, d)]                     // base
+        case .locker:                                          // tall steel storage locker
+            let body = SIMD3<Float>(0.32, 0.34, 0.39), vent = SIMD3<Float>(0.17, 0.18, 0.21)
+            return [iBox(SIMD3(0, 0.42, -0.02), SIMD3(0.16, 0.42, 0.13), 0.01, body, 0.006),               // cabinet
+                    iBox(SIMD3(0, 0.55, 0.105), SIMD3(0.115, 0.095, 0.008), 0.004, vent, d),               // upper vents
+                    iBox(SIMD3(0, 0.30, 0.105), SIMD3(0.115, 0.095, 0.008), 0.004, vent, d),               // lower vents
+                    iBox(SIMD3(0.115, 0.40, 0.11), SIMD3(0.014, 0.05, 0.012), 0.004, darkM, d)]            // handle
+        case .wallPipe:
+            return pipeRunShapes(length: 1)                    // length comes from the Prop at pack time
+        }
+    }
+
+    /// A CONTINUOUS pipe run for the wall-ceiling corner: parallel pipes + a thin
+    /// conduit spanning `length` along local X, sat flush at the wall (local −Z) up
+    /// near the ceiling, with brackets at intervals. Pipes carry something somewhere
+    /// — so they run the length of the wall and tuck into the corner, never free-
+    /// stand mid-room or stop dead at one cell (the beauty-shot read).
+    static func pipeRunShapes(length: Float) -> [GShape] {
+        let pipe = SIMD3<Float>(0.38, 0.40, 0.44), rusty = SIMD3<Float>(0.32, 0.25, 0.17)
+        let darkM = SIMD3<Float>(0.12, 0.12, 0.15)
+        let h = max(0.6, length) * 0.5                         // half-run
+        let zw: Float = -0.40                                  // hard against the wall (cell centre is 0.5 off the wall face)
+        // Kept deliberately LEAN (2 pipes + a couple of saddles): a pipe run's
+        // bounding sphere is large, so every extra shape is evaluated for a big
+        // fraction of the room's rays — the GPU cost lives here, not in the look.
+        var out: [GShape] = [
+            iCone(SIMD3(-h, 0.86, zw), SIMD3(h, 0.86, zw), 0.050, 0.050, pipe),            // main feed pipe
+            iCone(SIMD3(-h, 0.74, zw + 0.05), SIMD3(h, 0.74, zw + 0.05), 0.036, 0.036, rusty)]   // return pipe, rustier, sits proud
+        var x = -h + 0.5                                       // saddle brackets clamping the run to the wall
+        while x <= h - 0.2 {
+            out.append(iBox(SIMD3(x, 0.80, zw + 0.03), SIMD3(0.018, 0.16, 0.09), 0.005, darkM, 0.004))
+            x += 2.4
+        }
+        return out
+    }
+
+    /// Pack furniture/fixtures into the shared GMonster/GShape buffers (no bob, no
+    /// spin — they sit where MapGen placed them, oriented by yaw). Material c.z = 3.
+    static func packProps(_ props: [Prop], budget: Int = 220) -> ([GMonster], [GShape]) {
+        var mons: [GMonster] = [], shapes: [GShape] = []
+        for pr in props {
+            let sl = pr.kind == .wallPipe ? pipeRunShapes(length: pr.length) : furnitureShapes(pr.kind)
+            if sl.isEmpty || shapes.count + sl.count > budget { break }
+            var loY: Float = 1e9, hiY: Float = -1e9
+            for sh in sl { let e = shapeYExtent(sh); loY = min(loY, e.lo); hiY = max(hiY, e.hi) }
+            let boundCY = (loY + hiY) / 2
+            var boundR: Float = 0
+            for sh in sl { boundR = max(boundR, shapeRadius(sh, boundCY)) }
+            boundR += 0.05
+            let start = shapes.count
+            shapes.append(contentsOf: sl)
+            // Floor furniture sits feet-on-deck (loY → floor); a WALL pipe is mounted
+            // up the wall, so it must keep its AUTHORED height (yOff 0) — flooring it
+            // dragged the run down into the bunks.
+            let yOff: Float = pr.kind == .wallPipe ? 0 : loY
+            mons.append(GMonster(a: SIMD4(pr.pos.x, pr.pos.y, pr.yaw, 1),
+                                 b: SIMD4(Float(start), Float(sl.count), boundR, boundCY),
+                                 c: SIMD4(yOff, 0, 3, 0)))   // c.z = 3 → opaque industrial prop
         }
         return (mons, shapes)
     }

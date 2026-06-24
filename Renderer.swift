@@ -49,6 +49,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // edge tracking
     private var pConfirm = false, pEsc = false, pBrief = false, pIntel = false
     private var pPause = false, pMute = false, pShot = false, pMap = false
+    private var pausedDrawn = false        // pause freezes the frame — render it ONCE, then idle (no GPU raymarch while paused → fans don't spin on a frozen scene)
 
     private static let blitShaderSource = """
     #include <metal_stdlib>
@@ -171,7 +172,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         if FeatureFlags.screenshotKey && rising(input.screenshot, pShot) { saveScreenshot() }
 
         if rising(input.map, pMap) { state = .automap }
-        else if rising(input.pause, pPause) { state = .paused }
+        else if rising(input.pause, pPause) { state = .paused; pausedDrawn = false }
         else if world.player.dead {
             deathTimer += dt
             if deathTimer > 1.3 { enterGameOver() }
@@ -183,8 +184,15 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     private func tickPaused(_ dt: Float) {
-        if let world = world { renderWorld(world); hud.draw(world, into: canvas) }
-        FrontEnd.paused(canvas)
+        // The scene is frozen, so raymarch it ONCE on entry and then leave the frame
+        // standing — present() keeps re-uploading the same pixels. Re-running the full
+        // GPU raymarch every frame for an unchanging image was pure waste (it pinned
+        // the GPU and span the fans on a paused game for no benefit).
+        if !pausedDrawn {
+            if let world = world { renderWorld(world); hud.draw(world, into: canvas) }
+            FrontEnd.paused(canvas)
+            pausedDrawn = true
+        }
         if rising(input.pause, pPause) { state = .playing }
         else if rising(input.esc, pEsc) { abandonRun() }
     }

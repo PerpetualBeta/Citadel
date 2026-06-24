@@ -53,8 +53,35 @@ enum SmokeTest {
         check(frames > 0, "world advanced \(frames) frames without crashing")
         check(world.score >= 0, "score is sane (\(world.score))")
 
-        // force-kill a monster to exercise the death + scoring path
-        if let i = world.monsters.firstIndex(where: { $0.alive }) {
+        // 2a2. integrity: an awake monster must NEVER end a tick standing inside a
+        // solid cell — they navigate the layout, never clip through a wall or a
+        // closed door. Wake every monster on a spread of depths, aim them all at the
+        // marine, sweep his facing so the pack converges from every side / corner,
+        // and assert no centre ever lands in solid for the whole chase.
+        var clipTicks = 0, clipWorst = ""
+        for lvl in [1, 3, 5, 7, 8] {
+            let w = World(level: lvl, colonyIndex: 0, seed: UInt64(lvl) &* 131 &+ 17)
+            for k in w.monsters.indices {
+                w.monsters[k].awake = true; w.monsters[k].state = .chase
+                w.monsters[k].hasSeen = true; w.monsters[k].lastSeen = w.player.pos
+            }
+            let patrol = InputState(); patrol.kb.forward = true
+            for f in 0..<900 {
+                w.player.dir = Float(f) * 0.02              // sweep so they approach from all bearings
+                w.update(dt: 1.0 / 60, input: patrol, audio: audio)
+                for m in w.monsters where m.alive {
+                    if w.map.blocksMovement(Int(m.pos.x), Int(m.pos.y)) {
+                        clipTicks += 1
+                        if clipWorst.isEmpty { clipWorst = "L\(lvl) \(m.kind) @(\(String(format: "%.2f", m.pos.x)),\(String(format: "%.2f", m.pos.y)))" }
+                    }
+                }
+            }
+        }
+        check(clipTicks == 0, "no awake monster ever stands inside a wall (\(clipTicks) clip-ticks\(clipWorst.isEmpty ? "" : ", first: \(clipWorst)"))")
+
+        // force-kill a monster to exercise the death + scoring path (a DRONE — the
+        // Queen only takes the kill from plasma+fire, so a rocket would merely wound her)
+        if let i = world.monsters.firstIndex(where: { $0.alive && $0.kind == .alien }) {
             let before = world.killCount
             // big splash right on the monster
             world.projectiles.append(Projectile(pos: world.monsters[i].pos, vel: .zero,
@@ -213,6 +240,28 @@ enum SmokeTest {
         for _ in 0..<60 { cw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
         check(cw.player.ammoCount(.cells) > 0, "a socket recharges the dry plasma rifle (0 → \(cw.player.ammoCount(.cells)))")
         check(cw.sockets.first.map { $0.charge < 135 } ?? true, "the socket's reserve drains as it recharges")
+
+        // 2h3. rooms are furnished — decorative set-dressing (bunks / desks + powered
+        // terminals / lockers / pipe runs) so a recently-active colony doesn't read as
+        // empty boxes. Props carry NO collision, but must still place sensibly: never
+        // on the marine's start, on a pickup, in a doorway, or footed inside a wall.
+        var propLevels = 0, propOnStart = 0, propOnItem = 0, propInWall = 0, propInDoor = 0
+        for lvl in 1...8 {
+            let w = World(level: lvl, colonyIndex: lvl - 1, seed: UInt64(lvl) &* 97 &+ 3)
+            if !w.props.isEmpty { propLevels += 1 }
+            for pr in w.props {
+                if vlen(pr.pos - w.player.pos) < 0.6 { propOnStart += 1 }
+                for it in w.items where vlen(pr.pos - it.pos) < 0.6 { propOnItem += 1 }
+                let cx = Int(pr.pos.x), cy = Int(pr.pos.y)
+                if w.map.blocksMovement(cx, cy) { propInWall += 1 }                 // centre on open floor
+                if w.map.isDoorCell(cx, cy) { propInDoor += 1 }                     // never blocking a doorway
+            }
+        }
+        check(propLevels >= 6, "rooms are furnished with set-dressing (\(propLevels)/8 levels)")
+        check(propOnStart == 0, "no prop spawns on the marine's start (\(propOnStart))")
+        check(propOnItem == 0, "no prop spawns on a pickup (\(propOnItem))")
+        check(propInWall == 0, "every prop foots on open floor, never inside a wall (\(propInWall))")
+        check(propInDoor == 0, "no prop sits in a doorway (\(propInDoor))")
 
         // building / floor / planet progression — the campaign structure
         check(Progression.floorInBuilding(1) == 1 && Progression.floorInBuilding(8) == 8, "floors run 1…8 within a citadel")

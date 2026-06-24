@@ -19,6 +19,7 @@ struct GeneratedLevel {
     let items: [ItemSpawn]
     let drums: [SIMD2<Float>]      // fuel-drum props (refuel + shootable bombs)
     let sockets: [SIMD2<Float>]    // plasma recharge stations (top up cells; anti-softlock)
+    let props: [Prop]              // decorative furniture/fixtures (set-dressing, no collision)
     let colonyName: String
     let secretCount: Int
 }
@@ -88,7 +89,9 @@ enum MapGen {
         var tries = 0
         while rooms.count < target && tries < 300 {
             tries += 1
-            let rw = rng.i(4, 9), rh = rng.i(4, 9)
+            // hewn out of the bedrock — chambers, not aircraft hangars. A few run a
+            // little longer (rng skews small), but nothing cavernous.
+            let rw = rng.i(4, rng.chance(0.3) ? 7 : 6), rh = rng.i(4, rng.chance(0.3) ? 7 : 6)
             let rx = rng.i(2, size - rw - 2), ry = rng.i(2, size - rh - 2)
             let cand = Room(x: rx, y: ry, w: rw, h: rh)
             // reject overlap (with 1-cell margin)
@@ -229,10 +232,10 @@ enum MapGen {
         Lighting.bake(map, level: level)
 
         // ── spawns ──
-        let (monsters, items, drums, sockets) = populate(map: map, rooms: rooms, level: level, theme: th,
+        let (monsters, items, drums, sockets, props) = populate(map: map, rooms: rooms, level: level, theme: th,
                                                 keyCells: keyCells, exitRoomIndex: rooms.count - 1, rng: &rng)
 
-        return GeneratedLevel(map: map, monsters: monsters, items: items, drums: drums, sockets: sockets,
+        return GeneratedLevel(map: map, monsters: monsters, items: items, drums: drums, sockets: sockets, props: props,
                               colonyName: Progression.planets[colonyIndex % Progression.planets.count], secretCount: secretCount)
     }
 
@@ -358,11 +361,12 @@ enum MapGen {
 
     private static func populate(map: GameMap, rooms: [Room], level: Int, theme: Theme,
                                  keyCells: [KeyColor: Int], exitRoomIndex: Int, rng: inout Rng)
-        -> ([MonsterSpawn], [ItemSpawn], [SIMD2<Float>], [SIMD2<Float>]) {
+        -> ([MonsterSpawn], [ItemSpawn], [SIMD2<Float>], [SIMD2<Float>], [Prop]) {
         var monsters: [MonsterSpawn] = []
         var items: [ItemSpawn] = []
         var drums: [SIMD2<Float>] = []
         var sockets: [SIMD2<Float>] = []
+        var props: [Prop] = []
 
         func center(_ cell: Int) -> SIMD2<Float> { SIMD2(Float(cell % map.w) + 0.5, Float(cell / map.w) + 0.5) }
         func randCell(in r: Room) -> Int? {
@@ -479,13 +483,26 @@ enum MapGen {
                 // a drum is SOLID, so it must never sit on a pickup (it would wall
                 // the item off completely), on the spawn, or on another drum. Try a
                 // handful of cells before giving up on this drum.
-                for _ in 0..<10 {
+                for _ in 0..<40 {                                  // small rooms fill up fast — try hard before giving up
                     let r = rooms[rng.i(1, rooms.count - 1)]
                     guard let c = randCell(in: r) else { continue }
                     let p = center(c)
-                    if placed.contains(where: { vlen($0 - p) < 1.3 }) { continue }   // clear of every other spawn (a solid drum must never wall off a pickup or stack)
+                    if placed.contains(where: { vlen($0 - p) < 1.05 }) { continue }  // clear of every other spawn (a solid drum must never wall off a pickup or stack; >0.9 keeps it off pickups)
                     drums.append(p); placed.append(p)
                     break
+                }
+            }
+            // every level MUST carry fuel (the flamethrower is finite) — if a crowded
+            // small-room layout starved the random pass, scan exhaustively for one cell
+            if drums.isEmpty {
+                outer: for r in rooms.dropFirst() {
+                    for yy in (r.y + 1)..<(r.y + r.h - 1) { for xx in (r.x + 1)..<(r.x + r.w - 1) {
+                        let i = map.idx(xx, yy)
+                        if map.wall[i] != 0 || map.doors[i] != nil || map.hazard[i] { continue }
+                        let p = center(i)
+                        if placed.contains(where: { vlen($0 - p) < 0.95 }) { continue }
+                        drums.append(p); placed.append(p); break outer
+                    } }
                 }
             }
         }
@@ -494,18 +511,110 @@ enum MapGen {
         // and isn't softlocked. Spread out, clear of drums / pickups / the spawn.
         if rooms.count > 1 {
             for _ in 0..<2 {                                     // "not many, just a couple"
-                for _ in 0..<12 {
+                for _ in 0..<40 {
                     let r = rooms[rng.i(1, rooms.count - 1)]
                     guard let c = randCell(in: r) else { continue }
                     let p = center(c)
-                    if sockets.contains(where: { vlen($0 - p) < 3.0 }) { continue }      // keep them apart
-                    if placed.contains(where: { vlen($0 - p) < 1.2 }) { continue }       // clear of every other spawn
+                    if sockets.contains(where: { vlen($0 - p) < 2.2 }) { continue }      // keep them apart (relaxed for small maps)
+                    if placed.contains(where: { vlen($0 - p) < 1.0 }) { continue }       // clear of every other spawn
                     sockets.append(p); placed.append(p)
                     break
                 }
             }
         }
-        return (monsters, items, drums, sockets)
+
+        // ── furnish the rooms ── the citadels were working colonies until the swarm
+        // came; the rooms should look lived-in, not like empty test boxes. Furniture
+        // is purely decorative (no collision — the fight stays clean), placed flush
+        // against the walls so room centres stay open: large dorms get rows of bunks
+        // (never the ones with toxic pools), small offices get a desk + terminal +
+        // chair, and every room gets steel lockers and pipe runs for the industrial
+        // read of the beauty shot.
+        let exitX = map.exitCell % map.w, exitY = map.exitCell / map.w
+        func solidWall(_ x: Int, _ y: Int) -> Bool {
+            !map.inBounds(x, y) || (map.wall[map.idx(x, y)] != 0 && map.doors[map.idx(x, y)] == nil)
+        }
+        func nearDoor(_ x: Int, _ y: Int) -> Bool {
+            for (ox, oy) in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] where map.inBounds(x + ox, y + oy) {
+                if map.doors[map.idx(x + ox, y + oy)] != nil { return true }
+            }
+            return false
+        }
+        func freeCell(_ p: SIMD2<Float>, _ gap: Float) -> Bool { !placed.contains { vlen($0 - p) < gap } }
+        // yaw such that a prop's local +Z (its FRONT) points along `inward` (see GPURaymarch)
+        func yawFor(_ inward: SIMD2<Float>) -> Float { atan2(-inward.x, inward.y) }
+        // interior edge cells that sit flush against a real wall, with their inward facing
+        struct Slot { let pos: SIMD2<Float>; let inward: SIMD2<Float>; let x, y: Int }
+        func wallSlots(_ r: Room) -> [Slot] {
+            var out: [Slot] = []
+            func consider(_ x: Int, _ y: Int, _ inward: SIMD2<Float>) {
+                guard map.inBounds(x, y), map.wall[map.idx(x, y)] == 0,
+                      map.doors[map.idx(x, y)] == nil, !map.hazard[map.idx(x, y)] else { return }
+                if nearDoor(x, y) { return }
+                if abs(x - exitX) + abs(y - exitY) <= 1 { return }              // keep the exit switch reachable
+                if !solidWall(x - Int(inward.x), y - Int(inward.y)) { return }  // real wall behind (not a corridor mouth)
+                out.append(Slot(pos: SIMD2(Float(x) + 0.5, Float(y) + 0.5), inward: inward, x: x, y: y))
+            }
+            for x in r.x..<(r.x + r.w) { consider(x, r.y, SIMD2(0, 1)) }                 // top wall (faces +y)
+            for x in r.x..<(r.x + r.w) { consider(x, r.y + r.h - 1, SIMD2(0, -1)) }      // bottom wall
+            for y in r.y..<(r.y + r.h) { consider(r.x, y, SIMD2(1, 0)) }                 // left wall
+            for y in r.y..<(r.y + r.h) { consider(r.x + r.w - 1, y, SIMD2(-1, 0)) }      // right wall
+            return out
+        }
+        func roomHasHazard(_ r: Room) -> Bool {
+            for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) where map.hazard[map.idx(xx, yy)] { return true } }
+            return false
+        }
+        @discardableResult
+        func placeProp(_ kind: FurnitureKind, _ slot: Slot, faceInward: Bool = true, gap: Float = 0.85) -> Bool {
+            guard freeCell(slot.pos, gap) else { return false }
+            props.append(Prop(kind: kind, pos: slot.pos, yaw: yawFor(faceInward ? slot.inward : -slot.inward)))
+            placed.append(slot.pos)
+            return true
+        }
+        for r in rooms {
+            let slots = wallSlots(r)
+            let area = r.w * r.h
+            let hazard = roomHasHazard(r)
+            // ── floor furniture against the walls ──
+            if !slots.isEmpty {
+                var used = 0
+                if r.w >= 5 && r.h >= 5 && !hazard {
+                    // BARRACKS: bunks down the walls, headboards to the wall
+                    for (i, s) in slots.enumerated() where i % 2 == 0 {
+                        if placeProp(.bunk, s, gap: 1.0) { used += 1 }
+                        if used >= 4 { break }
+                    }
+                } else if area <= 20 {
+                    // OFFICE: a desk + powered terminal, a chair tucked in front, a locker
+                    if let desk = slots.first(where: { freeCell($0.pos, 0.85) }) {
+                        placeProp(.desk, desk)
+                        let fx = desk.x + Int(desk.inward.x), fy = desk.y + Int(desk.inward.y)
+                        let frontP = SIMD2(Float(fx) + 0.5, Float(fy) + 0.5)
+                        if map.inBounds(fx, fy), map.wall[map.idx(fx, fy)] == 0, map.doors[map.idx(fx, fy)] == nil,
+                           !map.hazard[map.idx(fx, fy)], freeCell(frontP, 0.6) {
+                            props.append(Prop(kind: .chair, pos: frontP, yaw: yawFor(-desk.inward)))   // faces the desk
+                            placed.append(frontP)
+                        }
+                        for s in slots where placeProp(.locker, s) { break }
+                    }
+                } else {
+                    // utility: a couple of lockers and (space permitting) a desk
+                    for s in slots {
+                        if used >= 2 { break }
+                        if placeProp(.locker, s) { used += 1 }
+                    }
+                    if !hazard { for s in slots where placeProp(.desk, s) { break } }
+                }
+            }
+            // NOTE: free-standing SDF pipe runs are deferred. As props they cost the
+            // GPU dearly (a long run's bounding sphere is evaluated across most of a
+            // room's rays) AND they read poorly. The objects rework will reintroduce
+            // pipework/steelwork BAKED INTO THE WALL geometry (part of the grid SDF,
+            // so effectively free) rather than as separate per-step instances.
+        }
+
+        return (monsters, items, drums, sockets, props)
     }
 
     private static func pickItem(level: Int, rng: inout Rng) -> ItemKind {

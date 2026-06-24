@@ -166,6 +166,26 @@ final class GPUWorldRenderer {
         return cand.prefix(8).map { $0.0 }
     }
 
+    /// Nearest furniture/fixtures in view — static SDF props raymarched this frame.
+    private func visibleProps(_ world: World) -> [Prop] {
+        let p = world.player
+        let fwd = SIMD2<Float>(cos(p.dir), sin(p.dir))
+        var cand: [(Prop, Float)] = []
+        for pr in world.props {
+            let rel = pr.pos - p.pos
+            let d = simd_length(rel)
+            if d > 13 { continue }
+            if d > 1.5 && simd_dot(rel, fwd) < -0.3 { continue }
+            cand.append((pr, d))
+        }
+        cand.sort { $0.1 < $1.1 }
+        // Props are STATIC but still cost per-raymarch-step (every instance is bound-
+        // tested + evaluated at every step). Keep the live set tight — rooms are small
+        // now, so the nearest 8 in front covers the room you're in; more than that just
+        // heats the GPU (the fans) for furniture you're mostly not looking at.
+        return cand.prefix(8).map { $0.0 }
+    }
+
     /// Muzzle flash + projectile glows as point lights for the GPU kernel
     /// (mirrors WorldLight.gatherLights, at eye height in 3-D).
     private func gatherDynLights(_ world: World) -> [GPURaymarch.GPULight] {
@@ -231,6 +251,10 @@ final class GPUWorldRenderer {
         let dbase = cshapes.count
         for dm0 in dmons { var dm = dm0; dm.b.x += Float(dbase); cmons.append(dm) }
         cshapes.append(contentsOf: dshapes)
+        let (fmons, fshapes) = GPURaymarch.packProps(visibleProps(world))              // furniture & fixtures
+        let fbase = cshapes.count
+        for fm0 in fmons { var fm = fm0; fm.b.x += Float(fbase); cmons.append(fm) }
+        cshapes.append(contentsOf: fshapes)
         let (pmons, pshapes) = GPURaymarch.packProjectiles(world.projectiles)          // glowing energy orbs
         let pbase = cshapes.count
         for pm0 in pmons { var pm = pm0; pm.b.x += Float(pbase); cmons.append(pm) }
