@@ -36,7 +36,7 @@ final class AudioEngine {
         case plasma, flamethrower, rocket
         case hiss                  // shared alien hiss pool: drone + Queen, sight + pain (random)
         case droneDeath, queenDeath
-        case explosion, doorOpen, locked, pickup, secret, exit, playerPain, playerDeath
+        case explosion, doorOpen, locked, pickup, secret, exit, playerPain, playerDeath, wade
         case musicTitle, bedDrone, bedPulse, bedTension, bedSwarm
 
         var base: String {
@@ -55,6 +55,7 @@ final class AudioEngine {
             case .exit: return "exit"
             case .playerPain: return "player_pain"
             case .playerDeath: return "player_death"
+            case .wade: return "wade"
             case .musicTitle: return "music_title"
             case .bedDrone: return "bed_drone"
             case .bedPulse: return "bed_pulse"
@@ -78,6 +79,7 @@ final class AudioEngine {
             case .queenDeath: return 0.95
             case .plasma, .droneDeath, .exit: return 0.9
             case .flamethrower: return 0.55
+            case .wade: return 0.5
             default: return 0.8
             }
         }
@@ -93,6 +95,8 @@ final class AudioEngine {
     private var sfxPool: [AVAudioPlayerNode] = []      // round-robin one-shot voices
     private var sfxNext = 0
     private var loopNodes: [Sound: AVAudioPlayerNode] = [:]   // one node per looping stem
+    private let flameNode = AVAudioPlayerNode()               // the flamethrower's continuous roar (SFX bus)
+    private var flameOn = false
     private var bank: [Sound: [AVAudioPCMBuffer]] = [:]       // loaded samples (empty ⇒ fall back)
 
     // ── three gain buses (sliders write these) ────────────────────────────────
@@ -137,6 +141,7 @@ final class AudioEngine {
 
         sfxPool = (0..<12).map { _ in AVAudioPlayerNode() }
         for n in sfxPool { engine.attach(n); engine.connect(n, to: sfxMix, format: canonical) }
+        engine.attach(flameNode); engine.connect(flameNode, to: sfxMix, format: canonical)
         for s in Sound.allCases where s.loop {
             let n = AVAudioPlayerNode(); loopNodes[s] = n
             engine.attach(n); engine.connect(n, to: s.bus == 0 ? musicMix : ambMix, format: canonical)
@@ -224,8 +229,25 @@ final class AudioEngine {
         return true
     }
 
-    private func stopAllLoops() { for (_, n) in loopNodes { n.stop() } }
+    private func stopAllLoops() { for (_, n) in loopNodes { n.stop() }; flameNode.stop(); flameOn = false }
     private func setLoopVol(_ s: Sound, _ v: Float) { loopNodes[s]?.volume = max(0, v) }
+
+    /// The flamethrower's continuous roar: a looped 5-second stem on the SFX bus that
+    /// tracks the trigger, instead of randomly-retriggered one-shots (which desynced
+    /// from the steady beam). Edge-detected, so it's cheap to call every frame.
+    func flame(_ on: Bool) {
+        guard on != flameOn else { return }
+        flameOn = on
+        guard engine.isRunning else { return }
+        if on, let buf = bank[.flamethrower]?.first {
+            flameNode.stop()
+            flameNode.volume = Sound.flamethrower.gain
+            flameNode.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+            flameNode.play()
+        } else {
+            flameNode.stop()
+        }
+    }
 
     /// Play the sample for `s`, or run `fallback` (the synth) when it isn't bundled.
     private func play(_ s: Sound, _ fallback: () -> Void) {
@@ -239,6 +261,20 @@ final class AudioEngine {
         case .plasma:       play(.plasma)       { self.synthWeaponFire(.plasma) }
         case .flamethrower: play(.flamethrower) { self.synthWeaponFire(.flamethrower) }
         case .rocket:       play(.rocket)       { self.synthWeaponFire(.rocket) }
+        }
+    }
+
+    /// A wade/splash as the player steps through the flooded lower floors — louder
+    /// the deeper the standing water. Plays a curated sample if one's bundled, else a
+    /// synth splash (filtered noise) as a stopgap until a CC0 sample is hand-picked.
+    func wade(_ depth: Float, foot: Int) {
+        let v = 0.5 + 0.5 * min(1, max(0, depth))
+        // alternate L/R: foot 0 → wade.*, foot 1 → wade1.* — two slightly different
+        // splashes so the gait reads as real footfalls, not one sample on repeat.
+        if engine.isRunning, let bufs = bank[.wade], !bufs.isEmpty {
+            playOneShot([bufs[foot % bufs.count]], gain: Sound.wade.gain * v)
+        } else {
+            synthWade(v, foot: foot)
         }
     }
     func enemyShot(_ k: MonsterKind) { synthEnemyShot(k) }   // vestigial — no caste fires
@@ -533,4 +569,9 @@ final class AudioEngine {
     private func synthExit() { for n in [55, 59, 62, 67] { add(AudioEngine.square, note(n), note(n), 0.18, 0.12, attack: 0.004, lp: 0.6, send: 0.3) } }
     private func synthPlayerPain() { add(AudioEngine.saw, 300, 170, 0.13, 0.16, lp: 0.5); add(AudioEngine.noise, 1, 1, 0.05, 0.08, lp: 0.4) }
     private func synthPlayerDeath() { add(AudioEngine.saw, 320, 55, 0.9, 0.22, lp: 0.4, send: 0.3); add(AudioEngine.noise, 1, 1, 0.3, 0.12, lp: 0.3) }
+    private func synthWade(_ v: Float, foot: Int) {
+        let lp: Float = foot == 0 ? 0.30 : 0.40                                          // L/R read slightly different
+        add(AudioEngine.noise, 1, 1, 0.16, 0.11 * v, attack: 0.006, lp: lp)             // the heavy plosh
+        add(AudioEngine.noise, 1, 1, 0.08, 0.07 * v, attack: 0.001, lp: 0.55 + Float(foot) * 0.1)  // top splash
+    }
 }

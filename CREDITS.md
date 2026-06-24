@@ -23,6 +23,7 @@ the same base filename.
 *CC0 - Dark Music* collection (<https://opengameart.org/content/cc0-dark-music>, CC0) ·
 HaelDB — *Male Grunt/Yelling sounds* (<https://opengameart.org/content/male-gruntyelling-sounds>, CC0) ·
 rubberduck — *80 CC0 creature SFX* #1 & #2 (<https://opengameart.org/content/80-cc0-creature-sfx>, CC0) ·
+rubberduck — *40 CC0 water splash / slime SFX* (<https://opengameart.org/content/40-cc0-water-splash-slime-sfx>, CC0) ·
 Ogrebane — *Monster Sound Effects 2* (<https://opengameart.org/content/monster-sound-effects-2>, CC0).
 
 | File(s) | Sound | Source | Original |
@@ -41,6 +42,7 @@ Ogrebane — *Monster Sound Effects 2* (<https://opengameart.org/content/monster
 | locked | locked door / denied | Kenney Interface Sounds | error_004 |
 | player_pain (×11, random) | marine hurt by an alien | HaelDB Male Grunt/Yelling | assorted male yells |
 | player_death | marine death cry | HaelDB Male Grunt/Yelling | yell10 |
+| wade, wade1 (L/R, alternating) | wading splash — flooded floors 7 & 8 | rubberduck 40 CC0 water splash/slime SFX | splash_12 / splash_14 |
 | bed_drone | ambient bed: room tone (always on) | SRG774 Dark Sci-Fi Audio Pack | sector |
 | bed_swarm | ambient bed: tension layer (fades in as the swarm nears) | SRG774 Dark Sci-Fi Audio Pack | urgent |
 | music_title | title-screen theme (loops; click-free, fades to a breath each cycle) | OpenGameArt CC0 - Dark Music | Derelict |

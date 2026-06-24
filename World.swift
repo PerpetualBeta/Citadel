@@ -193,7 +193,15 @@ final class World {
 
         handleWeaponSwitch(input: input)
         turn(dt: dt, input: input)
+        let bobBefore = player.bobPhase
         move(dt: dt, input: input)
+        // a footfall each half bob-cycle; on the flooded lower floors (7 & 8) it
+        // splashes, louder the deeper the standing water
+        let step = Int(player.bobPhase / .pi)
+        if step != Int(bobBefore / .pi) {
+            let flood = Lighting.floodLevel(level: level)
+            if flood > 0 { audio.wade(flood, foot: step % 2) }   // alternate left/right
+        }
         // smoothed player velocity for monster lead-aim (clamped to a sane top speed)
         var pv = (player.pos - lastPlayerPos) / max(dt, 1e-4)
         if vlen(pv) > 6 { pv = pv / vlen(pv) * 6 }
@@ -420,6 +428,13 @@ final class World {
     }
 
     private func handleFire(dt: Float, input: InputState, audio: AudioEngine) {
+        // The flamethrower roars as one continuous loop while the trigger's held and
+        // there's fuel — drive it here every frame (edge-detected) so it tracks the
+        // trigger, rather than stuttering as randomly-retriggered one-shots.
+        let fdef = player.current.def
+        let flaming = input.fire && player.current == .flamethrower && !player.dead
+            && (fdef.ammo == .none || player.ammo[fdef.ammo.rawValue] >= fdef.ammoPerShot)
+        audio.flame(flaming)
         guard input.fire, player.fireCD <= 0 else { return }
         let def = player.current.def
         if def.ammo != .none && player.ammo[def.ammo.rawValue] < def.ammoPerShot {
@@ -485,7 +500,6 @@ final class World {
                                       maxAlpha: 0.85, fire: true))
         }
         if particles.count > 500 { particles.removeFirst(particles.count - 500) }
-        if rng.chance(0.25) { audio.weaponFire(.flamethrower) }     // throttle the roar
     }
 
     private func autoSwitchIfEmpty() {
