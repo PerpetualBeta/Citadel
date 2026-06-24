@@ -373,7 +373,20 @@ enum MapGen {
             }
             return nil
         }
-        // a clearance-aware cell for a LARGE occupant (the Queen — radius 0.72):
+        // shared occupancy — every placed occupant's centre, so nothing spawns
+        // stacked on anything else (the player start is seeded in).
+        var placed: [SIMD2<Float>] = [map.playerStart]
+        func spot(in r: Room, gap: Float = 1.15) -> SIMD2<Float>? {
+            for _ in 0..<16 {
+                guard let c = randCell(in: r) else { return nil }
+                let p = center(c)
+                if placed.contains(where: { vlen($0 - p) < gap }) { continue }
+                placed.append(p); return p
+            }
+            return nil
+        }
+        @discardableResult func note(_ p: SIMD2<Float>) -> SIMD2<Float> { placed.append(p); return p }
+        // a clearance-aware cell for a LARGE occupant (the Queen — radius ~1.1):
         // the most-open interior cell of the room, scored by its 3×3 walkable
         // neighbourhood, so she never spawns wedged into a wall (which would put
         // the exit-gating boss permanently out of reach).
@@ -411,13 +424,13 @@ enum MapGen {
         }
 
         // keys
-        for (color, cell) in keyCells { items.append(ItemSpawn(kind: color.item, pos: center(cell))) }
+        for (color, cell) in keyCells { items.append(ItemSpawn(kind: color.item, pos: note(center(cell)))) }
         // secret loot
-        if let s = secretLootCell { items.append(ItemSpawn(kind: rng.chance(0.5) ? .megaArmor : .weaponRocket, pos: center(s))) }
+        if let s = secretLootCell { items.append(ItemSpawn(kind: rng.chance(0.5) ? .megaArmor : .weaponRocket, pos: note(center(s)))) }
 
         // guarantee an early fuel cache (room 1 if possible) — the flamethrower is
         // finite now, so the marine must be able to top up
-        if rooms.count > 1, let c = randCell(in: rooms[1]) { items.append(ItemSpawn(kind: .ammoFuel, pos: center(c))) }
+        if rooms.count > 1, let p = spot(in: rooms[1]) { items.append(ItemSpawn(kind: .ammoFuel, pos: p)) }
 
         for (ri, r) in rooms.enumerated() {
             let isStart = ri == 0
@@ -428,33 +441,33 @@ enum MapGen {
                 // that gates the exit, wherever in the citadel she's holed up
                 if ri == queenRoomIdx {
                     let qc = openCell(in: r) ?? randCell(in: r) ?? map.idx(r.cx, r.cy)
-                    monsters.append(MonsterSpawn(kind: .queen, pos: center(qc)))
+                    monsters.append(MonsterSpawn(kind: .queen, pos: note(center(qc))))
                 }
                 let count = rng.i(1, 2 + level / 2)
                 for _ in 0..<count {
-                    guard let c = randCell(in: r) else { continue }
-                    monsters.append(MonsterSpawn(kind: .alien, pos: center(c)))
+                    guard let p = spot(in: r) else { continue }
+                    monsters.append(MonsterSpawn(kind: .alien, pos: p))
                 }
             }
 
             // items
             let lootRolls = rng.i(1, 3)
             for _ in 0..<lootRolls {
-                guard let c = randCell(in: r) else { continue }
-                items.append(ItemSpawn(kind: pickItem(level: level, rng: &rng), pos: center(c)))
+                guard let p = spot(in: r) else { continue }
+                items.append(ItemSpawn(kind: pickItem(level: level, rng: &rng), pos: p))
             }
         }
 
         // deeper field drops, rare: a crate of mines, then the rocket launcher,
         // then a cell cache to stock up for the Queen
-        if level >= 1, rooms.count > 2, let c = randCell(in: rooms[rng.i(2, rooms.count - 1)]) {
-            items.append(ItemSpawn(kind: .mineCrate, pos: center(c)))
+        if level >= 1, rooms.count > 2, let p = spot(in: rooms[rng.i(2, rooms.count - 1)]) {
+            items.append(ItemSpawn(kind: .mineCrate, pos: p))
         }
-        if level >= 2, rooms.count > 3, let c = randCell(in: rooms[rng.i(2, rooms.count - 1)]), rng.chance(0.7) {
-            items.append(ItemSpawn(kind: .weaponRocket, pos: center(c)))
+        if level >= 2, rooms.count > 3, let p = spot(in: rooms[rng.i(2, rooms.count - 1)]), rng.chance(0.7) {
+            items.append(ItemSpawn(kind: .weaponRocket, pos: p))
         }
-        if level >= 3, rooms.count > 3, let c = randCell(in: rooms[rng.i(2, rooms.count - 1)]), rng.chance(0.7) {
-            items.append(ItemSpawn(kind: .ammoCells, pos: center(c)))
+        if level >= 3, rooms.count > 3, let p = spot(in: rooms[rng.i(2, rooms.count - 1)]), rng.chance(0.7) {
+            items.append(ItemSpawn(kind: .ammoCells, pos: p))
         }
 
         // fuel drums — industrial props scattered through the workings. They top up
@@ -470,10 +483,8 @@ enum MapGen {
                     let r = rooms[rng.i(1, rooms.count - 1)]
                     guard let c = randCell(in: r) else { continue }
                     let p = center(c)
-                    if drums.contains(where: { vlen($0 - p) < 1.0 }) { continue }       // no stacked drums
-                    if items.contains(where: { vlen($0.pos - p) < 1.3 }) { continue }   // never block a pickup
-                    if vlen(map.playerStart - p) < 1.5 { continue }                     // clear of the spawn
-                    drums.append(p)
+                    if placed.contains(where: { vlen($0 - p) < 1.3 }) { continue }   // clear of every other spawn (a solid drum must never wall off a pickup or stack)
+                    drums.append(p); placed.append(p)
                     break
                 }
             }
@@ -488,10 +499,8 @@ enum MapGen {
                     guard let c = randCell(in: r) else { continue }
                     let p = center(c)
                     if sockets.contains(where: { vlen($0 - p) < 3.0 }) { continue }      // keep them apart
-                    if drums.contains(where: { vlen($0 - p) < 1.0 }) { continue }
-                    if items.contains(where: { vlen($0.pos - p) < 1.0 }) { continue }
-                    if vlen(map.playerStart - p) < 1.5 { continue }
-                    sockets.append(p)
+                    if placed.contains(where: { vlen($0 - p) < 1.2 }) { continue }       // clear of every other spawn
+                    sockets.append(p); placed.append(p)
                     break
                 }
             }

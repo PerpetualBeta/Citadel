@@ -57,7 +57,7 @@ enum MonsterTable {
         // QUEEN — vast, ponderous, immensely tough (and only plasma even scratches
         // her). Lairs in the dark and breeds. The level objective.
         MonsterDef(maxHealth: 900, speed: 0.45, melee: 40, ranged: false, projectile: .fireball, projDamage: 0,
-                   attackInterval: 1.6, points: 6000, radius: 0.72, billboardH: 1.90, painChance: 0.03, flying: false, sight: 32),
+                   attackInterval: 1.6, points: 6000, radius: 1.1, billboardH: 2.2, painChance: 0.03, flying: false, sight: 32),
     ]
 }
 
@@ -78,6 +78,9 @@ struct Monster {
     var lastSeen: SIMD2<Float> = .zero   // last known player position (hunt there when LOS breaks)
     var hasSeen = false                  // lastSeen is valid
     var revive: Float = 0                // QUEEN only: seconds until she regenerates unless her corpse is set alight
+    var wallBias: Float = 0              // committed wall-follow slip side (±1) — anti corner-jitter
+    var wallHold: Float = 0              // seconds left on that commitment
+    var snarlCD: Float = 0               // QUEEN: cooldown between snarls/hisses at a nearby player
 
     init(kind: MonsterKind, pos: SIMD2<Float>) {
         self.kind = kind

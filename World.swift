@@ -572,6 +572,12 @@ final class World {
     private func damageMonster(_ i: Int, _ amt: Int, audio: AudioEngine, kind: DamageKind = .generic) {
         var m = monsters[i]
         if !m.alive { return }
+        if m.kind == .queen {
+            // any blow against the brood-mother rouses her whole brood to defend her
+            for j in monsters.indices where monsters[j].kind == .alien && monsters[j].alive {
+                monsters[j].awake = true; monsters[j].hasSeen = true; monsters[j].lastSeen = player.pos
+            }
+        }
         // explosives and fire DO hurt the Queen — they're heat — and they rock her
         // visibly, but they can never land the killing blow: her health floors at 1
         // until plasma finishes her. (Fire also finishes her CORPSE — see flameTick.)
@@ -699,7 +705,7 @@ final class World {
                 monsters[i] = m; continue
             }
 
-            let meleeRange = m.def.radius + 0.55
+            let meleeRange = m.def.radius + 1.0        // reach for a lunge from the standoff distance (the attack stays visible)
             // melee on contact
             if dist <= meleeRange && m.attackCD <= 0 {
                 damagePlayer(m.def.melee, audio: audio)
@@ -722,8 +728,32 @@ final class World {
             // the last-seen spot when sight breaks, fan the approach and spread
             // off one another. No sprint — the dread is that they never stop.
             m.state = .chase
-            let desired = steerDir(m, index: i, canSee: canSee)
-            steerMove(&m, desired: desired, dt: dt, fast: fast, speedScale: 1)
+            if m.kind == .queen {
+                // rooted brood-mother — she never advances; she lashes out when you're
+                // in reach (her tentacles), and snarls/hisses as you near her lair,
+                // rousing her brood to defend her
+                if dist < 8 {
+                    m.snarlCD -= dt
+                    if m.snarlCD <= 0 {
+                        audio.monsterSight(.queen); m.snarlCD = rng.f(2.0, 3.8)
+                        for j in monsters.indices where monsters[j].kind == .alien && monsters[j].alive && vlen(monsters[j].pos - m.pos) < 16 {
+                            monsters[j].awake = true; monsters[j].hasSeen = true; monsters[j].lastSeen = player.pos
+                        }
+                    }
+                }
+            } else {
+                let standoff = m.def.radius + 0.8
+                if dist > standoff {
+                    let desired = steerDir(m, index: i, canSee: canSee)
+                    steerMove(&m, desired: desired, dt: dt, fast: fast, speedScale: 1)
+                } else {
+                    // hold at a readable distance and circle, so the lunge reads from a
+                    // visible standoff instead of being pressed into the camera
+                    let toP2 = player.pos - m.pos
+                    let strafe = SIMD2(-toP2.y, toP2.x) * flankSign(i)
+                    steerMove(&m, desired: strafe, dt: dt, fast: fast, speedScale: 0.4)
+                }
+            }
             monsters[i] = m
         }
     }
@@ -738,10 +768,10 @@ final class World {
         if d < 0.001 { toT = SIMD2(cos(m.dir), sin(m.dir)); d = 1 }
         var dir = toT / d
         let side = SIMD2(-dir.y, dir.x) * flankSign(i)
-        dir = simd_normalize(dir + side * 0.3)                    // fan so they don't conga-line
-        // drones rarely hunt alone: a lone drone with no comrade at its flank
-        // hangs back and drifts toward the nearest one to pair up first — unless
-        // it's the last drone alive, when it commits to the hunt regardless.
+        dir = simd_normalize(dir + side * 0.3 * min(1, d / 6))    // fan to spread the approach; fades to a straight lunge up close
+        // drones prefer to pair up — but only as a soft drift while still approaching
+        // from range AND a comrade is nearer than the prey. A lone drone, or any drone
+        // once the player is close, commits to the hunt: pure predators, never hesitant.
         if m.kind == .alien {
             var nearest = -1; var nd = Float.greatestFiniteMagnitude; var liveDrones = 0
             for j in monsters.indices where j != i {
@@ -752,10 +782,12 @@ final class World {
                 if dl < nd { nd = dl; nearest = j }
             }
             let paired = nd < 4.0                                 // a comrade within a few cells
-            if !paired && liveDrones > 0, nearest >= 0 {
+            // regroup only while well away from the prey AND a comrade is nearer than
+            // it is — never turn away from a close target to chase a distant ally
+            if !paired, liveDrones > 0, nearest >= 0, d > 8, nd < d {
                 let toAlly = monsters[nearest].pos - m.pos
                 let al = vlen(toAlly)
-                if al > 0.001 { dir = simd_normalize(dir * 0.35 + (toAlly / al) * 0.9) }   // regroup
+                if al > 0.001 { dir = simd_normalize(dir * 0.6 + (toAlly / al) * 0.6) }   // gentle regroup — keeps pursuing
             }
         }
         let out = dir + separation(i, m.pos, m.def.radius) * 1.5
@@ -804,6 +836,7 @@ final class World {
         let dir = desired / dl
         let speed = m.def.speed * fast * speedScale * dt
         let r = m.def.radius
+        m.wallHold = max(0, m.wallHold - dt)        // tick down the corner-follow commitment
         func free(_ x: Float, _ y: Float) -> Bool {
             if m.def.flying { return !map.blocksMovement(Int(x), Int(y)) }   // flyers ignore hazard, not walls
             return !map.blocksMovement(Int(x - r), Int(y - r)) && !map.blocksMovement(Int(x + r), Int(y + r))
@@ -814,12 +847,18 @@ final class World {
         if free(nx, m.pos.y) { m.pos.x = nx; moved = true }
         if free(m.pos.x, ny) { m.pos.y = ny; moved = true }
         if !moved {
-            for s in [Float(1), -1] {                             // wall-follow round the corner
+            // Wall-follow round a corner — but COMMIT to one slip side for a short
+            // window instead of re-deciding every frame. Re-deciding let "which way
+            // is clear" flip frame to frame, so the monster vibrated in place
+            // ("skittish at corners"); committing makes it round the corner cleanly.
+            let order: [Float] = m.wallHold > 0 ? [m.wallBias, -m.wallBias] : [1, -1]
+            for s in order {
                 let t = SIMD2(-dir.y * s, dir.x * s)
                 let tx = m.pos.x + t.x * speed, ty = m.pos.y + t.y * speed
-                if free(tx, m.pos.y) { m.pos.x = tx; moved = true }
-                if free(m.pos.x, ty) { m.pos.y = ty; moved = true }
-                if moved { break }
+                var slipped = false
+                if free(tx, m.pos.y) { m.pos.x = tx; slipped = true }
+                if free(m.pos.x, ty) { m.pos.y = ty; slipped = true }
+                if slipped { m.wallBias = s; m.wallHold = 0.5; moved = true; break }   // commit to the side that worked
             }
             let ax = Int(m.pos.x + dir.x * 0.8), ay = Int(m.pos.y + dir.y * 0.8)
             if map.isDoorCell(ax, ay), let dr = map.doors[map.idx(ax, ay)], dr.locked == nil {
