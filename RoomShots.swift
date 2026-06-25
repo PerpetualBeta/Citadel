@@ -181,6 +181,46 @@ enum RoomShots {
             break
         }
 
+        // pickup view — pickups should SIT IN THE WORLD (room/headlamp-lit, faint rim),
+        // not floodlit floating beacons. A medkit + cells + a key in a lit room.
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 4)
+            world.monsters = []; world.drums = []; world.sockets = []; world.props = []
+            let sp = world.player.pos
+            let dirs = [SIMD2<Float>(1, 0), SIMD2<Float>(-1, 0), SIMD2<Float>(0, 1), SIMD2<Float>(0, -1)]
+            var aim = dirs[0], bestClear: Float = 0
+            for d in dirs { var t: Float = 0.5; while t < 6 && !world.map.blocksMovement(Int(sp.x + d.x * t), Int(sp.y + d.y * t)) { t += 0.25 }; if t > bestClear { bestClear = t; aim = d } }
+            let perp = SIMD2<Float>(-aim.y, aim.x)
+            world.items = [Item(kind: .medkit, pos: sp + aim * 1.6 - perp * 0.5),
+                           Item(kind: .ammoCells, pos: sp + aim * 1.6),
+                           Item(kind: .keyRed, pos: sp + aim * 1.6 + perp * 0.5)]
+            world.player.dir = atan2(aim.y, aim.x); world.player.muzzle = 0
+            let canvas = Canvas2D()
+            _ = gpu.render(world, into: canvas)
+            n += 1
+            Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent("00h-pickups.png"))
+            print("  wrote 00h-pickups.png — medkit / cells / key")
+        }
+
+        // deployed-mine view — a small LOW floor disc (steps over it) with a red LED
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 4)
+            world.monsters = []; world.drums = []; world.sockets = []; world.props = []
+            let sp = world.player.pos
+            let dirs = [SIMD2<Float>(1, 0), SIMD2<Float>(-1, 0), SIMD2<Float>(0, 1), SIMD2<Float>(0, -1)]
+            var aim = dirs[0], bestClear: Float = 0
+            for d in dirs { var t: Float = 0.5; while t < 6 && !world.map.blocksMovement(Int(sp.x + d.x * t), Int(sp.y + d.y * t)) { t += 0.25 }; if t > bestClear { bestClear = t; aim = d } }
+            world.deployedMines = [Mine(pos: sp + aim * 1.5, arm: 0)]
+            world.player.pos = sp + aim * 0.4               // stand back a touch, look at it on the floor
+            world.player.dir = atan2(aim.y, aim.x)
+            world.player.muzzle = 0
+            let canvas = Canvas2D()
+            _ = gpu.render(world, into: canvas)
+            n += 1
+            Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent("00g-mine.png"))
+            print("  wrote 00g-mine.png — deployed mine on the floor")
+        }
+
         // door view — verify the door is a THIN sliding panel (not a moving wall
         // block): frame a door from the room side, render it closed then part-open
         for seed in stride(from: UInt64(1), through: UInt64(60), by: 1) {

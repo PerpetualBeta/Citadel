@@ -22,7 +22,7 @@ struct SpriteCompositor {
     /// items / projectiles / particles are still sprites. Fill the z-buffer from
     /// the walls (depth-only DDA) so they occlude correctly, then draw them.
     func overlayThings(_ world: World, into c: Canvas2D, depth: UnsafePointer<Float>? = nil, includeProjectiles: Bool = true,
-                       includeDrums: Bool = true, includeSockets: Bool = true) {
+                       includeDrums: Bool = true, includeSockets: Bool = true, includeMines: Bool = true) {
         let p = world.player
         let dirX = cos(p.dir), dirY = sin(p.dir)
         let planeX = -sin(p.dir) * RenderConfig.cameraPlane
@@ -64,7 +64,7 @@ struct SpriteCompositor {
                    flick: flick, lights: lights, hasDyn: !lights.isEmpty, headlamp: hl,
                    includeMonsters: false, includeItems: false,
                    includeProjectiles: includeProjectiles,
-                   includeDrums: includeDrums, includeSockets: includeSockets,
+                   includeDrums: includeDrums, includeSockets: includeSockets, includeMines: includeMines,
                    depthBuf: depth)   // monsters/items/projectiles/drums/sockets are SDF on the GPU path
     }
 
@@ -73,7 +73,7 @@ struct SpriteCompositor {
                     headlamp: WorldLight.Headlamp? = nil,
                     includeMonsters: Bool = true, includeItems: Bool = true,
                     includeProjectiles: Bool = true,
-                    includeDrums: Bool = true, includeSockets: Bool = true,
+                    includeDrums: Bool = true, includeSockets: Bool = true, includeMines: Bool = true,
                     depthBuf: UnsafePointer<Float>? = nil) {
         let p = world.player
         let sprites = Sprites.shared
@@ -85,7 +85,7 @@ struct SpriteCompositor {
         // deployed mines are still billboards on both paths. The CPU raycaster draws
         // all three as sprites (its fallback path has no kernel).
         if includeDrums { for (i, d) in world.drums.enumerated() { things.append(Renderable(dist: vlen(d.pos - p.pos), kind: 4, index: i)) } }
-        for (i, mn) in world.deployedMines.enumerated() { things.append(Renderable(dist: vlen(mn.pos - p.pos), kind: 5, index: i)) }
+        if includeMines { for (i, mn) in world.deployedMines.enumerated() { things.append(Renderable(dist: vlen(mn.pos - p.pos), kind: 5, index: i)) } }
         if includeSockets { for (i, sk) in world.sockets.enumerated() { things.append(Renderable(dist: vlen(sk.pos - p.pos), kind: 6, index: i)) } }
         for i in world.particles.indices { things.append(Renderable(dist: vlen(world.particles[i].pos - p.pos), kind: 3, index: i)) }
         things.sort { $0.dist > $1.dist }

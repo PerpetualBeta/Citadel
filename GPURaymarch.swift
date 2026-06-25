@@ -254,6 +254,17 @@ enum GPURaymarch {
         float2 g = float2(gx, gy) / (2.0 * e);
         return normalize(n - amt * (tU * g.x + tV * g.y));
     }
+    // ── structural wall relief ── a height field over (along-wall, up): bulkhead
+    // panels divided by recessed seams, plus raised vertical I-beam ribs at wider
+    // intervals. Shaded only (albedo + normal), so it gives the flat walls real
+    // depth + steelwork at zero march cost. uv in world units (1 = a cell).
+    static inline float wallRelief(float2 uv) {
+        float gv = smoothstep(0.04, 0.12, abs(fract(uv.x * 1.7) - 0.5));        // vertical seam grooves
+        float gh = smoothstep(0.04, 0.12, abs(fract(uv.y * 2.5) - 0.5));        // horizontal seam grooves
+        float panel = min(gv, gh);                                             // recessed where the seams cross
+        float rib = 1.0 - smoothstep(0.40, 0.50, abs(fract(uv.x * 0.5) - 0.5));  // a raised steel rib every 2 cells
+        return panel * 0.7 + rib * 0.5;
+    }
     // Fresnel-weighted Blinn-Phong specular lobe (BeautyProof's spec term).
     static inline float3 specBP(float3 n, float3 V, float3 Ld, float rough, float3 f0) {
         float3 H = normalize(Ld + V);
@@ -383,7 +394,7 @@ enum GPURaymarch {
             float gd = min(min(dWp, min(p.y, ceilH - p.y)), wallPipes(p, dWp, ceilH, peP));   // grid incl. routed pipe
             float itemMat = 0.0;
             float4 cf = (nMon > 0) ? creatureField(p, nMon, mons, shapes, itemMat) : float4(0.0, 0.0, 0.0, 1e9);
-            float3 alb; float emis = 0.0; bool reflective = false; bool isItem = false; bool isProj = false; bool isCreature = false; bool isProp = false; bool isDrum = false; bool isSocket = false;
+            float3 alb; float emis = 0.0; bool reflective = false; bool isItem = false; bool isProj = false; bool isCreature = false; bool isProp = false; bool isDrum = false; bool isSocket = false; bool isMine = false;
             float rough = 0.7, metal = 0.0;   // PBR surface params, set per surface below
             if (cf.w < gd) {                                     // a creature / pickup / projectile / prop surface
                 alb = cf.rgb;
@@ -391,7 +402,8 @@ enum GPURaymarch {
                 isProj = itemMat > 1.5 && itemMat < 2.5;         // c.z = 2 → glowing projectile orb
                 isProp = itemMat > 2.5 && itemMat < 3.5;         // c.z = 3 → static furniture / fixture
                 isDrum = itemMat > 3.5 && itemMat < 4.5;         // c.z = 4 → fuel drum
-                isSocket = itemMat > 4.5;                        // c.z = 5 → recharge socket
+                isSocket = itemMat > 4.5 && itemMat < 5.5;       // c.z = 5 → recharge socket
+                isMine = itemMat > 5.5;                          // c.z = 6 → deployed mine
                 isCreature = itemMat < 0.5;                      // c.z = 0 → living flesh
                 if (isProp) {                                    // MATTE battle-worn steel (low spec → not shiny plastic); a powered screen self-glows
                     rough = 0.82; metal = 0.12;
@@ -447,6 +459,12 @@ enum GPURaymarch {
                     float lum = dot(alb, float3(0.299, 0.587, 0.114));
                     emis = smoothstep(1.0, 1.5, lum) * 2.6;                         // only the bright cell glows
                 }
+                if (isMine) {                                    // matte steel puck + a pulsing red trigger LED
+                    rough = 0.6; metal = 0.2;
+                    bool led = alb.r > 0.7 && alb.r > (alb.g + alb.b) * 1.5;        // the red lamp
+                    if (led) emis = 1.6 + 1.4 * (0.5 + 0.5 * sin(time * 7.0));      // blinks so you spot it in the dark
+                    else     alb *= 0.85;                                          // dark steel body
+                }
                 if (isCreature) {
                     rough = 0.34; metal = 0.0;                   // glossy WET CHITIN
                     // scaly micro-relief — breaks the gloss into wet organic scales
@@ -500,7 +518,20 @@ enum GPURaymarch {
                     // breaking up the highlight (was flat, matte, light-frozen)
                     float2 wm = wallMaterial(id); rough = wm.x; metal = wm.y;
                     float3 tU = (abs(n.x) > abs(n.z)) ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
-                    n = bumpNormal(float2(along, p.y), n, tU, float3(0.0, 1.0, 0.0), 2.6, 0.16 * smoothstep(0.15, 0.55, rough));
+                    // ── structural depth ── recessed bulkhead panels + raised steel
+                    //   ribs: grooves read darker (recessed), ribs as brighter steel,
+                    //   and the normal follows the relief so the flat wall has DEPTH.
+                    float2 ruv = float2(along, p.y);
+                    float panelLit = smoothstep(0.04, 0.12, abs(fract(along * 1.7) - 0.5))
+                                   * smoothstep(0.04, 0.12, abs(fract(p.y * 2.5) - 0.5));
+                    alb *= 0.5 + 0.5 * panelLit;                               // grooves recessed (darker)
+                    float ribLit = 1.0 - smoothstep(0.40, 0.50, abs(fract(along * 0.5) - 0.5));
+                    alb = mix(alb, alb * 1.45 + float3(0.05), ribLit * 0.5);   // ribs catch as proud steel
+                    float re = 0.03;
+                    float rdu = wallRelief(ruv + float2(re, 0.0)) - wallRelief(ruv - float2(re, 0.0));
+                    float rdv = wallRelief(ruv + float2(0.0, re)) - wallRelief(ruv - float2(0.0, re));
+                    n = normalize(n - (tU * rdu + float3(0.0, 1.0, 0.0) * rdv) * 0.85);   // relief shapes the normal
+                    n = bumpNormal(float2(along, p.y), n, tU, float3(0.0, 1.0, 0.0), 2.6, 0.12 * smoothstep(0.15, 0.55, rough));   // + fine grain
                 } else if (dF <= dC) {                           // floor
                     int2 c = clamp(int2(floor(p.xz)), int2(0), dim - 1);
                     uint id = floorId.read(uint2(c)).r;
@@ -589,20 +620,24 @@ enum GPURaymarch {
             float3 core = mix(alb, float3(1.0, 0.98, 0.95), pow(facing, 4.0) * 0.5);   // white only at the very centre
             col = core * (1.3 + 2.3 * facing) * exp(-t * 0.02);                        // colour-saturated glow, blooms
           } else if (isItem) {
-            // pickups: controlled shading so the OBJECT reads — a soft key defines
-            // the form, a rim picks out the silhouette, room colour keeps it sat in
-            // the scene, and the whole thing is held below the bloom threshold so a
-            // white medkit stays a white briefcase instead of a glowing blob
-            float3 room = clamp(lightTex.sample(s, p.xz / mapWH).rgb, 0.4, 1.0);
+            // pickups SIT IN THE WORLD — lit mostly by the room light + the marine's
+            // own headlamp (like everything else he sees), not a self-floodlit floating
+            // beacon. Only a faint rim + a touch of self-glow on the very brightest
+            // detail keep them findable in the dark, without making them pop out.
+            float3 room = clamp(lightTex.sample(s, p.xz / mapWH).rgb, 0.25, 1.0);
             float3 kd = normalize(float3(0.4, 0.85, 0.3));
-            float key = 0.32 + 0.68 * max(0.0, dot(n, kd));        // strong directional key — defines facets
-            float fill = 0.18 * max(0.0, dot(n, normalize(float3(-0.5, 0.2, -0.4))));  // soft back-fill, no black faces
+            float key = 0.20 + 0.40 * max(0.0, dot(n, kd));        // gentle ambient key (was a strong floodlight)
+            // headlamp — a pickup brightens when the beam falls on it, matching the world
+            float3 toH = ro - p; float hd = length(toH);
+            float3 Lh = hd > 1e-4 ? toH / hd : float3(0.0, 1.0, 0.0);
+            float beam = smoothstep(0.40, 0.88, dot(-Lh, U.fwd.xyz)) * max(0.0, 1.0 - hd / 8.5);
+            float ndl = max(0.0, dot(n, Lh));
             float rim = pow(1.0 - max(0.0, dot(n, -rd)), 3.0);
-            float3 lit = alb * (key + fill) * room + alb * rim * 0.30;
-            // selective self-glow: only the brightest pickup detail (energy cells,
-            // keycards) pushes past 1 and blooms — the white medkit stays controlled
-            float gl = max(0.0, max(alb.r, max(alb.g, alb.b)) - 0.92);
-            lit += alb * gl * 2.2;
+            float3 lit = alb * key * room + alb * (ndl * beam * 0.85) + alb * rim * 0.12;
+            // selective self-glow: only the brightest detail (energy cells, keycards)
+            // glows now, and gently — the rest just sits in the room
+            float gl = max(0.0, max(alb.r, max(alb.g, alb.b)) - 0.95);
+            lit += alb * gl * 1.3;
             col = lit * exp(-t * 0.032);
           } else {
             float3 sect = min(lightTex.sample(s, p.xz / mapWH).rgb, float3(1.0));  // baked sector light (clamped)
@@ -1360,6 +1395,37 @@ enum GPURaymarch {
             mons.append(GMonster(a: SIMD4(sk.pos.x, sk.pos.y, sk.yaw, 1),   // yaw mounts it onto the wall
                                  b: SIMD4(Float(start), Float(sl.count), boundR, boundCY),
                                  c: SIMD4(0, 0, 5, 0)))        // yOff 0 → keep its authored chest height (not floored)
+        }
+        return (mons, shapes)
+    }
+
+    // ── deployed proximity mine (material c.z = 6) — a low floor puck + a pulsing
+    // red trigger LED, so you can spot a live mine in the dark (and not cross your own)
+    static func mineShapes() -> [GShape] {
+        let body = SIMD3<Float>(0.16, 0.17, 0.20), collar = SIMD3<Float>(0.10, 0.11, 0.13)
+        // a small, LOW disc the marine steps over (≈0.23 across, ≈0.12 tall — in line
+        // with the old sprite, not larger). No collision; aliens cross it to trigger it.
+        return [iCylinder(SIMD3(0, 0.026, 0), r: 0.115, halfH: 0.026, round: 0.01, body, 0.01),    // low puck on the deck
+                iCylinder(SIMD3(0, 0.060, 0), r: 0.06, halfH: 0.016, round: 0.008, collar, 0.01),  // collar
+                iSphere(SIMD3(0, 0.090, 0), 0.024, SIMD3<Float>(1.6, 0.10, 0.08))]                  // bright red trigger LED
+    }
+    /// Pack deployed mines (material c.z = 6), feet on the deck.
+    static func packMines(_ mines: [Mine], budget: Int = 48) -> ([GMonster], [GShape]) {
+        var mons: [GMonster] = [], shapes: [GShape] = []
+        for mn in mines {
+            let sl = mineShapes()
+            if shapes.count + sl.count > budget { break }
+            var loY: Float = 1e9, hiY: Float = -1e9
+            for sh in sl { let e = shapeYExtent(sh); loY = min(loY, e.lo); hiY = max(hiY, e.hi) }
+            let boundCY = (loY + hiY) / 2
+            var boundR: Float = 0
+            for sh in sl { boundR = max(boundR, shapeRadius(sh, boundCY)) }
+            boundR += 0.05
+            let start = shapes.count
+            shapes.append(contentsOf: sl)
+            mons.append(GMonster(a: SIMD4(mn.pos.x, mn.pos.y, 0, 1),
+                                 b: SIMD4(Float(start), Float(sl.count), boundR, boundCY),
+                                 c: SIMD4(loY, 0, 6, 0)))   // c.z = 6 → deployed mine
         }
         return (mons, shapes)
     }
