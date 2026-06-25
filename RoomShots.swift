@@ -75,16 +75,170 @@ enum RoomShots {
             print("  wrote \(name) — single barrel on the start cell")
         }
 
-        // fuel-store reliability report — a store stacks ≥3 drums in one cluster, so
-        // the densest cluster size tells us whether a clearly-marked store carved
+        // wall-pipe view — find a routed (piped) wall in a lit room, across seeds,
+        // and frame it obliquely so the pipework reads
+        var pipeShots = 0
+        for seed in stride(from: UInt64(1), through: UInt64(60), by: 1) where pipeShots < 2 {
+            let world = World(level: 1, colonyIndex: 0, seed: seed)
+            world.monsters = []; world.drums = []; world.sockets = []
+            let m = world.map
+            func lum(_ i: Int) -> Float { let c = m.lightColor[i]; return c.x * 0.299 + c.y * 0.587 + c.z * 0.114 }
+            var target: SIMD2<Float>? = nil
+            for y in 0..<m.h { for x in 0..<m.w {
+                let i = m.idx(x, y)
+                if m.pipe[i] > 0.5 && m.wall[i] == 0 && m.doors[i] == nil && lum(i) > 0.6 { target = SIMD2(Float(x) + 0.5, Float(y) + 0.5) }
+            } }
+            guard let tgt = target else { continue }
+            func openLit(_ c: SIMD2<Float>) -> Bool {
+                let x = Int(c.x), y = Int(c.y)
+                return m.inBounds(x, y) && !m.blocksMovement(x, y) && lum(m.idx(x, y)) > 0.35
+            }
+            var cam = tgt, ok = false
+            for back in [Float(3.0), 2.4, 1.8] where !ok {
+                for a in stride(from: Float(0), to: 6.28, by: 0.25) where !ok {
+                    let c = tgt + SIMD2(cos(a), sin(a)) * back
+                    if openLit(c) { cam = c; ok = true }
+                }
+            }
+            guard ok else { continue }
+            world.player.pos = cam
+            world.player.dir = atan2(tgt.y - cam.y, tgt.x - cam.x)
+            world.player.muzzle = 0
+            let canvas = Canvas2D()
+            _ = gpu.render(world, into: canvas)
+            n += 1
+            let name = String(format: "00c-pipes-%d.png", pipeShots)
+            Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent(name))
+            print("  wrote \(name) — piped wall (seed \(seed))")
+            pipeShots += 1
+        }
+
+        // flamethrower view — fire a few ticks (jet particles land in world space),
+        // then render first-person + an oblique side view so the STREAM reads
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 4)
+            world.monsters = []; world.drums = []; world.sockets = []; world.props = []
+            world.player.current = .flamethrower
+            world.player.ammo[AmmoType.fuel.rawValue] = 300
+            let sp = world.player.pos
+            let dirs = [SIMD2<Float>(1, 0), SIMD2<Float>(-1, 0), SIMD2<Float>(0, 1), SIMD2<Float>(0, -1)]
+            var aim = dirs[0], bestClear: Float = 0
+            for d in dirs { var t: Float = 0.5; while t < 6 && !world.map.blocksMovement(Int(sp.x + d.x * t), Int(sp.y + d.y * t)) { t += 0.25 }; if t > bestClear { bestClear = t; aim = d } }
+            world.player.dir = atan2(aim.y, aim.x)
+            let input = InputState(); input.kb.fire = true
+            let audio = AudioEngine()
+            for _ in 0..<8 { world.update(dt: 0.06, input: input, audio: audio) }   // build the jet
+            func openLit(_ c: SIMD2<Float>) -> Bool {
+                let x = Int(c.x), y = Int(c.y)
+                guard world.map.inBounds(x, y), !world.map.blocksMovement(x, y) else { return false }
+                let col = world.map.lightColor[world.map.idx(x, y)]; return col.x * 0.299 + col.y * 0.587 + col.z * 0.114 > 0.35
+            }
+            // first-person — what the player sees
+            world.player.pos = sp; world.player.dir = atan2(aim.y, aim.x); world.player.muzzle = 0
+            var canvas = Canvas2D(); _ = gpu.render(world, into: canvas); n += 1
+            Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent("00e-flame-fp.png"))
+            // oblique — camera beside the jet so the stream length reads
+            let perp = SIMD2<Float>(-aim.y, aim.x)
+            var cam = sp - aim * 0.6 + perp * 1.8
+            if !openLit(cam) { cam = sp - aim * 0.6 - perp * 1.8 }
+            if openLit(cam) {
+                let look = sp + aim * 1.7
+                world.player.pos = cam; world.player.dir = atan2(look.y - cam.y, look.x - cam.x); world.player.muzzle = 0
+                canvas = Canvas2D(); _ = gpu.render(world, into: canvas); n += 1
+                Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent("00e-flame-side.png"))
+            }
+            print("  wrote 00e-flame-fp/side.png — flamethrower jet")
+        }
+
+        // recharge-socket view — verify it's a flush WALL PANEL (not a floor unit):
+        // stand in the room facing the wall it's mounted on
+        for seed in stride(from: UInt64(1), through: UInt64(60), by: 1) {
+            let world = World(level: 1, colonyIndex: 0, seed: seed)
+            world.monsters = []; world.drums = []; world.props = []
+            guard let sk = world.sockets.first else { continue }
+            let m = world.map
+            func openLit(_ c: SIMD2<Float>) -> Bool {
+                let x = Int(c.x), y = Int(c.y)
+                guard m.inBounds(x, y), !m.blocksMovement(x, y) else { return false }
+                let col = m.lightColor[m.idx(x, y)]; return col.x * 0.299 + col.y * 0.587 + col.z * 0.114 > 0.4
+            }
+            guard openLit(sk.pos) else { continue }
+            let inward = SIMD2<Float>(-sin(sk.yaw), cos(sk.yaw))   // panel faces this way; camera stands on this side
+            var cam = sk.pos, ok = false
+            for back in [Float(2.2), 1.8, 1.4] where !ok {
+                let c = sk.pos + inward * back
+                if openLit(c) { cam = c; ok = true }
+            }
+            guard ok else { continue }
+            world.player.pos = cam
+            world.player.dir = atan2(sk.pos.y - cam.y, sk.pos.x - cam.x)
+            world.player.muzzle = 0
+            let canvas = Canvas2D()
+            _ = gpu.render(world, into: canvas)
+            n += 1
+            Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent("00f-socket.png"))
+            print("  wrote 00f-socket.png — wall recharge panel (seed \(seed))")
+            break
+        }
+
+        // door view — verify the door is a THIN sliding panel (not a moving wall
+        // block): frame a door from the room side, render it closed then part-open
+        for seed in stride(from: UInt64(1), through: UInt64(60), by: 1) {
+            let world = World(level: 1, colonyIndex: 0, seed: seed)   // level 1: bright start area
+            world.monsters = []; world.drums = []; world.sockets = []; world.props = []
+            let m = world.map
+            func litOpen(_ x: Int, _ y: Int) -> Bool {
+                guard m.inBounds(x, y), m.wall[m.idx(x, y)] == 0, m.doors[m.idx(x, y)] == nil else { return false }
+                let c = m.lightColor[m.idx(x, y)]; return c.x * 0.299 + c.y * 0.587 + c.z * 0.114 > 0.4
+            }
+            var doorCell = -1
+            var camP = SIMD2<Float>(0, 0)
+            for (dc, _) in m.doors {
+                let dx = dc % m.w, dy = dc / m.w
+                for (ox, oy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    guard litOpen(dx + ox, dy + oy) else { continue }    // lit open cell in front of the door
+                    var cx = dx + ox, cy = dy + oy, steps = 1            // walk back through lit open cells only
+                    while steps < 3 && litOpen(dx + ox * (steps + 1), dy + oy * (steps + 1)) { cx = dx + ox * (steps + 1); cy = dy + oy * (steps + 1); steps += 1 }
+                    doorCell = dc; camP = SIMD2(Float(cx) + 0.5, Float(cy) + 0.5); break
+                }
+                if doorCell >= 0 { break }
+            }
+            guard doorCell >= 0 else { continue }
+            let doorP = SIMD2(Float(doorCell % m.w) + 0.5, Float(doorCell / m.w) + 0.5)
+            world.player.pos = camP
+            world.player.dir = atan2(doorP.y - camP.y, doorP.x - camP.x)
+            world.player.muzzle = 0
+            for (oi, op) in [Float(0.0), 0.45].enumerated() {
+                m.doors[doorCell]?.open = op
+                let canvas = Canvas2D()
+                _ = gpu.render(world, into: canvas)
+                n += 1
+                let name = oi == 0 ? "00d-door-closed.png" : "00d-door-open.png"
+                Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent(name))
+                print("  wrote \(name) — door (seed \(seed), open \(op))")
+            }
+            break
+        }
+
+        // fuel-store + pipe-routing report. The pipe guarantee is hard: NO piped open
+        // cell may sit next to a door (else a pipe crosses an opening) or on a prop.
         for level in 1...8 {
             let world = World(level: level, colonyIndex: (level - 1) % 6, seed: UInt64(level) &* 2654435761 &+ 11)
+            let m = world.map
             var maxCluster = 0
-            for d in world.drums {
-                var c = 0; for q in world.drums where vlen(q.pos - d.pos) < 2.4 { c += 1 }
-                maxCluster = max(maxCluster, c)
+            for d in world.drums { var c = 0; for q in world.drums where vlen(q.pos - d.pos) < 2.4 { c += 1 }; maxCluster = max(maxCluster, c) }
+            let propCells = Set(world.props.map { m.idx(Int($0.pos.x), Int($0.pos.y)) })
+            var pipedCells = 0, pipeNearDoor = 0, pipeOnProp = 0
+            for i in 0..<(m.w * m.h) where m.pipe[i] > 0.5 && m.wall[i] == 0 {
+                pipedCells += 1
+                let x = i % m.w, y = i / m.w
+                for oy in -1...1 { for ox in -1...1 where m.inBounds(x + ox, y + oy) {
+                    if m.doors[m.idx(x + ox, y + oy)] != nil { pipeNearDoor += 1 }
+                } }
+                if propCells.contains(i) { pipeOnProp += 1 }
             }
-            print("  L\(level): \(world.drums.count) drums, densest cluster \(maxCluster) \(maxCluster >= 3 ? "(fuel store ✓)" : "(no store)")")
+            let store = maxCluster >= 3 ? "store✓" : "      "
+            print("  L\(level): drums \(world.drums.count) cluster \(maxCluster) \(store) · piped \(pipedCells) cells · near-door \(pipeNearDoor) · on-prop \(pipeOnProp)")
         }
 
         for level in [1, 2, 3, 5, 7, 8] {

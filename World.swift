@@ -60,8 +60,11 @@ struct Mine {
 /// cells from its finite reserve — a couple per level so running the rifle dry
 /// against the plasma-only Queen can't softlock the run. Indestructible.
 struct Socket {
-    var pos: SIMD2<Float>
+    var pos: SIMD2<Float>        // the open cell the marine stands in to plug in
+    var yaw: Float = 0           // facing — the panel mounts on the wall behind, facing into the room
     var charge: Int              // energy cells left to dispense
+    var maxCharge: Int = 1       // full reserve (drives the wall panel's capacity readout)
+    var regenAcc: Float = 0      // fractional self-recharge accumulator (powered infrastructure tops itself back up)
     var pulse: Float = 0         // glow pulse accumulator (renderer reads it)
 }
 
@@ -104,7 +107,12 @@ final class World {
     var drums: [Drum] = []             // fuel drums (refuel + shootable bombs)
     var deployedMines: [Mine] = []     // proximity mines the marine has dropped
     var sockets: [Socket] = []         // fixed plasma recharge stations (anti-softlock)
-    var props: [Prop] = []             // decorative furniture/fixtures (no collision; set-dressing)
+    var props: [Prop] = []             // furniture/fixtures (set-dressing; SOLID — see propColliders)
+    // Solid-collision boxes for the furniture, built once at level load (oriented to
+    // each piece, flush-matched to where it renders). Static — pure-CPU, no per-frame
+    // rebuild and nothing on the GPU, so collision never touches the thermal budget.
+    private struct PropBox { let c: SIMD2<Float>; let hw, hd, boundR: Float; let tangent, inward: SIMD2<Float> }
+    private var propColliders: [PropBox] = []
 
     // resource-prop tuning — one table so balancing lives in one place
     private let drumFuel = 150               // flamethrower fuel a full drum holds
@@ -122,6 +130,10 @@ final class World {
     // cell economy. Dispenses fast while you stand in it.
     private let socketCharge = MonsterKind.queen.def.maxHealth / WeaponKind.plasma.def.damage * 3
     private let socketRechargeRate: Float = 80   // cells/sec dispensed while standing in a socket
+    // the panel is wired to the grid: its reserve trickles back up to full on its own,
+    // so draining every socket is never a permanent softlock — a full reserve recovers
+    // in ~2 minutes (derived, not magic). Far slower than it dispenses.
+    private var socketRegenRate: Float { Float(socketCharge) / 120 }
     private let socketRange: Float = 0.8
     private var prevDeploy = false           // edge-track the mine-deploy button
     private var refueling = false            // edge-track standing at a drum (for the message)
@@ -141,6 +153,8 @@ final class World {
     // player motion (for monsters leading their shots)
     private var lastPlayerPos: SIMD2<Float> = .zero
     private var playerVel: SIMD2<Float> = .zero
+    private var stepDist: Float = 0     // ground covered since the last footfall (drives the splash cadence)
+    private var stepFoot = 0            // alternates L/R
 
     init(level: Int, colonyIndex: Int, seed: UInt64) {
         self.level = level
@@ -155,8 +169,17 @@ final class World {
         for s in gen.monsters { monsters.append(Monster(kind: s.kind, pos: s.pos)) }
         for s in gen.items { items.append(Item(kind: s.kind, pos: s.pos, bob: rng.f(0, 6.28))) }
         for d in gen.drums { drums.append(Drum(pos: d, fuel: drumFuel, health: drumHealth)) }
-        for s in gen.sockets { sockets.append(Socket(pos: s, charge: socketCharge)) }
+        for s in gen.sockets { sockets.append(Socket(pos: s.pos, yaw: s.yaw, charge: socketCharge, maxCharge: socketCharge)) }
         self.props = gen.props
+        // furniture solid-collision boxes — each piece's authored footprint, oriented
+        // by its yaw and flush-matched to where it renders against the wall
+        for pr in gen.props where pr.kind != .wallPipe {
+            let (hw, hd) = GPURaymarch.furnitureFootprint(pr.kind)
+            let inward = SIMD2<Float>(-sin(pr.yaw), cos(pr.yaw))
+            let tangent = SIMD2<Float>(cos(pr.yaw), sin(pr.yaw))
+            let center = pr.againstWall ? pr.pos - inward * (0.46 - hd) : pr.pos
+            propColliders.append(PropBox(c: center, hw: hw, hd: hd, boundR: (hw * hw + hd * hd).squareRoot(), tangent: tangent, inward: inward))
+        }
         self.monsterTotal = monsters.count
         buildSteamVents()
         buildSparkSites()
@@ -195,14 +218,21 @@ final class World {
 
         handleWeaponSwitch(input: input)
         turn(dt: dt, input: input)
-        let bobBefore = player.bobPhase
+        let posBefore = player.pos
         move(dt: dt, input: input)
-        // a footfall each half bob-cycle; on the flooded lower floors (7 & 8) it
-        // splashes, louder the deeper the standing water
-        let step = Int(player.bobPhase / .pi)
-        if step != Int(bobBefore / .pi) {
+        // a footfall each STRIDE of ground covered (not a fixed bob cadence), so the
+        // splash rate tracks the actual pace — quicker when you run, in any direction.
+        // Stride lengthens a little with speed so a sprint reads urgent, not frantic.
+        let moved = vlen(player.pos - posBefore)
+        let stride: Float = max(0.62, 0.52 + 0.06 * (moved / max(dt, 1e-4)))
+        stepDist += moved
+        if stepDist >= stride {
             let flood = Lighting.floodLevel(level: level)
-            if flood > 0 { audio.wade(flood, foot: step % 2) }   // alternate left/right
+            while stepDist >= stride {                            // on the flooded lower floors (7 & 8) it splashes
+                stepDist -= stride
+                stepFoot ^= 1
+                if flood > 0 { audio.wade(flood, foot: stepFoot) }   // alternate left/right, louder the deeper the water
+            }
         }
         // smoothed player velocity for monster lead-aim (clamped to a sane top speed)
         var pv = (player.pos - lastPlayerPos) / max(dt, 1e-4)
@@ -318,13 +348,33 @@ final class World {
             let dx = m.pos.x - x, dy = m.pos.y - y
             if dx * dx + dy * dy < rr * rr { return false }
         }
-        // fuel drums are solid props — you walk up to them, not through them
-        for d in drums {
+        // furniture + drums are solid objects, not projections — you walk up to them
+        if blockedBySolidProp(x, y, r) { return false }
+        return true
+    }
+
+    /// True if a circle (centre x,y, radius r) overlaps any SOLID prop — a furniture
+    /// box (static, oriented) or a live fuel drum (dynamic circle). Shared by player
+    /// and monster movement so NEITHER walks through furniture. Pure CPU: a handful of
+    /// cheap tests per move (bounding-circle rejected first), nothing on the GPU.
+    private func blockedBySolidProp(_ x: Float, _ y: Float, _ r: Float) -> Bool {
+        for b in propColliders {
+            let relx = x - b.c.x, rely = y - b.c.y
+            let br = b.boundR + r
+            if relx * relx + rely * rely > br * br { continue }              // quick reject (far)
+            let dW = relx * b.tangent.x + rely * b.tangent.y                 // into the box's frame
+            let dD = relx * b.inward.x + rely * b.inward.y
+            let cw = max(-b.hw, min(b.hw, dW)), cd = max(-b.hd, min(b.hd, dD))   // closest point on the box
+            let ox = relx - (b.tangent.x * cw + b.inward.x * cd)
+            let oy = rely - (b.tangent.y * cw + b.inward.y * cd)
+            if ox * ox + oy * oy < r * r { return true }                     // circle overlaps the box
+        }
+        for d in drums where d.health > 0 {                                  // drums are solid too
             let rr: Float = 0.42 + r
             let dx = d.pos.x - x, dy = d.pos.y - y
-            if dx * dx + dy * dy < rr * rr { return false }
+            if dx * dx + dy * dy < rr * rr { return true }
         }
-        return true
+        return false
     }
 
     private func handleUse(input: InputState, audio: AudioEngine) {
@@ -491,17 +541,25 @@ final class World {
             if nd.x * dir.x + nd.y * dir.y < cosHalf { continue }
             damageDrum(di, def.damage, audio: audio)
         }
-        for _ in 0..<6 {                                            // continuous tongue of flame
-            let a = player.dir + rng.f(-def.spread, def.spread)
+        // a coherent JET of flame — overlapping fire particles seeded along the WHOLE
+        // aim, from the nozzle out to the cone's reach: tight + white-hot at the
+        // nozzle, broadening and cooling downrange. Re-seeded densely every tick so it
+        // reads as one continuous stream, not the scattered puffs it threw before.
+        for _ in 0..<18 {
+            let t = rng.f(0, 1)                                     // fraction along the jet (0 nozzle … 1 tip)
+            let widen = def.spread * (0.15 + 0.85 * t)             // narrow at the nozzle, opening downrange
+            let a = player.dir + rng.f(-widen, widen)
             let fdir = SIMD2<Float>(cos(a), sin(a))
-            let o = player.pos + fdir * rng.f(0.35, 0.7)
-            particles.append(Particle(pos: o + SIMD2(rng.f(-0.05, 0.05), rng.f(-0.05, 0.05)),
-                                      vel: fdir * rng.f(2.4, 5.0),
-                                      life: rng.f(0.3, 0.6), maxLife: 0.6, color: 0,
-                                      size: rng.f(9, 16), height: rng.f(0.32, 0.55), rise: rng.f(0.5, 1.1),
-                                      maxAlpha: 0.85, fire: true))
+            let dist = 0.3 + t * (def.range - 0.3)
+            let jit: Float = 0.03 + 0.06 * t
+            let o = player.pos + fdir * dist + SIMD2(rng.f(-jit, jit), rng.f(-jit, jit))
+            particles.append(Particle(pos: o,
+                                      vel: fdir * (5.0 - 3.0 * t),                  // fast at the nozzle, easing downrange
+                                      life: rng.f(0.10, 0.22), maxLife: 0.22, color: 0,
+                                      size: 6 + 16 * t, height: 0.30 + 0.34 * t, rise: 0.3 + 0.5 * t,
+                                      maxAlpha: 0.9, fire: true))
         }
-        if particles.count > 500 { particles.removeFirst(particles.count - 500) }
+        if particles.count > 700 { particles.removeFirst(particles.count - 700) }
     }
 
     private func autoSwitchIfEmpty() {
@@ -840,6 +898,7 @@ final class World {
         let r = m.def.radius
         m.wallHold = max(0, m.wallHold - dt)        // tick down the corner-follow commitment
         func free(_ x: Float, _ y: Float) -> Bool {
+            if blockedBySolidProp(x, y, r) { return false }                  // furniture/drums are solid for aliens too
             if m.def.flying { return !map.blocksMovement(Int(x), Int(y)) }   // flyers ignore hazard, not walls
             return !map.blocksMovement(Int(x - r), Int(y - r)) && !map.blocksMovement(Int(x + r), Int(y + r))
                 && !map.blocksMovement(Int(x - r), Int(y + r)) && !map.blocksMovement(Int(x + r), Int(y - r))
@@ -1032,14 +1091,25 @@ final class World {
     }
 
     /// Stand in a recharge socket → it pumps energy cells into the plasma rifle (up
-    /// to its cap) from the socket's finite reserve, the cell glow pulsing as it
-    /// works; once drained it's a dead fixture. The marine's lifeline when the
-    /// cells run out against a plasma-only Queen.
+    /// to its cap) from the socket's reserve, the cell glow pulsing as it works. The
+    /// reserve is wired to the grid and trickles back up on its own, so a drained
+    /// socket isn't dead — wait and it recovers. The marine's lifeline when the cells
+    /// run out against a plasma-only Queen.
     private func rechargeAtSockets(dt: Float, audio: AudioEngine) {
         var didCharge = false
         let ci = AmmoType.cells.rawValue, cap = AmmoType.cells.capacity
         for i in sockets.indices {
             sockets[i].pulse += dt
+            // powered infrastructure: the reserve trickles back up to full on its own
+            // (so a fully-drained grid recovers if the marine waits / fights elsewhere)
+            if sockets[i].charge < sockets[i].maxCharge {
+                sockets[i].regenAcc += socketRegenRate * dt
+                if sockets[i].regenAcc >= 1 {
+                    let add = Int(sockets[i].regenAcc)
+                    sockets[i].charge = min(sockets[i].maxCharge, sockets[i].charge + add)
+                    sockets[i].regenAcc -= Float(add)
+                }
+            }
             if didCharge || sockets[i].charge <= 0 || player.ammo[ci] >= cap { continue }
             if vlen(sockets[i].pos - player.pos) < socketRange {
                 let take = min(max(1, Int(socketRechargeRate * dt)), min(cap - player.ammo[ci], sockets[i].charge))

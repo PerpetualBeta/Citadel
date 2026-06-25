@@ -241,6 +241,14 @@ enum SmokeTest {
         check(cw.player.ammoCount(.cells) > 0, "a socket recharges the dry plasma rifle (0 → \(cw.player.ammoCount(.cells)))")
         check(cw.sockets.first.map { $0.charge < 135 } ?? true, "the socket's reserve drains as it recharges")
 
+        // a drained socket trickles its OWN reserve back up (powered infrastructure —
+        // depleting every socket is never a permanent softlock). Socket far from the
+        // marine so nothing dispenses; just let it sit.
+        let sw2 = World(level: 1, colonyIndex: 0, seed: 1234)
+        sw2.sockets = [Socket(pos: sw2.player.pos + SIMD2<Float>(30, 30), charge: 0, maxCharge: 600)]
+        for _ in 0..<300 { sw2.update(dt: 1.0 / 60, input: InputState(), audio: audio) }   // ~5s idle
+        check((sw2.sockets.first?.charge ?? 0) > 0, "a drained socket recharges its own reserve over time (0 → \(sw2.sockets.first?.charge ?? 0))")
+
         // 2h3. rooms are furnished — decorative set-dressing (bunks / desks + powered
         // terminals / lockers / pipe runs) so a recently-active colony doesn't read as
         // empty boxes. Props carry NO collision, but must still place sensibly: never
@@ -262,6 +270,31 @@ enum SmokeTest {
         check(propOnItem == 0, "no prop spawns on a pickup (\(propOnItem))")
         check(propInWall == 0, "every prop foots on open floor, never inside a wall (\(propInWall))")
         check(propInDoor == 0, "no prop sits in a doorway (\(propInDoor))")
+
+        // furniture is SOLID — drive the marine straight at a bunk: he must advance
+        // toward it then be STOPPED on the room side (never walk through to the wall).
+        // along = distance from the bunk centre along its facing (start 1.3 → stopped).
+        var furnitureTested = false
+        for seed in stride(from: UInt64(1), through: UInt64(120), by: 1) where !furnitureTested {
+            let fw3 = World(level: 1, colonyIndex: 0, seed: seed)
+            guard let bunk = fw3.props.first(where: { $0.kind == .bunk && $0.againstWall }) else { continue }
+            let inward = SIMD2<Float>(-sin(bunk.yaw), cos(bunk.yaw))
+            let start = bunk.pos + inward * 1.3
+            // a clear, standable start with an open straight approach to the bunk
+            guard !fw3.map.blocksMovement(Int(start.x), Int(start.y)),
+                  !fw3.props.contains(where: { vlen($0.pos - start) < 0.8 }),
+                  !fw3.map.blocksMovement(Int(bunk.pos.x + inward.x * 0.8), Int(bunk.pos.y + inward.y * 0.8)) else { continue }
+            fw3.player.pos = start
+            fw3.player.dir = atan2(-inward.y, -inward.x)                 // face the bunk
+            let push = InputState(); push.kb.forward = true
+            for _ in 0..<120 { fw3.update(dt: 1.0 / 60, input: push, audio: audio) }   // walk hard into it
+            let along = (fw3.player.pos.x - bunk.pos.x) * inward.x + (fw3.player.pos.y - bunk.pos.y) * inward.y
+            if along < 1.0 {                                            // only count it if he actually advanced
+                check(along > 0.2, "the marine is stopped by a bunk, can't walk through (along \(String(format: "%.2f", along)))")
+                furnitureTested = true
+            }
+        }
+        check(furnitureTested, "exercised furniture collision against a bunk")
 
         // building / floor / planet progression — the campaign structure
         check(Progression.floorInBuilding(1) == 1 && Progression.floorInBuilding(8) == 8, "floors run 1…8 within a citadel")

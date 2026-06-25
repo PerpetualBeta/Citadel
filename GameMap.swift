@@ -34,6 +34,7 @@ final class GameMap {
     var hazard: [Bool]          // damaging floor
     var doors: [Int: DoorState] = [:]
     var visited: [Bool]         // for the automap / reveal
+    var pipe: [Float]           // baked pipe-routing mask: 1 = a wall pipe runs along this open cell, 0 = none (dives into the wall toward 0)
 
     var playerStart = SIMD2<Float>(1.5, 1.5)
     var playerDir: Float = 0
@@ -52,6 +53,7 @@ final class GameMap {
         lightColor = [SIMD3<Float>](repeating: SIMD3(0.8, 0.8, 0.8), count: n)
         hazard = [Bool](repeating: false, count: n)
         visited = [Bool](repeating: false, count: n)
+        pipe = [Float](repeating: 0, count: n)
     }
 
     @inline(__always) func idx(_ x: Int, _ y: Int) -> Int { y * w + x }

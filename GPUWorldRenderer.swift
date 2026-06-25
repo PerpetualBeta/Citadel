@@ -73,10 +73,10 @@ final class GPUWorldRenderer {
         gpuReady = false
         gpuMapW = map.w; gpuMapH = map.h
         let (df, sw, sh) = GPURaymarch.buildDistanceField(map)
-        let dtDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r32Float, width: sw, height: sh, mipmapped: false)
+        let dtDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg32Float, width: sw, height: sh, mipmapped: false)   // .r wall distance · .g pipe-routing enable
         dtDesc.usage = .shaderRead; dtDesc.storageMode = .shared
         dtTex = device.makeTexture(descriptor: dtDesc)
-        df.withUnsafeBytes { dtTex?.replace(region: MTLRegionMake2D(0, 0, sw, sh), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: sw * 4) }
+        df.withUnsafeBytes { dtTex?.replace(region: MTLRegionMake2D(0, 0, sw, sh), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: sw * 8) }
         var lc = [SIMD4<Float>](repeating: .zero, count: map.w * map.h)
         for k in 0..<lc.count { let c = map.lightColor[k]; lc[k] = SIMD4(c.x, c.y, c.z, 1) }
         let liDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba32Float, width: map.w, height: map.h, mipmapped: false)
@@ -252,7 +252,7 @@ final class GPUWorldRenderer {
         if sig != gpuDoorSig {
             gpuDoorSig = sig
             let (df, sw, sh) = GPURaymarch.buildDistanceField(world.map)
-            df.withUnsafeBytes { dt.replace(region: MTLRegionMake2D(0, 0, sw, sh), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: sw * 4) }
+            df.withUnsafeBytes { dt.replace(region: MTLRegionMake2D(0, 0, sw, sh), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: sw * 8) }
         }
         let p = world.player
         let plane = RenderConfig.cameraPlane

@@ -18,7 +18,7 @@ struct GeneratedLevel {
     let monsters: [MonsterSpawn]
     let items: [ItemSpawn]
     let drums: [SIMD2<Float>]      // fuel-drum props (refuel + shootable bombs)
-    let sockets: [SIMD2<Float>]    // plasma recharge stations (top up cells; anti-softlock)
+    let sockets: [(pos: SIMD2<Float>, yaw: Float)]   // wall-mounted plasma recharge panels (pos = the cell you stand in; yaw faces the room)
     let props: [Prop]              // decorative furniture/fixtures (set-dressing, no collision)
     let colonyName: String
     let secretCount: Int
@@ -415,11 +415,11 @@ enum MapGen {
 
     private static func populate(map: GameMap, rooms: [Room], level: Int, theme: Theme,
                                  keyCells: [KeyColor: Int], exitRoomIndex: Int, rng: inout Rng)
-        -> ([MonsterSpawn], [ItemSpawn], [SIMD2<Float>], [SIMD2<Float>], [Prop]) {
+        -> ([MonsterSpawn], [ItemSpawn], [SIMD2<Float>], [(pos: SIMD2<Float>, yaw: Float)], [Prop]) {
         var monsters: [MonsterSpawn] = []
         var items: [ItemSpawn] = []
         var drums: [SIMD2<Float>] = []
-        var sockets: [SIMD2<Float>] = []
+        var sockets: [(pos: SIMD2<Float>, yaw: Float)] = []
         var props: [Prop] = []
 
         func center(_ cell: Int) -> SIMD2<Float> { SIMD2(Float(cell % map.w) + 0.5, Float(cell / map.w) + 0.5) }
@@ -572,22 +572,8 @@ enum MapGen {
                 }
             }
         }
-        // recharge sockets — a couple of fixed plasma-cell stations per level so a
-        // marine who runs the rifle dry against the (plasma-only) Queen can top up
-        // and isn't softlocked. Spread out, clear of drums / pickups / the spawn.
-        if rooms.count > 1 {
-            for _ in 0..<2 {                                     // "not many, just a couple"
-                for _ in 0..<40 {
-                    let r = rooms[rng.i(1, rooms.count - 1)]
-                    guard let c = randCell(in: r) else { continue }
-                    let p = center(c)
-                    if sockets.contains(where: { vlen($0 - p) < 2.2 }) { continue }      // keep them apart (relaxed for small maps)
-                    if placed.contains(where: { vlen($0 - p) < 1.0 }) { continue }       // clear of every other spawn
-                    sockets.append(p); placed.append(p)
-                    break
-                }
-            }
-        }
+        // recharge sockets are WALL-MOUNTED panels now — placed against a free wall
+        // in the furnish pass below (they need a wall behind them), not free-standing.
 
         // ── furnish the rooms ── the citadels were working colonies until the swarm
         // came; the rooms should look lived-in, not like empty test boxes. Furniture
@@ -680,12 +666,71 @@ enum MapGen {
                     if !hazard { for s in slots where placeProp(.desk, s) { break } }
                 }
             }
-            // NOTE: free-standing SDF pipe runs are deferred. As props they cost the
-            // GPU dearly (a long run's bounding sphere is evaluated across most of a
-            // room's rays) AND they read poorly. The objects rework will reintroduce
-            // pipework/steelwork BAKED INTO THE WALL geometry (part of the grid SDF,
-            // so effectively free) rather than as separate per-step instances.
         }
+
+        // ── recharge sockets ── WALL-MOUNTED plasma panels (a couple per level), on a
+        // free wall slot clear of furniture, spread out, facing the room. The marine
+        // stands in the slot cell to plug in (pos); the panel mounts on the wall behind
+        // (yaw). Anti-softlock for the plasma-only Queen.
+        if rooms.count > 1 {
+            var nSock = 0
+            for r in rooms.dropFirst() where nSock < 2 {
+                for s in wallSlots(r) where freeCell(s.pos, 1.0) && !sockets.contains(where: { vlen($0.pos - s.pos) < 3 }) {
+                    sockets.append((pos: s.pos, yaw: yawFor(s.inward))); placed.append(s.pos); nSock += 1; break
+                }
+            }
+            if sockets.isEmpty {                                 // belt-and-braces: every level must carry one
+                outer: for r in rooms.dropFirst() {
+                    for s in wallSlots(r) where freeCell(s.pos, 0.6) {
+                        sockets.append((pos: s.pos, yaw: yawFor(s.inward))); placed.append(s.pos); break outer
+                    }
+                }
+            }
+        }
+
+        // ── pipe routing ── bake which open cells carry a wall pipe. Pipes run along
+        // the walls of SELECTED rooms only (≈60%, for variation), and are kept clear
+        // of every OPENING (door / corridor mouth), every wall-prop and the exit — so
+        // a pipe NEVER crosses a doorway or runs through a locker. The kernel ramps it
+        // down INTO the wall (a drilled-hole termination) wherever the mask hits 0.
+        var roomOf = [Int](repeating: -1, count: map.w * map.h)
+        for (ri, r) in rooms.enumerated() {
+            for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) { roomOf[map.idx(xx, yy)] = ri } }
+        }
+        var propBlock = Set<Int>()                 // a wall prop + the cells around it block the run
+        for pr in props {
+            let px = Int(pr.pos.x), py = Int(pr.pos.y)
+            for (ox, oy) in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] where map.inBounds(px + ox, py + oy) {
+                propBlock.insert(map.idx(px + ox, py + oy))
+            }
+        }
+        for (ri, r) in rooms.enumerated() where rng.chance(0.6) {
+            for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) {
+                let i = map.idx(xx, yy)
+                if map.wall[i] != 0 || map.doors[i] != nil || map.hazard[i] { continue }   // open floor only
+                if propBlock.contains(i) { continue }                                       // not behind/through a prop
+                if abs(xx - exitX) + abs(yy - exitY) <= 1 { continue }                      // clear of the exit switch
+                var clear = true                                                            // and clear of every opening
+                for oy in -1...1 { for ox in -1...1 where !(ox == 0 && oy == 0) {
+                    let nx = xx + ox, ny = yy + oy
+                    guard map.inBounds(nx, ny) else { continue }
+                    let ni = map.idx(nx, ny)
+                    if map.doors[ni] != nil || (map.wall[ni] == 0 && roomOf[ni] != ri) { clear = false }
+                } }
+                if clear { map.pipe[i] = 1 }
+            } }
+        }
+        // extend the mask one cell INTO the solid wall behind each piped edge cell, so
+        // the baked field reads "pipe" right at the wall face (not half-dived along it)
+        var ext = map.pipe
+        for y in 0..<map.h { for x in 0..<map.w {
+            let i = map.idx(x, y)
+            guard map.wall[i] != 0, map.doors[i] == nil else { continue }                   // solid, non-door
+            for (ox, oy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] where map.inBounds(x + ox, y + oy) {
+                if map.pipe[map.idx(x + ox, y + oy)] >= 0.5 { ext[i] = 1; break }
+            }
+        } }
+        map.pipe = ext
 
         return (monsters, items, drums, sockets, props)
     }

@@ -42,6 +42,20 @@ enum GPURaymarch {
     static inline float gridSDF(float3 p, texture2d<float> dt, sampler s, float2 mapWH, float ceilH) {
         return min(wallDist(dt, s, p.xz, mapWH), min(p.y, ceilH - p.y));
     }
+    // ── baked wall infrastructure: routed pipework ──
+    // A pipe at perpendicular offset `off` from the nearest wall, at height `ph`, is
+    // just length(float2(dW - off, y - ph)) - r — dW being the perpendicular distance
+    // to the wall means one expression runs the pipe along the wall with NO per-
+    // instance cost. The baked routing mask `enable` (from map.pipe, carried in the
+    // distance-field's .g channel) gates it: where it falls to 0 the offset ramps the
+    // pipe BACK INTO the wall (a drilled-hole termination), so a pipe never crosses a
+    // door / mouth / runs through a prop, and only appears on routed walls. Folded
+    // into sceneSDF (march + normals) but kept OUT of AO/shadow gridSDF for speed.
+    static inline float wallPipes(float3 p, float dW, float ceilH, float enable) {
+        if (enable < 0.02) return 1e9;                       // unrouted: no pipe (buried; nothing to march)
+        float off = mix(-0.06, 0.10, enable);                // ramps proud → buried as the route ends
+        return length(float2(dW - off, p.y - (ceilH - 0.28))) - 0.038;   // slim, close to the wall
+    }
 
     // IQ round-cone (ported from CreatureLab) — the creature shape primitive
     static inline float sdRoundCone(float3 p, float3 a, float3 b, float r1, float r2) {
@@ -109,7 +123,10 @@ enum GPURaymarch {
     // full field: grid + creatures — used by the primary march + normals
     static inline float sceneSDF(float3 p, texture2d<float> dt, sampler s, float2 mapWH, float ceilH,
                                  int nMon, constant GMonster* mons, constant GShape* shapes) {
-        float g = gridSDF(p, dt, s, mapWH, ceilH);
+        float2 dd = dt.sample(s, p.xz / mapWH).rg;           // .r wall distance · .g pipe-routing enable
+        float dW = dd.x;
+        float g = min(dW, min(p.y, ceilH - p.y));
+        g = min(g, wallPipes(p, dW, ceilH, dd.y));           // baked routed pipework (marched + normals; not AO/shadow)
         if (nMon > 0) g = min(g, creatureField(p, nMon, mons, shapes).w);
         return g;
     }
@@ -361,7 +378,9 @@ enum GPURaymarch {
         if (hit) {
             float3 p = ro + rd * t;
             float3 n = calcNormal(p, dt, s, mapWH, ceilH, nMon, mons, shapes);
-            float gd = gridSDF(p, dt, s, mapWH, ceilH);
+            float2 ddp = dt.sample(s, p.xz / mapWH).rg;        // .r wall distance · .g pipe-routing enable
+            float dWp = ddp.x, peP = ddp.y;
+            float gd = min(min(dWp, min(p.y, ceilH - p.y)), wallPipes(p, dWp, ceilH, peP));   // grid incl. routed pipe
             float itemMat = 0.0;
             float4 cf = (nMon > 0) ? creatureField(p, nMon, mons, shapes, itemMat) : float4(0.0, 0.0, 0.0, 1e9);
             float3 alb; float emis = 0.0; bool reflective = false; bool isItem = false; bool isProj = false; bool isCreature = false; bool isProp = false; bool isDrum = false; bool isSocket = false;
@@ -441,10 +460,20 @@ enum GPURaymarch {
                     n = normalize(n - (t1 * gx + t2 * gy) * 0.6);
                 }
             } else {
-                float dW = wallDist(dt, s, p.xz, mapWH);
+                float dW = dWp;
                 float dF = p.y, dC = ceilH - p.y;
+                float dP = wallPipes(p, dW, ceilH, peP);
                 int2 dim = int2(mapWH);
-                if (dW <= dF && dW <= dC) {                      // wall — id of the SOLID cell
+                if (dP <= dW && dP <= dF && dP <= dC) {          // ── BAKED WALL PIPE ── galvanised steel + rust
+                    float along = p.x + p.z;                     // runs along the pipe (yaw-robust) for the grain
+                    float rr = fbm2(float2(along * 3.0, p.y * 6.0));
+                    float3 steel = float3(0.54, 0.56, 0.60);     // galvanised — clearly lighter than the iron wall so it reads
+                    alb = mix(steel, float3(0.34, 0.17, 0.08), smoothstep(0.5, 0.9, rr) * 0.6);   // rust eating the galvanise
+                    float drip = smoothstep(0.62, 0.95, fbm2(float2(along * 5.0, p.y * 0.8)));
+                    alb = mix(alb, float3(0.22, 0.10, 0.05), drip * 0.4 * clamp(1.0 - dC * 2.2, 0.0, 1.0));   // rust weeping below
+                    rough = clamp(0.42 + 0.40 * rr, 0.35, 0.85);  // a little sheen to catch the lamps
+                    metal = 0.45;
+                } else if (dW <= dF && dW <= dC) {               // wall — id of the SOLID cell
                     int2 c = clamp(int2(floor(p.xz - n.xz * 0.5)), int2(0), dim - 1);
                     uint id = wallId.read(uint2(c)).r;
                     float along = (abs(n.x) > abs(n.z)) ? p.z : p.x;
@@ -794,9 +823,15 @@ enum GPURaymarch {
                 var solid = map.wall[ci] != 0
                 if solid, let d = map.doors[ci] {
                     let part = min(1, d.open / GameMap.passThreshold)        // 0 closed … 1 fully parted
-                    // sub-cell centre along the slide axis; empty inside the gap
-                    let c = (doorSlidesAlongX(map, cx, cy) ? Float(si) : Float(sj)) * invS + invS * 0.5
-                    if abs(c - 0.5) < 0.5 * part { solid = false }           // inside the parted centre gap
+                    let slideX = doorSlidesAlongX(map, cx, cy)
+                    let slideC = (slideX ? Float(si) : Float(sj)) * invS + invS * 0.5   // along the wall (slide axis)
+                    let thruC  = (slideX ? Float(sj) : Float(si)) * invS + invS * 0.5   // through the doorway
+                    // The door is a THIN sliding panel set in the doorway — independent
+                    // of the wall, NOT a full-depth block of it (which read as the wall
+                    // moving). Solid only near the doorway plane (thin in the through
+                    // axis) and only outside the parted centre gap, so a slim panel
+                    // centre-splits and slides into the jambs while the wall stays put.
+                    solid = (abs(thruC - 0.5) < 0.14) && (abs(slideC - 0.5) >= 0.5 * part)
                 }
                 f[j * sw + i] = solid ? 0 : big
             }
@@ -804,7 +839,32 @@ enum GPURaymarch {
         for j in 0..<sh { edt1d(&f, sw, 1, j * sw) }       // rows
         for i in 0..<sw { edt1d(&f, sh, sw, i) }           // columns
         for k in 0..<f.count { f[k] = sqrt(f[k]) * invS }  // texel² → world distance
-        return (f, sw, sh)
+        // Two channels, interleaved rg: .r = wall distance · .g = pipe-routing enable,
+        // bilinear-upsampled from the cell-res map.pipe so the kernel reads it FREE
+        // alongside the distance (no extra texture fetch in the march). The smooth
+        // upsample gives the pipe its ~1-cell dive into the wall at every terminus.
+        let pipe = map.pipe.isEmpty ? [Float](repeating: 0, count: map.w * map.h) : map.pipe
+        var data = [Float](repeating: 0, count: sw * sh * 2)
+        for j in 0..<sh {
+            let fy = (Float(j) + 0.5) * invS - 0.5
+            let y0 = max(0, min(map.h - 1, Int(floorf(fy)))), y1 = max(0, min(map.h - 1, y0 + 1))
+            let ty = max(0, min(1, fy - Float(y0)))
+            for i in 0..<sw {
+                let fx = (Float(i) + 0.5) * invS - 0.5
+                let x0 = max(0, min(map.w - 1, Int(floorf(fx)))), x1 = max(0, min(map.w - 1, x0 + 1))
+                let tx: Float = max(0, min(1, fx - Float(x0)))
+                let a: Float = pipe[y0 * map.w + x0]
+                let b: Float = pipe[y0 * map.w + x1]
+                let c: Float = pipe[y1 * map.w + x0]
+                let e: Float = pipe[y1 * map.w + x1]
+                let p0: Float = a + (b - a) * tx
+                let p1: Float = c + (e - c) * tx
+                let k = j * sw + i
+                data[2 * k] = f[k]
+                data[2 * k + 1] = p0 + (p1 - p0) * ty
+            }
+        }
+        return (data, sw, sh)
     }
 
     struct Uniforms { var ro, fwd, right, up, params, grid, extra: SIMD4<Float> }   // extra.x = decalCount
@@ -1164,17 +1224,30 @@ enum GPURaymarch {
                 iCylinder(SIMD3(0, 0.452, 0), r: 0.168, halfH: 0.022, round: 0.012, rim, 0.012)]   // rolled top rim
     }
 
-    // ── recharge socket (material c.z = 5) — a plasma-cell charging pedestal ──
-    // A grimy steel column on a wide base with a glowing energy cell in the head.
-    // The cell is authored over-bright (cyan) so the kernel self-glows it (like the
-    // terminal screen); a drained socket is authored dark so it reads as spent.
-    static func socketShapes(charged: Bool) -> [GShape] {
-        let steel = SIMD3<Float>(0.36, 0.38, 0.43), dark = SIMD3<Float>(0.13, 0.14, 0.17)
-        let cell = charged ? SIMD3<Float>(0.42, 1.45, 1.70) : SIMD3<Float>(0.09, 0.11, 0.13)
-        return [iCone(SIMD3(0, 0.02, 0), SIMD3(0, 0.11, 0), 0.18, 0.12, dark, 0.02),            // wide base
-                iCone(SIMD3(0, 0.11, 0), SIMD3(0, 0.40, 0), 0.075, 0.075, steel, 0.02),          // column
-                iBox(SIMD3(0, 0.47, 0), SIMD3(0.125, 0.10, 0.085), 0.012, steel, 0.006),         // head housing
-                iBox(SIMD3(0, 0.47, 0.082), SIMD3(0.08, 0.075, 0.018), 0.004, cell, 0.0025)]     // glowing energy cell (faces +Z)
+    // ── recharge socket (material c.z = 5) — a flush WALL PANEL, not a floor unit ──
+    // Wall-mounted infrastructure: a recessed housing with a vertical capacity bar
+    // (segments lit up to the remaining charge) and a plug-in port, at chest height.
+    // Authored back-to-wall (−Z) with the readout facing +Z into the room; packSockets
+    // mounts it on the wall via yaw + the flush-to-wall shift, at its authored height
+    // (NOT floored). The lit segments are over-bright so the kernel self-glows them.
+    static func socketShapes(chargeFrac: Float) -> [GShape] {
+        let housing = SIMD3<Float>(0.17, 0.19, 0.23), face = SIMD3<Float>(0.07, 0.08, 0.10)
+        let lit = SIMD3<Float>(0.40, 1.45, 1.70), off = SIMD3<Float>(0.10, 0.13, 0.15)
+        let frac = max(0, min(1, chargeFrac))
+        let cy: Float = 0.52                                                                   // chest height
+        var out: [GShape] = [
+            iBox(SIMD3(0, cy, 0.02), SIMD3(0.135, 0.17, 0.035), 0.012, housing, 0.006),        // recessed housing (shallow)
+            iBox(SIMD3(0, cy, 0.05), SIMD3(0.115, 0.15, 0.012), 0.004, face, 0.003),           // dark inset faceplate
+        ]
+        let segs = 4                                                                            // capacity bar
+        for k in 0..<segs {
+            let f = (Float(k) + 0.5) / Float(segs)
+            let col = f <= frac ? lit : off
+            out.append(iBox(SIMD3(-0.055, cy - 0.10 + Float(k) * 0.067, 0.062), SIMD3(0.05, 0.026, 0.006), 0.002, col, 0.0015))
+        }
+        out.append(iBox(SIMD3(0.07, cy, 0.06), SIMD3(0.04, 0.05, 0.008), 0.006, face, 0.003))   // plug-in port recess
+        out.append(iSphere(SIMD3(0.07, cy, 0.066), 0.02, SIMD3<Float>(0.22, 0.50, 0.60)))       // port (faint cyan)
+        return out
     }
 
     private static func shapeZExtent(_ sh: GShape) -> (lo: Float, hi: Float) {
@@ -1182,6 +1255,25 @@ enum GPURaymarch {
         if sh.b.w < -1.5 { return (sh.a.z - sh.b.z - sh.a.w, sh.a.z + sh.b.z + sh.a.w) }   // box
         if sh.b.w < 0   { return (sh.a.z - sh.a.w, sh.a.z + sh.a.w) }                       // sphere
         return (min(sh.a.z - sh.a.w, sh.b.z - sh.b.w), max(sh.a.z + sh.a.w, sh.b.z + sh.b.w))
+    }
+    private static func shapeXExtent(_ sh: GShape) -> (lo: Float, hi: Float) {
+        if sh.b.w < -2.5 { return (sh.a.x - sh.a.w, sh.a.x + sh.a.w) }                      // cylinder (radius a.w)
+        if sh.b.w < -1.5 { return (sh.a.x - sh.b.x - sh.a.w, sh.a.x + sh.b.x + sh.a.w) }   // box
+        if sh.b.w < 0   { return (sh.a.x - sh.a.w, sh.a.x + sh.a.w) }                       // sphere
+        return (min(sh.a.x - sh.a.w, sh.b.x - sh.b.w), max(sh.a.x + sh.a.w, sh.b.x + sh.b.w))
+    }
+    /// A piece of furniture's floor footprint as half-extents (X = along the wall, Z =
+    /// into the room), derived from its authored geometry — the SINGLE source for both
+    /// the rendered shape and the solid-collision box, so they can never drift apart.
+    static func furnitureFootprint(_ kind: FurnitureKind) -> (halfW: Float, halfD: Float) {
+        let sl = furnitureShapes(kind)
+        var minX: Float = 1e9, maxX: Float = -1e9, minZ: Float = 1e9, maxZ: Float = -1e9
+        for sh in sl {
+            let ex = shapeXExtent(sh), ez = shapeZExtent(sh)
+            minX = min(minX, ex.lo); maxX = max(maxX, ex.hi)
+            minZ = min(minZ, ez.lo); maxZ = max(maxZ, ez.hi)
+        }
+        return ((maxX - minX) * 0.5, (maxZ - minZ) * 0.5)
     }
     /// Shove a wall piece back so its rear face sits flush against the wall. Local −Z
     /// is the wall side; the cell centre is 0.5 off the wall face, so the back lands
@@ -1254,8 +1346,9 @@ enum GPURaymarch {
     static func packSockets(_ sockets: [Socket], budget: Int = 64) -> ([GMonster], [GShape]) {
         var mons: [GMonster] = [], shapes: [GShape] = []
         for sk in sockets {
-            let sl = socketShapes(charged: sk.charge > 0)
+            var sl = socketShapes(chargeFrac: Float(sk.charge) / Float(max(1, sk.maxCharge)))
             if shapes.count + sl.count > budget { break }
+            flushToWall(&sl)                                   // mount the panel flush on the wall behind
             var loY: Float = 1e9, hiY: Float = -1e9
             for sh in sl { let e = shapeYExtent(sh); loY = min(loY, e.lo); hiY = max(hiY, e.hi) }
             let boundCY = (loY + hiY) / 2
@@ -1264,9 +1357,9 @@ enum GPURaymarch {
             boundR += 0.05
             let start = shapes.count
             shapes.append(contentsOf: sl)
-            mons.append(GMonster(a: SIMD4(sk.pos.x, sk.pos.y, 0, 1),
+            mons.append(GMonster(a: SIMD4(sk.pos.x, sk.pos.y, sk.yaw, 1),   // yaw mounts it onto the wall
                                  b: SIMD4(Float(start), Float(sl.count), boundR, boundCY),
-                                 c: SIMD4(loY, 0, 5, 0)))   // c.z = 5 → recharge socket
+                                 c: SIMD4(0, 0, 5, 0)))        // yOff 0 → keep its authored chest height (not floored)
         }
         return (mons, shapes)
     }
@@ -1427,11 +1520,11 @@ enum GPURaymarch {
             let (df, sw, sh) = buildDistanceField(map)
             let elights = Lighting.pointLights(map)            // the level's fixtures as dramatic point lights
 
-            // distance-field texture (R32Float)
-            let dtDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r32Float, width: sw, height: sh, mipmapped: false)
+            // distance-field texture (RG32Float: .r wall distance · .g pipe-routing enable)
+            let dtDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg32Float, width: sw, height: sh, mipmapped: false)
             dtDesc.usage = .shaderRead; dtDesc.storageMode = .shared
             let dtTex = device.makeTexture(descriptor: dtDesc)!
-            df.withUnsafeBytes { dtTex.replace(region: MTLRegionMake2D(0, 0, sw, sh), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: sw * 4) }
+            df.withUnsafeBytes { dtTex.replace(region: MTLRegionMake2D(0, 0, sw, sh), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: sw * 8) }
 
             // baked sector-light texture (RGBA32Float at grid res)
             var lc = [SIMD4<Float>](repeating: .zero, count: map.w * map.h)
