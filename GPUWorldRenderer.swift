@@ -186,6 +186,38 @@ final class GPUWorldRenderer {
         return cand.prefix(8).map { $0.0 }
     }
 
+    /// Nearest fuel drums in view — SDF barrels raymarched this frame (were sprites).
+    private func visibleDrums(_ world: World) -> [Drum] {
+        let p = world.player
+        let fwd = SIMD2<Float>(cos(p.dir), sin(p.dir))
+        var cand: [(Drum, Float)] = []
+        for d in world.drums where d.health > 0 {
+            let rel = d.pos - p.pos
+            let dd = simd_length(rel)
+            if dd > 15 { continue }
+            if dd > 1.5 && simd_dot(rel, fwd) < -0.3 { continue }
+            cand.append((d, dd))
+        }
+        cand.sort { $0.1 < $1.1 }
+        return cand.prefix(8).map { $0.0 }   // a fuel store can cluster several — cap the visible set
+    }
+
+    /// Nearest recharge sockets in view — SDF pedestals raymarched this frame.
+    private func visibleSockets(_ world: World) -> [Socket] {
+        let p = world.player
+        let fwd = SIMD2<Float>(cos(p.dir), sin(p.dir))
+        var cand: [(Socket, Float)] = []
+        for sk in world.sockets {
+            let rel = sk.pos - p.pos
+            let dd = simd_length(rel)
+            if dd > 16 { continue }
+            if dd > 1.5 && simd_dot(rel, fwd) < -0.3 { continue }
+            cand.append((sk, dd))
+        }
+        cand.sort { $0.1 < $1.1 }
+        return cand.prefix(4).map { $0.0 }
+    }
+
     /// Muzzle flash + projectile glows as point lights for the GPU kernel
     /// (mirrors WorldLight.gatherLights, at eye height in 3-D).
     private func gatherDynLights(_ world: World) -> [GPURaymarch.GPULight] {
@@ -255,6 +287,14 @@ final class GPUWorldRenderer {
         let fbase = cshapes.count
         for fm0 in fmons { var fm = fm0; fm.b.x += Float(fbase); cmons.append(fm) }
         cshapes.append(contentsOf: fshapes)
+        let (umons, ushapes) = GPURaymarch.packDrums(visibleDrums(world))              // fuel barrels (SDF — were sprites)
+        let ubase = cshapes.count
+        for um0 in umons { var um = um0; um.b.x += Float(ubase); cmons.append(um) }
+        cshapes.append(contentsOf: ushapes)
+        let (smons, sshapes) = GPURaymarch.packSockets(visibleSockets(world))          // recharge pedestals (SDF — were sprites)
+        let sbase = cshapes.count
+        for sm0 in smons { var sm = sm0; sm.b.x += Float(sbase); cmons.append(sm) }
+        cshapes.append(contentsOf: sshapes)
         let (pmons, pshapes) = GPURaymarch.packProjectiles(world.projectiles)          // glowing energy orbs
         let pbase = cshapes.count
         for pm0 in pmons { var pm = pm0; pm.b.x += Float(pbase); cmons.append(pm) }
@@ -303,7 +343,9 @@ final class GPUWorldRenderer {
             depthT.getBytes($0.baseAddress!, bytesPerRow: RenderConfig.width * 4,
                             from: MTLRegionMake2D(0, 0, RenderConfig.width, vh), mipmapLevel: 0)
         }
-        gpuDepth.withUnsafeBufferPointer { spriteCompositor.overlayThings(world, into: canvas, depth: $0.baseAddress, includeProjectiles: false) }
+        // drums + sockets are now SDF (raymarched above); only deployed mines +
+        // particles remain billboards on the GPU path
+        gpuDepth.withUnsafeBufferPointer { spriteCompositor.overlayThings(world, into: canvas, depth: $0.baseAddress, includeProjectiles: false, includeDrums: false, includeSockets: false) }
         return true
     }
 }

@@ -78,7 +78,11 @@ enum GPURaymarch {
             for (int si = start; si < start + count; si++) {
                 GShape sh = shapes[si];
                 float sd;
-                if (sh.b.w < -1.5) {                              // rounded box (items)
+                if (sh.b.w < -2.5) {                              // flat-capped cylinder (drums) — FLAT top + bottom
+                    float3 q = lp - sh.a.xyz;
+                    float2 dcy = float2(length(q.xz) - (sh.a.w - sh.b.x), abs(q.y) - (sh.b.y - sh.b.x));
+                    sd = min(max(dcy.x, dcy.y), 0.0) + length(max(dcy, 0.0)) - sh.b.x;
+                } else if (sh.b.w < -1.5) {                       // rounded box (items)
                     float3 q = abs(lp - sh.a.xyz) - sh.b.xyz;
                     sd = length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - sh.a.w;
                 } else if (sh.b.w < 0.0) {                        // sphere
@@ -360,13 +364,15 @@ enum GPURaymarch {
             float gd = gridSDF(p, dt, s, mapWH, ceilH);
             float itemMat = 0.0;
             float4 cf = (nMon > 0) ? creatureField(p, nMon, mons, shapes, itemMat) : float4(0.0, 0.0, 0.0, 1e9);
-            float3 alb; float emis = 0.0; bool reflective = false; bool isItem = false; bool isProj = false; bool isCreature = false; bool isProp = false;
+            float3 alb; float emis = 0.0; bool reflective = false; bool isItem = false; bool isProj = false; bool isCreature = false; bool isProp = false; bool isDrum = false; bool isSocket = false;
             float rough = 0.7, metal = 0.0;   // PBR surface params, set per surface below
             if (cf.w < gd) {                                     // a creature / pickup / projectile / prop surface
                 alb = cf.rgb;
                 isItem = itemMat > 0.5 && itemMat < 1.5;         // c.z = 1 → pickup
                 isProj = itemMat > 1.5 && itemMat < 2.5;         // c.z = 2 → glowing projectile orb
-                isProp = itemMat > 2.5;                          // c.z = 3 → static furniture / fixture
+                isProp = itemMat > 2.5 && itemMat < 3.5;         // c.z = 3 → static furniture / fixture
+                isDrum = itemMat > 3.5 && itemMat < 4.5;         // c.z = 4 → fuel drum
+                isSocket = itemMat > 4.5;                        // c.z = 5 → recharge socket
                 isCreature = itemMat < 0.5;                      // c.z = 0 → living flesh
                 if (isProp) {                                    // MATTE battle-worn steel (low spec → not shiny plastic); a powered screen self-glows
                     rough = 0.82; metal = 0.12;
@@ -378,9 +384,49 @@ enum GPURaymarch {
                         float blood = smoothstep(0.62, 0.86, fbm2(p.xz * 1.7 + 12.0)) * low;
                         alb = mix(alb, float3(0.15, 0.02, 0.018), blood * 0.6);     // dried blood, pooled low
                         rough = clamp(0.72 + 0.3 * gr, 0.55, 0.97);                 // rough, matte, uneven — kills the sheen
+                    } else {
+                        // a LIVE terminal: a grid of glyphs scrolling upward with CRT
+                        // scanlines + flicker — reads as running telemetry, not a blank
+                        // light panel. (p.y = up the screen; p.x+p.z = across the face,
+                        // robust to the prop's yaw since the screen is vertical.)
+                        float rows = p.y * 52.0 + time * 4.0;                       // rows scroll up
+                        float glyph = hash21(float2(floor((p.x + p.z) * 30.0), floor(rows)));
+                        float on = step(0.35, glyph);                              // ~⅔ of cells lit
+                        float scan = 0.80 + 0.20 * sin(p.y * 240.0);               // scanlines
+                        float flick = 0.90 + 0.10 * sin(time * 36.0 + floor(rows) * 1.7);
+                        alb *= (0.28 + 0.95 * on * glyph) * scan * flick;          // dark gaps between bright glyphs
                     }
                     float lum = dot(alb, float3(0.299, 0.587, 0.114));
                     emis = smoothstep(1.0, 1.45, lum) * 2.4;                        // only the powered screen pushes past 1 → glows
+                }
+                if (isDrum) {                                    // weathered industrial barrel — rusty, ribbed, matte
+                    rough = 0.86; metal = 0.20;
+                    float3 rust = float3(0.34, 0.15, 0.07);
+                    // the flat steel lid sits a touch darker than the painted sides
+                    alb = mix(alb, alb * 0.6, smoothstep(0.6, 0.9, n.y));
+                    // two rolling hoops on the body (p.y = height up the drum, which
+                    // stands flat on the deck — base y0, top ~0.45) — dark recessed bands
+                    float rib = max(smoothstep(0.020, 0.0, abs(p.y - 0.15)),
+                                    smoothstep(0.020, 0.0, abs(p.y - 0.32)));
+                    alb *= 1.0 - 0.42 * rib;
+                    float patch = fbm2(p.xz * 3.6 + p.y * 1.2);
+                    alb = mix(alb, rust, smoothstep(0.46, 0.86, patch) * 0.72);     // mottled rust eating the paint
+                    float streak = smoothstep(0.55, 0.95, fbm2(float2((p.x + p.z) * 6.5, p.y * 0.7 + 5.0)));
+                    alb = mix(alb, rust * 0.6, streak * 0.5 * clamp(1.2 - p.y * 1.6, 0.25, 1.0));   // rust streaks bleed down
+                    rough = clamp(0.78 + 0.20 * patch, 0.62, 0.97);
+                }
+                if (isSocket) {                                  // recharge pedestal — grimy steel + a self-glowing cell
+                    bool litcell = dot(alb, float3(0.299, 0.587, 0.114)) > 0.95;
+                    rough = 0.80; metal = 0.15;
+                    if (!litcell) {
+                        float gr = fbm2(p.xz * 2.6 + p.y * 1.7);
+                        alb *= 1.0 - 0.40 * smoothstep(0.40, 0.85, gr);
+                        rough = clamp(0.72 + 0.28 * gr, 0.58, 0.95);
+                    } else {
+                        alb *= 0.82 + 0.18 * sin(time * 4.0 + p.y * 10.0);          // the charged cell pulses gently
+                    }
+                    float lum = dot(alb, float3(0.299, 0.587, 0.114));
+                    emis = smoothstep(1.0, 1.5, lum) * 2.6;                         // only the bright cell glows
                 }
                 if (isCreature) {
                     rough = 0.34; metal = 0.0;                   // glossy WET CHITIN
@@ -846,6 +892,13 @@ enum GPURaymarch {
     static func iCone(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ r1: Float, _ r2: Float, _ col: SIMD3<Float>, _ k: Float = 0.02) -> GShape {
         GShape(a: SIMD4(a.x, a.y, a.z, r1), b: SIMD4(b.x, b.y, b.z, r2), col: SIMD4(col.x, col.y, col.z, k))
     }
+    /// A flat-capped VERTICAL cylinder (Y axis) — the only primitive with genuinely
+    /// FLAT top and bottom (boxes are square, cones/spheres dome at the ends). This
+    /// is what an oil drum needs. Encoded with the sentinel b.w = -3: centre a.xyz,
+    /// radius a.w, half-height b.y, edge-round b.x.
+    static func iCylinder(_ c: SIMD3<Float>, r: Float, halfH: Float, round: Float, _ col: SIMD3<Float>, _ k: Float = 0.01) -> GShape {
+        GShape(a: SIMD4(c.x, c.y, c.z, r), b: SIMD4(round, halfH, 0, -3), col: SIMD4(col.x, col.y, col.z, k))
+    }
 
     /// Procedural 3-D design for each pickup (local space, feet ≈ y0). Each kind
     /// is built from a few crisply-coloured parts (low smin `k` on the detail so
@@ -921,11 +974,17 @@ enum GPURaymarch {
     }
 
     private static func shapeYExtent(_ sh: GShape) -> (lo: Float, hi: Float) {
+        if sh.b.w < -2.5 { return (sh.a.y - sh.b.y, sh.a.y + sh.b.y) }                      // cylinder (half-height b.y)
         if sh.b.w < -1.5 { return (sh.a.y - sh.b.y - sh.a.w, sh.a.y + sh.b.y + sh.a.w) }   // box
         if sh.b.w < 0   { return (sh.a.y - sh.a.w, sh.a.y + sh.a.w) }                       // sphere
         return (min(sh.a.y - sh.a.w, sh.b.y - sh.b.w), max(sh.a.y + sh.a.w, sh.b.y + sh.b.w))
     }
     private static func shapeRadius(_ sh: GShape, _ cy: Float) -> Float {
+        if sh.b.w < -2.5 {                          // cylinder: radius a.w (XZ), half-height b.y (Y)
+            let horiz = (sh.a.x * sh.a.x + sh.a.z * sh.a.z).squareRoot() + sh.a.w
+            let vert = abs(sh.a.y - cy) + sh.b.y
+            return (horiz * horiz + vert * vert).squareRoot()
+        }
         if sh.b.w < -1.5 {
             let dx = abs(sh.a.x) + sh.b.x + sh.a.w, dy = abs(sh.a.y - cy) + sh.b.y + sh.a.w, dz = abs(sh.a.z) + sh.b.z + sh.a.w
             return (dx * dx + dy * dy + dz * dz).squareRoot()
@@ -1049,12 +1108,18 @@ enum GPURaymarch {
                     iBox(SIMD3(0, 0.33, -0.10), SIMD3(0.115, 0.115, 0.018), 0.02, c, 0.008),               // backrest
                     iCone(SIMD3(0, 0.0, 0), SIMD3(0, 0.20, 0), 0.024, 0.03, darkM),                        // post
                     iBox(SIMD3(0, 0.02, 0), SIMD3(0.10, 0.014, 0.10), 0.01, darkM, d)]                     // base
-        case .locker:                                          // tall steel storage locker
-            let body = SIMD3<Float>(0.32, 0.34, 0.39), vent = SIMD3<Float>(0.17, 0.18, 0.21)
-            return [iBox(SIMD3(0, 0.42, -0.02), SIMD3(0.16, 0.42, 0.13), 0.01, body, 0.006),               // cabinet
-                    iBox(SIMD3(0, 0.55, 0.105), SIMD3(0.115, 0.095, 0.008), 0.004, vent, d),               // upper vents
-                    iBox(SIMD3(0, 0.30, 0.105), SIMD3(0.115, 0.095, 0.008), 0.004, vent, d),               // lower vents
-                    iBox(SIMD3(0.115, 0.40, 0.11), SIMD3(0.014, 0.05, 0.012), 0.004, darkM, d)]            // handle
+        case .locker:                                          // tall, NARROW steel locker (was fridge-wide)
+            // The old locker was as wide as it was tall and read as a fridge. A real
+            // barracks locker is narrow and full-height, with a recessed door, a vent
+            // grille near the top, a vertical latch and a base plinth.
+            let body = SIMD3<Float>(0.28, 0.30, 0.35), door = SIMD3<Float>(0.34, 0.36, 0.41)
+            let vent = SIMD3<Float>(0.13, 0.14, 0.17)
+            let hw: Float = 0.115, hd: Float = 0.105
+            return [iBox(SIMD3(0, 0.435, -0.01), SIMD3(hw, 0.435, hd), 0.012, body, 0.006),                 // carcass (full-height, slim)
+                    iBox(SIMD3(0, 0.45, hd - 0.004), SIMD3(hw - 0.018, 0.40, 0.012), 0.006, door, 0.004),   // recessed door face, set proud
+                    iBox(SIMD3(0, 0.70, hd + 0.006), SIMD3(0.062, 0.05, 0.006), 0.003, vent, d),            // vent grille near the top
+                    iBox(SIMD3(0.084, 0.45, hd + 0.012), SIMD3(0.012, 0.065, 0.012), 0.004, darkM, d),      // vertical latch handle (right edge)
+                    iBox(SIMD3(0, 0.045, 0), SIMD3(hw - 0.004, 0.045, hd - 0.004), 0.004, darkM, 0.004)]    // base plinth (stands it off the deck)
         case .wallPipe:
             return pipeRunShapes(length: 1)                    // length comes from the Prop at pack time
         }
@@ -1084,13 +1149,64 @@ enum GPURaymarch {
         return out
     }
 
+    // ── fuel drums (material c.z = 4) — a weathered 200-litre industrial barrel ──
+    // Authored standing on the floor (y 0 → ~0.46), front = local +Z. Deliberately
+    // LEAN: just a body + a domed lid (2 shapes); the rolling hoop ribs, rust and
+    // grime are painted in the kernel's drum branch (free), not modelled. A drum is
+    // about chest height — the reference barrel — in red-oxide or a blue-grey steel.
+    static func drumShapes(red: Bool) -> [GShape] {
+        let body = red ? SIMD3<Float>(0.46, 0.17, 0.12) : SIMD3<Float>(0.20, 0.25, 0.31)   // red-oxide / blue-grey
+        let rim = body * 0.7
+        // a 200-litre steel barrel: a flat-capped cylinder standing FLAT on the deck
+        // (centre 0.225, half-height 0.225 → base at y0, top at 0.45) + a rolled top
+        // rim that sticks proud. Rolling hoops + rust are painted in the drum branch.
+        return [iCylinder(SIMD3(0, 0.225, 0), r: 0.155, halfH: 0.225, round: 0.02, body, 0.012),  // body, flat top + flat base
+                iCylinder(SIMD3(0, 0.452, 0), r: 0.168, halfH: 0.022, round: 0.012, rim, 0.012)]   // rolled top rim
+    }
+
+    // ── recharge socket (material c.z = 5) — a plasma-cell charging pedestal ──
+    // A grimy steel column on a wide base with a glowing energy cell in the head.
+    // The cell is authored over-bright (cyan) so the kernel self-glows it (like the
+    // terminal screen); a drained socket is authored dark so it reads as spent.
+    static func socketShapes(charged: Bool) -> [GShape] {
+        let steel = SIMD3<Float>(0.36, 0.38, 0.43), dark = SIMD3<Float>(0.13, 0.14, 0.17)
+        let cell = charged ? SIMD3<Float>(0.42, 1.45, 1.70) : SIMD3<Float>(0.09, 0.11, 0.13)
+        return [iCone(SIMD3(0, 0.02, 0), SIMD3(0, 0.11, 0), 0.18, 0.12, dark, 0.02),            // wide base
+                iCone(SIMD3(0, 0.11, 0), SIMD3(0, 0.40, 0), 0.075, 0.075, steel, 0.02),          // column
+                iBox(SIMD3(0, 0.47, 0), SIMD3(0.125, 0.10, 0.085), 0.012, steel, 0.006),         // head housing
+                iBox(SIMD3(0, 0.47, 0.082), SIMD3(0.08, 0.075, 0.018), 0.004, cell, 0.0025)]     // glowing energy cell (faces +Z)
+    }
+
+    private static func shapeZExtent(_ sh: GShape) -> (lo: Float, hi: Float) {
+        if sh.b.w < -2.5 { return (sh.a.z - sh.a.w, sh.a.z + sh.a.w) }                      // cylinder (radius a.w)
+        if sh.b.w < -1.5 { return (sh.a.z - sh.b.z - sh.a.w, sh.a.z + sh.b.z + sh.a.w) }   // box
+        if sh.b.w < 0   { return (sh.a.z - sh.a.w, sh.a.z + sh.a.w) }                       // sphere
+        return (min(sh.a.z - sh.a.w, sh.b.z - sh.b.w), max(sh.a.z + sh.a.w, sh.b.z + sh.b.w))
+    }
+    /// Shove a wall piece back so its rear face sits flush against the wall. Local −Z
+    /// is the wall side; the cell centre is 0.5 off the wall face, so the back lands
+    /// at −wallBack (just shy of −0.5 to avoid z-fighting). Derived from the authored
+    /// geometry, so it never drifts from the model — no per-kind magic depth.
+    private static func flushToWall(_ shapes: inout [GShape], wallBack: Float = 0.46) {
+        var minZ: Float = 1e9
+        for sh in shapes { minZ = min(minZ, shapeZExtent(sh).lo) }
+        let dz = -wallBack - minZ
+        for i in shapes.indices {
+            shapes[i].a.z += dz
+            if shapes[i].b.w >= 0 { shapes[i].b.z += dz }   // round-cone: second endpoint is a real position
+        }
+    }
+
     /// Pack furniture/fixtures into the shared GMonster/GShape buffers (no bob, no
     /// spin — they sit where MapGen placed them, oriented by yaw). Material c.z = 3.
     static func packProps(_ props: [Prop], budget: Int = 220) -> ([GMonster], [GShape]) {
         var mons: [GMonster] = [], shapes: [GShape] = []
         for pr in props {
-            let sl = pr.kind == .wallPipe ? pipeRunShapes(length: pr.length) : furnitureShapes(pr.kind)
+            var sl = pr.kind == .wallPipe ? pipeRunShapes(length: pr.length) : furnitureShapes(pr.kind)
             if sl.isEmpty || shapes.count + sl.count > budget { break }
+            // Wall pieces sit flush to the wall (bunk/desk/locker stood ~⅓-cell proud
+            // before — "approx 1m" off). A free-standing chair keeps its placement.
+            if pr.againstWall && pr.kind != .wallPipe { flushToWall(&sl) }
             var loY: Float = 1e9, hiY: Float = -1e9
             for sh in sl { let e = shapeYExtent(sh); loY = min(loY, e.lo); hiY = max(hiY, e.hi) }
             let boundCY = (loY + hiY) / 2
@@ -1106,6 +1222,51 @@ enum GPURaymarch {
             mons.append(GMonster(a: SIMD4(pr.pos.x, pr.pos.y, pr.yaw, 1),
                                  b: SIMD4(Float(start), Float(sl.count), boundR, boundCY),
                                  c: SIMD4(yOff, 0, 3, 0)))   // c.z = 3 → opaque industrial prop
+        }
+        return (mons, shapes)
+    }
+
+    /// Pack fuel drums (material c.z = 4). Red/blue alternates by a stable hash of
+    /// the drum's cell so a barrel keeps its colour frame-to-frame. Feet on the deck.
+    static func packDrums(_ drums: [Drum], budget: Int = 96) -> ([GMonster], [GShape]) {
+        var mons: [GMonster] = [], shapes: [GShape] = []
+        for d in drums {
+            let key = Int(d.pos.x.rounded()) &* 73856093 ^ Int(d.pos.y.rounded()) &* 19349663
+            let sl = drumShapes(red: (key & 1) == 0)
+            if shapes.count + sl.count > budget { break }
+            var loY: Float = 1e9, hiY: Float = -1e9
+            for sh in sl { let e = shapeYExtent(sh); loY = min(loY, e.lo); hiY = max(hiY, e.hi) }
+            let boundCY = (loY + hiY) / 2
+            var boundR: Float = 0
+            for sh in sl { boundR = max(boundR, shapeRadius(sh, boundCY)) }
+            boundR += 0.05
+            let start = shapes.count
+            shapes.append(contentsOf: sl)
+            mons.append(GMonster(a: SIMD4(d.pos.x, d.pos.y, 0, 1),
+                                 b: SIMD4(Float(start), Float(sl.count), boundR, boundCY),
+                                 c: SIMD4(loY, 0, 4, 0)))   // c.z = 4 → fuel drum
+        }
+        return (mons, shapes)
+    }
+
+    /// Pack recharge sockets (material c.z = 5). A charged socket's cell self-glows;
+    /// a drained one is authored dark so the marine reads it as spent.
+    static func packSockets(_ sockets: [Socket], budget: Int = 64) -> ([GMonster], [GShape]) {
+        var mons: [GMonster] = [], shapes: [GShape] = []
+        for sk in sockets {
+            let sl = socketShapes(charged: sk.charge > 0)
+            if shapes.count + sl.count > budget { break }
+            var loY: Float = 1e9, hiY: Float = -1e9
+            for sh in sl { let e = shapeYExtent(sh); loY = min(loY, e.lo); hiY = max(hiY, e.hi) }
+            let boundCY = (loY + hiY) / 2
+            var boundR: Float = 0
+            for sh in sl { boundR = max(boundR, shapeRadius(sh, boundCY)) }
+            boundR += 0.05
+            let start = shapes.count
+            shapes.append(contentsOf: sl)
+            mons.append(GMonster(a: SIMD4(sk.pos.x, sk.pos.y, 0, 1),
+                                 b: SIMD4(Float(start), Float(sl.count), boundR, boundCY),
+                                 c: SIMD4(loY, 0, 5, 0)))   // c.z = 5 → recharge socket
         }
         return (mons, shapes)
     }

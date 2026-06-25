@@ -21,7 +21,8 @@ struct SpriteCompositor {
     /// GPU-renderer overlay: the SDF kernel draws the world + creatures, but
     /// items / projectiles / particles are still sprites. Fill the z-buffer from
     /// the walls (depth-only DDA) so they occlude correctly, then draw them.
-    func overlayThings(_ world: World, into c: Canvas2D, depth: UnsafePointer<Float>? = nil, includeProjectiles: Bool = true) {
+    func overlayThings(_ world: World, into c: Canvas2D, depth: UnsafePointer<Float>? = nil, includeProjectiles: Bool = true,
+                       includeDrums: Bool = true, includeSockets: Bool = true) {
         let p = world.player
         let dirX = cos(p.dir), dirY = sin(p.dir)
         let planeX = -sin(p.dir) * RenderConfig.cameraPlane
@@ -62,7 +63,9 @@ struct SpriteCompositor {
         drawThings(world, into: c, dirX: dirX, dirY: dirY, planeX: planeX, planeY: planeY,
                    flick: flick, lights: lights, hasDyn: !lights.isEmpty, headlamp: hl,
                    includeMonsters: false, includeItems: false,
-                   includeProjectiles: includeProjectiles, depthBuf: depth)   // monsters/items/projectiles are SDF on the GPU path
+                   includeProjectiles: includeProjectiles,
+                   includeDrums: includeDrums, includeSockets: includeSockets,
+                   depthBuf: depth)   // monsters/items/projectiles/drums/sockets are SDF on the GPU path
     }
 
     func drawThings(_ world: World, into c: Canvas2D, dirX: Float, dirY: Float,
@@ -70,6 +73,7 @@ struct SpriteCompositor {
                     headlamp: WorldLight.Headlamp? = nil,
                     includeMonsters: Bool = true, includeItems: Bool = true,
                     includeProjectiles: Bool = true,
+                    includeDrums: Bool = true, includeSockets: Bool = true,
                     depthBuf: UnsafePointer<Float>? = nil) {
         let p = world.player
         let sprites = Sprites.shared
@@ -77,11 +81,12 @@ struct SpriteCompositor {
         if includeMonsters { for (i, m) in world.monsters.enumerated() { things.append(Renderable(dist: vlen(m.pos - p.pos), kind: 0, index: i)) } }
         if includeItems { for (i, it) in world.items.enumerated() where !it.taken { things.append(Renderable(dist: vlen(it.pos - p.pos), kind: 1, index: i)) } }
         if includeProjectiles { for (i, pr) in world.projectiles.enumerated() { things.append(Renderable(dist: vlen(pr.pos - p.pos), kind: 2, index: i)) } }
-        // world props (drums + deployed mines) — always drawn as sprites, on both
-        // the CPU and the GPU-overlay path (they have no SDF on the kernel)
-        for (i, d) in world.drums.enumerated() { things.append(Renderable(dist: vlen(d.pos - p.pos), kind: 4, index: i)) }
+        // world props — drums + sockets are SDF on the GPU path (gated off there);
+        // deployed mines are still billboards on both paths. The CPU raycaster draws
+        // all three as sprites (its fallback path has no kernel).
+        if includeDrums { for (i, d) in world.drums.enumerated() { things.append(Renderable(dist: vlen(d.pos - p.pos), kind: 4, index: i)) } }
         for (i, mn) in world.deployedMines.enumerated() { things.append(Renderable(dist: vlen(mn.pos - p.pos), kind: 5, index: i)) }
-        for (i, sk) in world.sockets.enumerated() { things.append(Renderable(dist: vlen(sk.pos - p.pos), kind: 6, index: i)) }
+        if includeSockets { for (i, sk) in world.sockets.enumerated() { things.append(Renderable(dist: vlen(sk.pos - p.pos), kind: 6, index: i)) } }
         for i in world.particles.indices { things.append(Renderable(dist: vlen(world.particles[i].pos - p.pos), kind: 3, index: i)) }
         things.sort { $0.dist > $1.dist }
 

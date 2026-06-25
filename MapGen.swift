@@ -221,6 +221,11 @@ enum MapGen {
             secretLootCell = lootCell
         } else { secretLootCell = nil }
 
+        // ── fuel-storage chamber: a small chamber stacked with drums, reached
+        //    through a hazard-striped door (the colony kept its volatile fuel walled
+        //    off). A dead-end side room, so it never affects start→exit solvability. ──
+        fuelStoreCells = carveFuelStore(map, rooms: rooms, rng: &rng, theme: th)
+
         // ── verify solvability (keyed BFS) ──
         if allowLocks && !lockedDoors.isEmpty {
             if !solvable(map: map, start: startCell, exitCell: exitCell, keyCells: keyCells, lockedDoors: lockedDoors) {
@@ -241,6 +246,7 @@ enum MapGen {
 
     // a per-attempt scratch (single-threaded generation)
     private static var secretLootCell: Int? = nil
+    private static var fuelStoreCells: [SIMD2<Float>] = []   // interior cells of the carved fuel store (drums stack here)
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -314,6 +320,54 @@ enum MapGen {
             return (doorCell, closet)
         }
         return nil
+    }
+
+    /// Dig a 2×2 fuel-storage chamber behind a wall of a random non-start room,
+    /// reached through a hazard-striped (but openable) door. Returns the interior
+    /// floor cells for drum stacking ([] if no spot was found — drums then scatter).
+    private static func carveFuelStore(_ map: GameMap, rooms: [Room], rng: inout Rng, theme: Theme) -> [SIMD2<Float>] {
+        // Dig a 2×2 fuel-storage chamber off ANY wall of a non-start room, reached
+        // through a hazard-striped (openable) door. Tries all four walls across many
+        // rooms so a store reliably appears every level, and lights it well so the
+        // stacked drums READ. Returns the interior cells ([] only if truly no spot).
+        for _ in 0..<60 {
+            let r = rooms[rng.i(1, rooms.count - 1)]
+            let outward: (Int, Int), door: (Int, Int)
+            switch rng.i(0, 3) {
+            case 0:  outward = (1, 0);  door = (r.x + r.w,     r.y + r.h / 2)   // right wall
+            case 1:  outward = (-1, 0); door = (r.x - 1,       r.y + r.h / 2)   // left wall
+            case 2:  outward = (0, 1);  door = (r.x + r.w / 2, r.y + r.h)       // bottom wall
+            default: outward = (0, -1); door = (r.x + r.w / 2, r.y - 1)         // top wall
+            }
+            let perp = (outward.1, outward.0)                                   // the 2-wide stack axis
+            let front = (door.0 - outward.0, door.1 - outward.1)               // room-side cell in front of the door
+            guard map.inBounds(front.0, front.1), map.wall[map.idx(front.0, front.1)] == 0,
+                  map.doors[map.idx(front.0, front.1)] == nil,
+                  map.inBounds(door.0, door.1), map.wall[map.idx(door.0, door.1)] != 0,
+                  map.doors[map.idx(door.0, door.1)] == nil else { continue }
+            // the 2×2 chamber beyond the door (1–2 cells out, 2 wide along the wall)
+            var chamber: [(Int, Int)] = []
+            var ok = true
+            for d in 1...2 { for w in 0...1 {
+                let cx = door.0 + outward.0 * d + perp.0 * w
+                let cy = door.1 + outward.1 * d + perp.1 * w
+                if cx < 1 || cy < 1 || cx >= map.w - 1 || cy >= map.h - 1 || map.wall[map.idx(cx, cy)] == 0 { ok = false }
+                chamber.append((cx, cy))
+            } }
+            if !ok { continue }
+            let dCell = map.idx(door.0, door.1)
+            map.floor[dCell] = theme.floor.rawValue; map.ceil[dCell] = theme.ceil.rawValue; map.light[dCell] = 0.6
+            map.wall[dCell] = WallTex.hazard.rawValue                          // yellow-black hazard door — the "fuel store" sign
+            map.doors[dCell] = DoorState()
+            var cells: [SIMD2<Float>] = []
+            for (cx, cy) in chamber {
+                let i = map.idx(cx, cy)
+                map.wall[i] = 0; map.floor[i] = theme.floor.rawValue; map.ceil[i] = theme.ceil.rawValue; map.light[i] = 0.6
+                cells.append(SIMD2(Float(cx) + 0.5, Float(cy) + 0.5))
+            }
+            return cells
+        }
+        return []
     }
 
     // ── keyed BFS solvability ───────────────────────────────────────────────
@@ -432,9 +486,9 @@ enum MapGen {
         // secret loot
         if let s = secretLootCell { items.append(ItemSpawn(kind: rng.chance(0.5) ? .megaArmor : .weaponRocket, pos: note(center(s)))) }
 
-        // guarantee an early fuel cache (room 1 if possible) — the flamethrower is
-        // finite now, so the marine must be able to top up
-        if rooms.count > 1, let p = spot(in: rooms[1]) { items.append(ItemSpawn(kind: .ammoFuel, pos: p)) }
+        // Fuel is no longer a floor pickup — the oil drums ARE the fuel source now
+        // (refuel by standing at one), so the "fuel pod" duplication is gone. The
+        // early-fuel guarantee is a drum seeded into rooms[1] in the drum pass below.
 
         for (ri, r) in rooms.enumerated() {
             let isStart = ri == 0
@@ -474,34 +528,46 @@ enum MapGen {
             items.append(ItemSpawn(kind: .ammoCells, pos: p))
         }
 
-        // fuel drums — industrial props scattered through the workings. They top up
-        // the flamethrower when you stand at one, and rupture in a fierce blast when
-        // shot (or caught in another explosion). More of them the deeper you go.
+        // fuel drums — the colony's volatile stores, and the marine's ONLY refuel
+        // source now (the flamethrower is finite). Their HOME is the clearly-marked
+        // (hazard-doored) fuel-storage chamber, stacked full; a couple more sit in
+        // room CORNERS as opportunistic combat barrels (shoot to detonate).
         if rooms.count > 1 {
-            let drumCount = rng.i(2, 3 + level / 2)
-            for _ in 0..<drumCount {
-                // a drum is SOLID, so it must never sit on a pickup (it would wall
-                // the item off completely), on the spawn, or on another drum. Try a
-                // handful of cells before giving up on this drum.
-                for _ in 0..<40 {                                  // small rooms fill up fast — try hard before giving up
+            func cornerCells(_ r: Room) -> [SIMD2<Float>] {
+                var out: [SIMD2<Float>] = []
+                for (x, y) in [(r.x, r.y), (r.x + r.w - 1, r.y), (r.x, r.y + r.h - 1), (r.x + r.w - 1, r.y + r.h - 1)] {
+                    let i = map.idx(x, y)
+                    if map.wall[i] == 0 && map.doors[i] == nil && !map.hazard[i] { out.append(center(i)) }
+                }
+                return out
+            }
+            func freeOf(_ p: SIMD2<Float>, _ gap: Float) -> Bool { !placed.contains { vlen($0 - p) < gap } }
+            // 1. stack the fuel-storage chamber — the primary, clearly-marked cache
+            for c in fuelStoreCells where freeOf(c, 0.85) { drums.append(c); placed.append(c) }
+            // 2. a couple of opportunistic corner barrels out in the level
+            for _ in 0..<rng.i(1, 2) {
+                for attempt in 0..<40 {
                     let r = rooms[rng.i(1, rooms.count - 1)]
-                    guard let c = randCell(in: r) else { continue }
-                    let p = center(c)
-                    if placed.contains(where: { vlen($0 - p) < 1.05 }) { continue }  // clear of every other spawn (a solid drum must never wall off a pickup or stack; >0.9 keeps it off pickups)
-                    drums.append(p); placed.append(p)
-                    break
+                    var p: SIMD2<Float>? = nil
+                    if attempt < 28 {                              // prefer free corners
+                        let corners = cornerCells(r).filter { freeOf($0, 1.05) }
+                        if !corners.isEmpty { p = corners[rng.i(0, corners.count - 1)] }
+                    } else if let c = randCell(in: r) {            // then any clear cell
+                        let q = center(c)
+                        if freeOf(q, 1.05) { p = q }
+                    }
+                    if let p = p { drums.append(p); placed.append(p); break }
                 }
             }
-            // every level MUST carry fuel (the flamethrower is finite) — if a crowded
-            // small-room layout starved the random pass, scan exhaustively for one cell
+            // 3. belt-and-braces: every level MUST carry fuel — if both passes were
+            //    starved (no store carved + crowded rooms), scan exhaustively
             if drums.isEmpty {
                 outer: for r in rooms.dropFirst() {
                     for yy in (r.y + 1)..<(r.y + r.h - 1) { for xx in (r.x + 1)..<(r.x + r.w - 1) {
                         let i = map.idx(xx, yy)
                         if map.wall[i] != 0 || map.doors[i] != nil || map.hazard[i] { continue }
                         let p = center(i)
-                        if placed.contains(where: { vlen($0 - p) < 0.95 }) { continue }
-                        drums.append(p); placed.append(p); break outer
+                        if freeOf(p, 0.95) { drums.append(p); placed.append(p); break outer }
                     } }
                 }
             }
@@ -580,21 +646,28 @@ enum MapGen {
             if !slots.isEmpty {
                 var used = 0
                 if r.w >= 5 && r.h >= 5 && !hazard {
-                    // BARRACKS: bunks down the walls, headboards to the wall
-                    for (i, s) in slots.enumerated() where i % 2 == 0 {
-                        if placeProp(.bunk, s, gap: 1.0) { used += 1 }
-                        if used >= 4 { break }
+                    // BARRACKS: bunks down the walls, each PAIRED with a locker beside
+                    // it — no bed without its locker (a real bunkroom rule).
+                    var i = 0
+                    while i < slots.count && used < 4 {
+                        if placeProp(.bunk, slots[i], gap: 1.0) {
+                            used += 1
+                            if i + 1 < slots.count { placeProp(.locker, slots[i + 1]) }   // the bunk's mate
+                            i += 2
+                        }
+                        i += 1
                     }
                 } else if area <= 20 {
                     // OFFICE: a desk + powered terminal, a chair tucked in front, a locker
                     if let desk = slots.first(where: { freeCell($0.pos, 0.85) }) {
                         placeProp(.desk, desk)
-                        let fx = desk.x + Int(desk.inward.x), fy = desk.y + Int(desk.inward.y)
-                        let frontP = SIMD2(Float(fx) + 0.5, Float(fy) + 0.5)
-                        if map.inBounds(fx, fy), map.wall[map.idx(fx, fy)] == 0, map.doors[map.idx(fx, fy)] == nil,
-                           !map.hazard[map.idx(fx, fy)], freeCell(frontP, 0.6) {
-                            props.append(Prop(kind: .chair, pos: frontP, yaw: yawFor(-desk.inward)))   // faces the desk
-                            placed.append(frontP)
+                        // the chair sits just in front of the (now wall-flush) desk, facing it
+                        let chairP = desk.pos + desk.inward * 0.62
+                        let cx = Int(chairP.x), cy = Int(chairP.y)
+                        if map.inBounds(cx, cy), map.wall[map.idx(cx, cy)] == 0, map.doors[map.idx(cx, cy)] == nil,
+                           !map.hazard[map.idx(cx, cy)], freeCell(chairP, 0.5) {
+                            props.append(Prop(kind: .chair, pos: chairP, yaw: yawFor(-desk.inward), againstWall: false))
+                            placed.append(chairP)
                         }
                         for s in slots where placeProp(.locker, s) { break }
                     }
@@ -618,12 +691,13 @@ enum MapGen {
     }
 
     private static func pickItem(level: Int, rng: inout Rng) -> ItemKind {
+        // No fuel here — fuel is the oil drums' job now (refuel at one), so the loot
+        // table redistributes the old fuel share to the plasma/health staples.
         let roll = rng.f()
-        if roll < 0.18 { return .stim }
-        if roll < 0.34 { return .medkit }
-        if roll < 0.55 { return .ammoCells }                     // plasma fodder — the staple
-        if roll < 0.72 { return .ammoFuel }                      // flamethrower fuel
-        if roll < 0.82 { return .mineCrate }                     // proximity explosives
+        if roll < 0.20 { return .stim }
+        if roll < 0.40 { return .medkit }
+        if roll < 0.66 { return .ammoCells }                     // plasma fodder — the staple
+        if roll < 0.80 { return .mineCrate }                     // proximity explosives
         if roll < 0.90 { return level >= 2 ? .ammoRockets : .ammoCells }
         if roll < 0.97 { return .armor }
         return .megaArmor

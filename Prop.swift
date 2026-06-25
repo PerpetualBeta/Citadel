@@ -21,7 +21,11 @@ enum FurnitureKind: Int, CaseIterable {
 
 struct Prop {
     var kind: FurnitureKind
-    var pos: SIMD2<Float>     // cell-centre footing on the floor
+    var pos: SIMD2<Float>     // footing on the floor (cell-centre for wall pieces; sub-cell for a chair tucked to a desk)
     var yaw: Float            // facing — local +Z points this way in world space
     var length: Float = 1     // wallPipe only: run length along the wall (world units)
+    // Wall pieces are shoved back so their rear face sits flush against the wall
+    // (a bunk/desk/locker stood ~⅓ of a cell — "approx 1m" — off the wall before).
+    // A chair is free-standing in front of its desk, so it keeps its placed position.
+    var againstWall: Bool = true
 }

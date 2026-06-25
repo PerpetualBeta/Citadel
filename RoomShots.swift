@@ -41,6 +41,52 @@ enum RoomShots {
             print("  wrote 00-lineup.png — \(kinds.count) furniture kinds")
         }
 
+        // ── drum cluster — aim at the densest fuel-drum cluster (the fuel-storage
+        //    chamber stacks several) so the SDF barrels that replaced the old sprite
+        //    get a clean look, across a couple of seeds for red/blue variety
+        for (si, seed) in [UInt64(3), UInt64(9)].enumerated() {
+            // drop ONE barrel on the start cell (guaranteed open + room-central, clear
+            // line of sight) and stand back to frame it — the cleanest model check
+            let world = World(level: 1, colonyIndex: 0, seed: seed)
+            world.monsters = []; world.props = []; world.sockets = []
+            let target = world.player.pos
+            world.drums = [Drum(pos: target, fuel: 150, health: 24)]
+            func openLit(_ c: SIMD2<Float>) -> Bool {
+                let x = Int(c.x), y = Int(c.y)
+                guard world.map.inBounds(x, y), !world.map.blocksMovement(x, y) else { return false }
+                let col = world.map.lightColor[world.map.idx(x, y)]
+                return col.x * 0.299 + col.y * 0.587 + col.z * 0.114 > 0.3
+            }
+            var cam = target, found = false
+            for back in [Float(2.3), 1.9, 1.5] where !found {
+                for a in stride(from: Float(0), to: 6.28, by: 0.25) where !found {
+                    let c = target + SIMD2(cos(a), sin(a)) * back
+                    if openLit(c) { cam = c; found = true }
+                }
+            }
+            world.player.pos = cam
+            world.player.dir = atan2(target.y - cam.y, target.x - cam.x)
+            world.player.muzzle = 0
+            let canvas = Canvas2D()
+            _ = gpu.render(world, into: canvas)
+            n += 1
+            let name = String(format: "00b-drums-%d.png", si)
+            Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent(name))
+            print("  wrote \(name) — single barrel on the start cell")
+        }
+
+        // fuel-store reliability report — a store stacks ≥3 drums in one cluster, so
+        // the densest cluster size tells us whether a clearly-marked store carved
+        for level in 1...8 {
+            let world = World(level: level, colonyIndex: (level - 1) % 6, seed: UInt64(level) &* 2654435761 &+ 11)
+            var maxCluster = 0
+            for d in world.drums {
+                var c = 0; for q in world.drums where vlen(q.pos - d.pos) < 2.4 { c += 1 }
+                maxCluster = max(maxCluster, c)
+            }
+            print("  L\(level): \(world.drums.count) drums, densest cluster \(maxCluster) \(maxCluster >= 3 ? "(fuel store ✓)" : "(no store)")")
+        }
+
         for level in [1, 2, 3, 5, 7, 8] {
             let world = World(level: level, colonyIndex: level - 1, seed: UInt64(level) &* 2654435761 &+ 11)
             let props = world.props
