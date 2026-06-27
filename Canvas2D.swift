@@ -268,42 +268,42 @@ final class Canvas2D {
 
     // ── Core Text labels (crisp, cached) ───────────────────────────────────
 
-    func labelWidth(_ s: String, size: CGFloat, weight: NSFont.Weight = .regular) -> Int {
-        TextImage.cached(s, size: size, weight: weight, color: 0xFFFF_FFFF)?.w ?? 0
+    func labelWidth(_ s: String, size: CGFloat, weight: NSFont.Weight = .regular, mono: Bool = false) -> Int {
+        TextImage.cached(s, size: size, weight: weight, color: 0xFFFF_FFFF, mono: mono)?.w ?? 0
     }
 
-    func labelHeight(_ s: String, size: CGFloat, weight: NSFont.Weight = .regular) -> Int {
-        TextImage.cached(s, size: size, weight: weight, color: 0xFFFF_FFFF)?.h ?? 0
+    func labelHeight(_ s: String, size: CGFloat, weight: NSFont.Weight = .regular, mono: Bool = false) -> Int {
+        TextImage.cached(s, size: size, weight: weight, color: 0xFFFF_FFFF, mono: mono)?.h ?? 0
     }
 
     func label(_ s: String, _ x: Int, _ y: Int, size: CGFloat, color: UInt32 = 0xFFFF_FFFF,
-               weight: NSFont.Weight = .regular, shadow: Bool = true, glow: UInt32? = nil) {
-        if let glowColor = glow, let g = TextImage.cached(s, size: size, weight: weight, color: glowColor) {
+               weight: NSFont.Weight = .regular, shadow: Bool = true, glow: UInt32? = nil, mono: Bool = false) {
+        if let glowColor = glow, let g = TextImage.cached(s, size: size, weight: weight, color: glowColor, mono: mono) {
             for (ox, oy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] { drawTextImage(g, x + ox, y + oy) }
         }
-        if shadow, let sh = TextImage.cached(s, size: size, weight: weight, color: 0xFF00_0000) {
+        if shadow, let sh = TextImage.cached(s, size: size, weight: weight, color: 0xFF00_0000, mono: mono) {
             drawTextImage(sh, x + 1, y + 1)
         }
-        if let b = TextImage.cached(s, size: size, weight: weight, color: color) { drawTextImage(b, x, y) }
+        if let b = TextImage.cached(s, size: size, weight: weight, color: color, mono: mono) { drawTextImage(b, x, y) }
     }
 
     func labelCentered(_ s: String, _ y: Int, size: CGFloat, color: UInt32 = 0xFFFF_FFFF,
-                       weight: NSFont.Weight = .regular, shadow: Bool = true, glow: UInt32? = nil) {
-        let w = labelWidth(s, size: size, weight: weight)
-        label(s, (width - w) / 2, y, size: size, color: color, weight: weight, shadow: shadow, glow: glow)
+                       weight: NSFont.Weight = .regular, shadow: Bool = true, glow: UInt32? = nil, mono: Bool = false) {
+        let w = labelWidth(s, size: size, weight: weight, mono: mono)
+        label(s, (width - w) / 2, y, size: size, color: color, weight: weight, shadow: shadow, glow: glow, mono: mono)
     }
 
     /// Right edge of the text sits at `rightX`.
     func labelRight(_ s: String, _ rightX: Int, _ y: Int, size: CGFloat, color: UInt32 = 0xFFFF_FFFF,
-                    weight: NSFont.Weight = .regular, shadow: Bool = true) {
-        let w = labelWidth(s, size: size, weight: weight)
-        label(s, rightX - w, y, size: size, color: color, weight: weight, shadow: shadow)
+                    weight: NSFont.Weight = .regular, shadow: Bool = true, mono: Bool = false) {
+        let w = labelWidth(s, size: size, weight: weight, mono: mono)
+        label(s, rightX - w, y, size: size, color: color, weight: weight, shadow: shadow, mono: mono)
     }
 
     /// Centre text within the column [x0, x0+w).
     func labelCentered2(_ s: String, _ x0: Int, _ w: Int, _ y: Int, size: CGFloat, color: UInt32 = 0xFFFF_FFFF,
-                        weight: NSFont.Weight = .regular, shadow: Bool = true, glow: UInt32? = nil) {
-        let tw = labelWidth(s, size: size, weight: weight)
-        label(s, x0 + (w - tw) / 2, y, size: size, color: color, weight: weight, shadow: shadow, glow: glow)
+                        weight: NSFont.Weight = .regular, shadow: Bool = true, glow: UInt32? = nil, mono: Bool = false) {
+        let tw = labelWidth(s, size: size, weight: weight, mono: mono)
+        label(s, x0 + (w - tw) / 2, y, size: size, color: color, weight: weight, shadow: shadow, glow: glow, mono: mono)
     }
 }

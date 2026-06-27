@@ -81,6 +81,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         buildPipeline(view: view)
         buildTexture()
         gpuWorldRenderer = GPUWorldRenderer(device: device)
+        gpuWorldRenderer?.prewarm()      // build the level-independent GPU resources now (title is up), not on the first fire-press
         audio.startMusic(.title)
     }
 

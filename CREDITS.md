@@ -33,7 +33,8 @@ Ogrebane — *Monster Sound Effects 2* (<https://opengameart.org/content/monster
 | flamethrower, flamethrower1 | flame burst | Kenney Sci-Fi Sounds | thrusterFire_000/002 |
 | explosion, explosion1, explosion2 | explosion | Kenney Sci-Fi Sounds | explosionCrunch_000/002, lowFrequency_explosion_000 |
 | door_open | door slide | Kenney Sci-Fi Sounds | doorOpen_000 |
-| hiss (×9, random — drone + Queen, sight & pain) | alien hiss | rubberduck 80 CC0 creature SFX | spit_01/02, breath, alien_01–06 |
+| hiss (×9, random — drone sight + drone/Queen pain) | alien hiss | rubberduck 80 CC0 creature SFX | spit_01/02, breath, alien_01–06 |
+| queen_snarl1–9 (×9, random — pitched DOWN & varied per-utterance in-engine) | Queen snarl — broodmother roar (plays only with line of sight) | rubberduck 80 CC0 creature SFX | roar_02/03, monster_01/03/04/06/07, troll_01/02 |
 | drone_death (×13, random) | drone death — raspy gasp | Ogrebane Monster SFX 2 | monster-1, 5–11, 13–17 |
 | queen_death (×3, random) | Queen death — frightful squeal | rubberduck 80 CC0 creature SFX #2 | alien_07/08/09 |
 | pickup, pickup1 | item / ammo pickup | Kenney Interface Sounds | confirmation_001/002 |
@@ -51,8 +52,10 @@ The reactive bed currently has **two layers** (drone + swarm crossfaded by threa
 `bed_pulse` / `bed_tension` are unfilled, so those layers are silent for now.
 
 _Every sound above is now a real CC0 sample; the synth in AudioEngine.swift is only a safety
-fallback for a missing file. Aliens HISS (no roar); the Queen dies with a squeal, the drone
-with a raspy gasp; the marine grunts and dies in a real voice._
+fallback for a missing file. Drones HISS; the Queen SNARLS — a CC0 creature roar pitched
+DOWN and randomly varied (pitch + tempo) in-engine, so she reads enormous and never repeats,
+and only when she has line of sight to you — and she dies with a squeal. The drone dies with
+a raspy gasp; the marine grunts and dies in a real voice._
 
 ### How to fill this in
 - **CC0**: source URL + author (if known). No obligation, but list it.

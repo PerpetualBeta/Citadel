@@ -14,6 +14,7 @@ struct HUD {
 
     func draw(_ world: World, into c: Canvas2D) {
         drawFlashes(world, c)
+        drawArcWatermark(c)
         drawViewmodel(world, c)
         drawCrosshair(c)
         drawMessages(world, c)
@@ -29,6 +30,14 @@ struct HUD {
             let e = max(0, 1 - Float(min(y, viewH - 1 - y)) / 40)
             if e > 0 { c.fillRectBlend(0, y, W, 1, packRGBA(0, 0, 0), e * 0.18) }
         }
+    }
+
+    /// A faint ARC seal etched into the lower-left of the visor — the marine's kit
+    /// is ARC-issued. A quiet breadcrumb (the corporation seeded in chapter two);
+    /// never explained, and dim enough to read as worn HUD furniture.
+    private func drawArcWatermark(_ c: Canvas2D) {
+        FrontEnd.arcSeal(c, cx: uiS(30), cy: viewH - uiS(28), r: uiS(15),
+                         color: mixRGBA(packRGBA(0, 0, 0), FrontEnd.cold, 0.34), alpha: 0.7)
     }
 
     private func drawCrosshair(_ c: Canvas2D) {

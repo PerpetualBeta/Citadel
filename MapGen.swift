@@ -356,6 +356,25 @@ enum MapGen {
             } }
             if !ok { continue }
             let dCell = map.idx(door.0, door.1)
+            // the door must sit IN a wall — solid on both flanks — never a free-standing
+            // hazard pillar in the open
+            let fa = (door.0 + perp.0, door.1 + perp.1), fb = (door.0 - perp.0, door.1 - perp.1)
+            guard map.inBounds(fa.0, fa.1), map.wall[map.idx(fa.0, fa.1)] != 0,
+                  map.inBounds(fb.0, fb.1), map.wall[map.idx(fb.0, fb.1)] != 0 else { continue }
+            // the chamber must be SEALED — its only opening is the door, so it can't leak
+            // into an adjacent corridor / room (which strands the drums out in the open)
+            let chamberSet = Set(chamber.map { map.idx($0.0, $0.1) })
+            var sealed = true
+            seal: for (cx, cy) in chamber {
+                for (ox, oy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let nx = cx + ox, ny = cy + oy
+                    guard map.inBounds(nx, ny) else { sealed = false; break seal }
+                    let ni = map.idx(nx, ny)
+                    if ni == dCell || chamberSet.contains(ni) { continue }
+                    if map.wall[ni] == 0 { sealed = false; break seal }          // leaks into open space
+                }
+            }
+            if !sealed { continue }
             map.floor[dCell] = theme.floor.rawValue; map.ceil[dCell] = theme.ceil.rawValue; map.light[dCell] = 0.6
             map.wall[dCell] = WallTex.hazard.rawValue                          // yellow-black hazard door — the "fuel store" sign
             map.doors[dCell] = DoorState()
@@ -542,19 +561,31 @@ enum MapGen {
                 return out
             }
             func freeOf(_ p: SIMD2<Float>, _ gap: Float) -> Bool { !placed.contains { vlen($0 - p) < gap } }
-            // 1. stack the fuel-storage chamber — the primary, clearly-marked cache
-            for c in fuelStoreCells where freeOf(c, 0.85) { drums.append(c); placed.append(c) }
+            // a drum is SOLID, so it must never land in a doorway throat — keep barrels
+            // off any cell adjacent to a door (the fuel store's own entry is handled by
+            // dropping the cell straight inside its hazard door, below).
+            func clearOfDoors(_ p: SIMD2<Float>) -> Bool {
+                let cx = Int(p.x), cy = Int(p.y)
+                for dy in -1...1 { for dx in -1...1 where map.inBounds(cx + dx, cy + dy) {
+                    if map.doors[map.idx(cx + dx, cy + dy)] != nil { return false }
+                } }
+                return true
+            }
+            // 1. stack the fuel-storage chamber — the primary, clearly-marked cache.
+            //    SKIP the first cell (straight inside the hazard door): drums are SOLID,
+            //    and a barrel in the doorway would wall the whole store off.
+            for c in fuelStoreCells.dropFirst() where freeOf(c, 0.85) { drums.append(c); placed.append(c) }
             // 2. a couple of opportunistic corner barrels out in the level
             for _ in 0..<rng.i(1, 2) {
                 for attempt in 0..<40 {
                     let r = rooms[rng.i(1, rooms.count - 1)]
                     var p: SIMD2<Float>? = nil
                     if attempt < 28 {                              // prefer free corners
-                        let corners = cornerCells(r).filter { freeOf($0, 1.05) }
+                        let corners = cornerCells(r).filter { freeOf($0, 1.05) && clearOfDoors($0) }
                         if !corners.isEmpty { p = corners[rng.i(0, corners.count - 1)] }
                     } else if let c = randCell(in: r) {            // then any clear cell
                         let q = center(c)
-                        if freeOf(q, 1.05) { p = q }
+                        if freeOf(q, 1.05) && clearOfDoors(q) { p = q }
                     }
                     if let p = p { drums.append(p); placed.append(p); break }
                 }
@@ -567,7 +598,7 @@ enum MapGen {
                         let i = map.idx(xx, yy)
                         if map.wall[i] != 0 || map.doors[i] != nil || map.hazard[i] { continue }
                         let p = center(i)
-                        if freeOf(p, 0.95) { drums.append(p); placed.append(p); break outer }
+                        if freeOf(p, 0.95) && clearOfDoors(p) { drums.append(p); placed.append(p); break outer }
                     } }
                 }
             }
@@ -577,19 +608,39 @@ enum MapGen {
 
         // ── furnish the rooms ── the citadels were working colonies until the swarm
         // came; the rooms should look lived-in, not like empty test boxes. Furniture
-        // is purely decorative (no collision — the fight stays clean), placed flush
-        // against the walls so room centres stay open: large dorms get rows of bunks
+        // is SOLID (see World.propColliders) and PROTRUDES into the room, so it must be
+        // placed flush against real walls and clear of every opening (nearOpening),
+        // never walling the marine in: large dorms get rows of bunks
         // (never the ones with toxic pools), small offices get a desk + terminal +
         // chair, and every room gets steel lockers and pipe runs for the industrial
         // read of the beauty shot.
         let exitX = map.exitCell % map.w, exitY = map.exitCell / map.w
+        // room membership for every cell (−1 = corridor / void) — shared by furniture
+        // placement and pipe routing so both agree on what counts as an "opening".
+        var roomOf = [Int](repeating: -1, count: map.w * map.h)
+        for (ri, r) in rooms.enumerated() {
+            for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) { roomOf[map.idx(xx, yy)] = ri } }
+        }
+        // a cell the player must be able to pass through: a door (any kind) or the exit.
+        func isOpeningCell(_ i: Int) -> Bool {
+            map.doors[i] != nil || map.wall[i] == WallTex.exitSwitch.rawValue
+        }
         func solidWall(_ x: Int, _ y: Int) -> Bool {
             !map.inBounds(x, y) || (map.wall[map.idx(x, y)] != 0 && map.doors[map.idx(x, y)] == nil)
         }
-        func nearDoor(_ x: Int, _ y: Int) -> Bool {
-            for (ox, oy) in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] where map.inBounds(x + ox, y + oy) {
-                if map.doors[map.idx(x + ox, y + oy)] != nil { return true }
-            }
+        // A wall slot is unusable if any neighbour (incl. diagonals) is an OPENING — a
+        // door, or an open cell belonging to a different room / corridor (a room-mouth).
+        // Furniture is SOLID now, and bunks/desks PROTRUDE ~1 cell into the room, so a
+        // piece placed beside an opening would jut across the throat and wall the marine
+        // in. A one-cell margin from every opening guarantees the passage stays clear.
+        func nearOpening(_ x: Int, _ y: Int, _ ri: Int) -> Bool {
+            for dy in -2...2 { for dx in -2...2 where !(dx == 0 && dy == 0) {
+                guard map.inBounds(x + dx, y + dy) else { continue }
+                let ni = map.idx(x + dx, y + dy)
+                let cheb = max(abs(dx), abs(dy))
+                if isOpeningCell(ni) { return true }                                   // 2-cell margin from any door / the exit (a bunk protrudes ~1 cell)
+                if cheb == 1 && map.wall[ni] == 0 && roomOf[ni] != ri { return true }   // 1-cell margin from a room-mouth
+            } }
             return false
         }
         func freeCell(_ p: SIMD2<Float>, _ gap: Float) -> Bool { !placed.contains { vlen($0 - p) < gap } }
@@ -597,12 +648,12 @@ enum MapGen {
         func yawFor(_ inward: SIMD2<Float>) -> Float { atan2(-inward.x, inward.y) }
         // interior edge cells that sit flush against a real wall, with their inward facing
         struct Slot { let pos: SIMD2<Float>; let inward: SIMD2<Float>; let x, y: Int }
-        func wallSlots(_ r: Room) -> [Slot] {
+        func wallSlots(_ r: Room, _ ri: Int) -> [Slot] {
             var out: [Slot] = []
             func consider(_ x: Int, _ y: Int, _ inward: SIMD2<Float>) {
                 guard map.inBounds(x, y), map.wall[map.idx(x, y)] == 0,
                       map.doors[map.idx(x, y)] == nil, !map.hazard[map.idx(x, y)] else { return }
-                if nearDoor(x, y) { return }
+                if nearOpening(x, y, ri) { return }                            // not beside any door or room-mouth
                 if abs(x - exitX) + abs(y - exitY) <= 1 { return }              // keep the exit switch reachable
                 if !solidWall(x - Int(inward.x), y - Int(inward.y)) { return }  // real wall behind (not a corridor mouth)
                 out.append(Slot(pos: SIMD2(Float(x) + 0.5, Float(y) + 0.5), inward: inward, x: x, y: y))
@@ -624,8 +675,8 @@ enum MapGen {
             placed.append(slot.pos)
             return true
         }
-        for r in rooms {
-            let slots = wallSlots(r)
+        for (ri, r) in rooms.enumerated() {
+            let slots = wallSlots(r, ri)
             let area = r.w * r.h
             let hazard = roomHasHazard(r)
             // ── floor furniture against the walls ──
@@ -674,14 +725,14 @@ enum MapGen {
         // (yaw). Anti-softlock for the plasma-only Queen.
         if rooms.count > 1 {
             var nSock = 0
-            for r in rooms.dropFirst() where nSock < 2 {
-                for s in wallSlots(r) where freeCell(s.pos, 1.0) && !sockets.contains(where: { vlen($0.pos - s.pos) < 3 }) {
+            for (ri, r) in rooms.enumerated().dropFirst() where nSock < 2 {
+                for s in wallSlots(r, ri) where freeCell(s.pos, 1.0) && !sockets.contains(where: { vlen($0.pos - s.pos) < 3 }) {
                     sockets.append((pos: s.pos, yaw: yawFor(s.inward))); placed.append(s.pos); nSock += 1; break
                 }
             }
             if sockets.isEmpty {                                 // belt-and-braces: every level must carry one
-                outer: for r in rooms.dropFirst() {
-                    for s in wallSlots(r) where freeCell(s.pos, 0.6) {
+                outer: for (ri, r) in rooms.enumerated().dropFirst() {
+                    for s in wallSlots(r, ri) where freeCell(s.pos, 0.6) {
                         sockets.append((pos: s.pos, yaw: yawFor(s.inward))); placed.append(s.pos); break outer
                     }
                 }
@@ -693,10 +744,6 @@ enum MapGen {
         // of every OPENING (door / corridor mouth), every wall-prop and the exit — so
         // a pipe NEVER crosses a doorway or runs through a locker. The kernel ramps it
         // down INTO the wall (a drilled-hole termination) wherever the mask hits 0.
-        var roomOf = [Int](repeating: -1, count: map.w * map.h)
-        for (ri, r) in rooms.enumerated() {
-            for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) { roomOf[map.idx(xx, yy)] = ri } }
-        }
         var propBlock = Set<Int>()                 // a wall prop + the cells around it block the run
         for pr in props {
             let px = Int(pr.pos.x), py = Int(pr.pos.y)
@@ -709,13 +756,14 @@ enum MapGen {
                 let i = map.idx(xx, yy)
                 if map.wall[i] != 0 || map.doors[i] != nil || map.hazard[i] { continue }   // open floor only
                 if propBlock.contains(i) { continue }                                       // not behind/through a prop
-                if abs(xx - exitX) + abs(yy - exitY) <= 1 { continue }                      // clear of the exit switch
+                if abs(xx - exitX) + abs(yy - exitY) <= 2 { continue }                      // keep well clear of the exit switch
                 var clear = true                                                            // and clear of every opening
-                for oy in -1...1 { for ox in -1...1 where !(ox == 0 && oy == 0) {
-                    let nx = xx + ox, ny = yy + oy
+                for dy in -2...2 { for dx in -2...2 where !(dx == 0 && dy == 0) {
+                    let nx = xx + dx, ny = yy + dy
                     guard map.inBounds(nx, ny) else { continue }
                     let ni = map.idx(nx, ny)
-                    if map.doors[ni] != nil || (map.wall[ni] == 0 && roomOf[ni] != ri) { clear = false }
+                    if isOpeningCell(ni) { clear = false }                                  // a 2-cell buffer round any door / the exit
+                    else if max(abs(dx), abs(dy)) == 1 && map.wall[ni] == 0 && roomOf[ni] != ri { clear = false }  // 1 cell off a room-mouth
                 } }
                 if clear { map.pipe[i] = 1 }
             } }
@@ -726,6 +774,12 @@ enum MapGen {
         for y in 0..<map.h { for x in 0..<map.w {
             let i = map.idx(x, y)
             guard map.wall[i] != 0, map.doors[i] == nil else { continue }                   // solid, non-door
+            var byOpening = false                                                           // never let the pipe-in-wall touch a door / the exit
+            for dy in -1...1 { for dx in -1...1 where !(dx == 0 && dy == 0) {
+                guard map.inBounds(x + dx, y + dy) else { continue }
+                if isOpeningCell(map.idx(x + dx, y + dy)) { byOpening = true }
+            } }
+            if byOpening { continue }
             for (ox, oy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] where map.inBounds(x + ox, y + oy) {
                 if map.pipe[map.idx(x + ox, y + oy)] >= 0.5 { ext[i] = 1; break }
             }

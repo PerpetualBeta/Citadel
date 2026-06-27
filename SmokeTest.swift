@@ -142,7 +142,19 @@ enum SmokeTest {
 
         // 2f. a lone drone (last one alive) commits to the hunt and closes to melee
         let kw = World(level: 1, colonyIndex: 0, seed: 11)
-        var dr = Monster(kind: .alien, pos: kw.player.pos + SIMD2<Float>(2.0, 0)); dr.awake = true; dr.state = .chase
+        // drop the drone into an open, furniture-free cell with a clear lane to the
+        // marine (~2–3 cells off) — the test is "a lone drone commits", not "a drone
+        // wedged inside a desk", so it must start somewhere it can actually move.
+        var spawn = kw.player.pos + SIMD2<Float>(2.0, 0)
+        for off in [SIMD2<Float>(2, 0), SIMD2(-2, 0), SIMD2(0, 2), SIMD2(0, -2),
+                    SIMD2(2.5, 0), SIMD2(-2.5, 0), SIMD2(0, 2.5), SIMD2(0, -2.5), SIMD2(3, 0), SIMD2(-3, 0)] {
+            let p = kw.player.pos + off, mid = kw.player.pos + off * 0.5
+            if !kw.map.blocksMovement(Int(p.x), Int(p.y)) && !kw.blockedBySolidProp(p.x, p.y, 0.5)
+               && !kw.map.blocksMovement(Int(mid.x), Int(mid.y)) && !kw.blockedBySolidProp(mid.x, mid.y, 0.5) {
+                spawn = p; break
+            }
+        }
+        var dr = Monster(kind: .alien, pos: spawn); dr.awake = true; dr.state = .chase
         kw.monsters = [dr]
         let d0 = vlen(kw.monsters[0].pos - kw.player.pos)
         for _ in 0..<150 { kw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
@@ -254,6 +266,11 @@ enum SmokeTest {
         // empty boxes. Props carry NO collision, but must still place sensibly: never
         // on the marine's start, on a pickup, in a doorway, or footed inside a wall.
         var propLevels = 0, propOnStart = 0, propOnItem = 0, propInWall = 0, propInDoor = 0
+        // furniture is SOLID and PROTRUDES into the room, so it must never jut across a
+        // doorway throat or a 1-wide corridor — that would wall the marine in. We test
+        // the actual collision footprint (not just the centre cell) at every such cell.
+        var doorThroatBlocked = 0, corridorBlocked = 0, pipeByOpening = 0
+        let pRad: Float = 0.34
         for lvl in 1...8 {
             let w = World(level: lvl, colonyIndex: lvl - 1, seed: UInt64(lvl) &* 97 &+ 3)
             if !w.props.isEmpty { propLevels += 1 }
@@ -264,12 +281,36 @@ enum SmokeTest {
                 if w.map.blocksMovement(cx, cy) { propInWall += 1 }                 // centre on open floor
                 if w.map.isDoorCell(cx, cy) { propInDoor += 1 }                     // never blocking a doorway
             }
+            func solid(_ x: Int, _ y: Int) -> Bool { !w.map.inBounds(x, y) || w.map.blocksMovement(x, y) }
+            for cy in 0..<w.map.h { for cx in 0..<w.map.w {
+                if w.map.isDoorCell(cx, cy) {
+                    for (ox, oy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] where !solid(cx + ox, cy + oy) {
+                        if w.blockedBySolidProp(Float(cx + ox) + 0.5, Float(cy + oy) + 0.5, pRad) { doorThroatBlocked += 1 }
+                    }
+                } else if !solid(cx, cy) {
+                    let ns = solid(cx, cy - 1) && solid(cx, cy + 1)
+                    let ew = solid(cx - 1, cy) && solid(cx + 1, cy)
+                    if ns != ew, w.blockedBySolidProp(Float(cx) + 0.5, Float(cy) + 0.5, pRad) { corridorBlocked += 1 }   // a 1-wide passage
+                }
+            } }
+            // wall-baked pipes must never reach a door / the exit (they ramp into the
+            // wall before any opening) — guards the "pipe across the elevator door" bug.
+            for i in 0..<(w.map.w * w.map.h) where w.map.pipe[i] >= 0.5 {
+                let px = i % w.map.w, py = i / w.map.w
+                for dy in -1...1 { for dx in -1...1 where w.map.inBounds(px + dx, py + dy) {
+                    let ni = w.map.idx(px + dx, py + dy)
+                    if w.map.doors[ni] != nil || w.map.wall[ni] == WallTex.exitSwitch.rawValue { pipeByOpening += 1 }
+                } }
+            }
         }
         check(propLevels >= 6, "rooms are furnished with set-dressing (\(propLevels)/8 levels)")
         check(propOnStart == 0, "no prop spawns on the marine's start (\(propOnStart))")
         check(propOnItem == 0, "no prop spawns on a pickup (\(propOnItem))")
         check(propInWall == 0, "every prop foots on open floor, never inside a wall (\(propInWall))")
         check(propInDoor == 0, "no prop sits in a doorway (\(propInDoor))")
+        check(doorThroatBlocked == 0, "no solid furniture juts across a doorway throat (\(doorThroatBlocked))")
+        check(corridorBlocked == 0, "no solid furniture blocks a 1-wide corridor (\(corridorBlocked))")
+        check(pipeByOpening == 0, "no wall pipe reaches a door or the exit (\(pipeByOpening))")
 
         // furniture is SOLID — drive the marine straight at a bunk: he must advance
         // toward it then be STOPPED on the room side (never walk through to the wall).

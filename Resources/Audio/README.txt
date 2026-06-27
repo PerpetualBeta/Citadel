@@ -26,11 +26,14 @@ ONE-SHOTS (bus: SFX)
   plasma            plasma rifle shot
   flamethrower      flame burst (fired in short throttled bursts — keep it short)
   rocket            rocket launch (whoosh + ignition)
-  drone_sight       a drone notices you (hiss / screech)
-  drone_pain        drone hit
+  hiss              shared alien pool — drone notices you + drone/Queen pain
+                    (drop hiss1..hiss16.* for random variants)
+  queen_snarl       the Queen's signature snarl — played ONLY when she has line of
+                    sight to you, on a randomised cadence (drop queen_snarl1..16.*
+                    for a random snarl each time). The engine pitches each snarl DOWN
+                    and varies pitch+tempo per utterance so she reads enormous and
+                    never repeats — so a few short creature roars go a long way.
   drone_death       drone dies (wet, gurgling)
-  queen_sight       the Queen registers you (low bellow)
-  queen_pain        Queen wounded (subsonic roar)
   queen_death       Queen killed (huge death cry)
   explosion         rocket / drum / mine detonation
   door_open         heavy door / blast door sliding

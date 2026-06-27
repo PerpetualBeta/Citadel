@@ -20,11 +20,11 @@ enum TextImage {
     private static let cap = 384
 
     /// Cached rasterisation. Colour is packed RGBA (alpha ignored).
-    static func cached(_ string: String, size: CGFloat, weight: NSFont.Weight, color: UInt32) -> Bitmap? {
+    static func cached(_ string: String, size: CGFloat, weight: NSFont.Weight, color: UInt32, mono: Bool = false) -> Bitmap? {
         if string.isEmpty { return nil }
-        let key = "\(string)|\(Int(size))|\(Int(weight.rawValue * 100))|\(color & 0xFFFFFF)"
+        let key = "\(string)|\(Int(size))|\(Int(weight.rawValue * 100))|\(color & 0xFFFFFF)|\(mono ? 1 : 0)"
         if let b = cache[key] { return b }
-        guard let b = rasterize(string, fontSize: size, weight: weight,
+        guard let b = rasterize(string, fontSize: size, weight: weight, mono: mono,
                                 r: CGFloat(redOf(color)) / 255, g: CGFloat(greenOf(color)) / 255,
                                 b: CGFloat(blueOf(color)) / 255) else { return nil }
         cache[key] = b
@@ -37,9 +37,10 @@ enum TextImage {
     /// packed RGBA with PREMULTIPLIED colour (composite with out = src+dst*(1-a)),
     /// already in our top-down framebuffer orientation.
     static func rasterize(_ string: String, fontSize: CGFloat, weight: NSFont.Weight = .regular,
-                          r: CGFloat, g: CGFloat, b: CGFloat) -> Bitmap? {
+                          mono: Bool = false, r: CGFloat, g: CGFloat, b: CGFloat) -> Bitmap? {
         if string.isEmpty { return nil }
-        let ns = NSFont.systemFont(ofSize: fontSize, weight: weight)
+        let ns = mono ? NSFont.monospacedSystemFont(ofSize: fontSize, weight: weight)
+                      : NSFont.systemFont(ofSize: fontSize, weight: weight)
         let font = ns as CTFont
         let color = CGColor(srgbRed: r, green: g, blue: b, alpha: 1)
         let attrs: [CFString: Any] = [kCTFontAttributeName: font, kCTForegroundColorAttributeName: color]

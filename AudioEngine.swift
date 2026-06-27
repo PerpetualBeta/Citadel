@@ -34,7 +34,8 @@ final class AudioEngine {
     // random) for ext in wav/caf/aiff/aif/m4a/mp3. `bed_*` / `music_title` loop.
     enum Sound: CaseIterable {
         case plasma, flamethrower, rocket
-        case hiss                  // shared alien hiss pool: drone + Queen, sight + pain (random)
+        case hiss                  // shared alien hiss pool: drone + Queen pain (random)
+        case queenSnarl            // QUEEN ONLY: her signature snarl pool (sight/LOS), random variant
         case droneDeath, queenDeath
         case explosion, doorOpen, locked, pickup, secret, exit, playerPain, playerDeath, wade
         case musicTitle, bedDrone, bedPulse, bedTension, bedSwarm
@@ -45,6 +46,7 @@ final class AudioEngine {
             case .flamethrower: return "flamethrower"
             case .rocket: return "rocket"
             case .hiss: return "hiss"
+            case .queenSnarl: return "queen_snarl"
             case .droneDeath: return "drone_death"
             case .queenDeath: return "queen_death"
             case .explosion: return "explosion"
@@ -76,7 +78,7 @@ final class AudioEngine {
         var gain: Float {
             switch self {
             case .explosion, .playerDeath, .rocket: return 1.0
-            case .queenDeath: return 0.95
+            case .queenDeath, .queenSnarl: return 0.95
             case .plasma, .droneDeath, .exit: return 0.9
             case .flamethrower: return 0.55
             case .wade: return 0.5
@@ -97,6 +99,22 @@ final class AudioEngine {
     private var loopNodes: [Sound: AVAudioPlayerNode] = [:]   // one node per looping stem
     private let flameNode = AVAudioPlayerNode()               // the flamethrower's continuous roar (SFX bus)
     private var flameOn = false
+    private let queenSnarlNode = AVAudioPlayerNode()          // dedicated Queen-snarl voice → pitch shifter
+    private let queenPitch = AVAudioUnitTimePitch()           // pitches her snarls DOWN + varies them, per utterance
+    // Queen-snarl pitch manipulation — she's a VAST broodmother, so each snarl is
+    // pitched down and randomly varied in pitch AND tempo, turning a handful of CC0
+    // samples into an endless, never-identical set. Tune to taste:
+    //   100 cents = 1 semitone · rate < 1 = slower / more ponderous.
+    private let queenSnarlPitchBase: Float   = -600          // base drop: -6 semitones (sheer size)
+    private let queenSnarlPitchJitter: Float = 450           // ± per-snarl pitch variation (cents) — wide, so no two snarls match
+    private let queenSnarlRateBase: Float    = 0.92          // base tempo: a touch slower than life
+    private let queenSnarlRateJitter: Float  = 0.14          // ± per-snarl tempo variation
+    // distant-drone voice — a muffled, echoing hiss for the far / unseen swarm (creep
+    // factor). Its own chain so it can be low-passed + reverbed without touching the
+    // dry SFX: node → low-pass EQ → reverb → SFX bus.
+    private let distantNode = AVAudioPlayerNode()
+    private let distantEQ = AVAudioUnitEQ(numberOfBands: 1)
+    private let distantReverb = AVAudioUnitReverb()
     private var bank: [Sound: [AVAudioPCMBuffer]] = [:]       // loaded samples (empty ⇒ fall back)
 
     // ── three gain buses (sliders write these) ────────────────────────────────
@@ -142,6 +160,21 @@ final class AudioEngine {
         sfxPool = (0..<12).map { _ in AVAudioPlayerNode() }
         for n in sfxPool { engine.attach(n); engine.connect(n, to: sfxMix, format: canonical) }
         engine.attach(flameNode); engine.connect(flameNode, to: sfxMix, format: canonical)
+        // the Queen's snarl runs through a time-pitch unit so it can be dropped and
+        // varied per utterance (she's a giant): node → pitch → SFX bus.
+        engine.attach(queenSnarlNode); engine.attach(queenPitch)
+        engine.connect(queenSnarlNode, to: queenPitch, format: canonical)
+        engine.connect(queenPitch, to: sfxMix, format: canonical)
+        // distant-drone chain: muffled (low-pass) + echoing (reverb) — the unseen swarm.
+        distantEQ.bands[0].filterType = .lowPass
+        distantEQ.bands[0].frequency = 760                  // roll off the highs → "heard through steel"
+        distantEQ.bands[0].bypass = false
+        distantReverb.loadFactoryPreset(.largeHall)
+        distantReverb.wetDryMix = 72                        // mostly wet → it echoes off down the corridors
+        engine.attach(distantNode); engine.attach(distantEQ); engine.attach(distantReverb)
+        engine.connect(distantNode, to: distantEQ, format: canonical)
+        engine.connect(distantEQ, to: distantReverb, format: canonical)
+        engine.connect(distantReverb, to: sfxMix, format: canonical)
         for s in Sound.allCases where s.loop {
             let n = AVAudioPlayerNode(); loopNodes[s] = n
             engine.attach(n); engine.connect(n, to: s.bus == 0 ? musicMix : ambMix, format: canonical)
@@ -156,7 +189,7 @@ final class AudioEngine {
             try? engine.start()
         }
         applyGains()
-        if engine.isRunning { for n in sfxPool { n.play() } }   // idle, ready to schedule
+        if engine.isRunning { for n in sfxPool { n.play() }; queenSnarlNode.play(); distantNode.play() }   // idle, ready to schedule
     }
 
     private func applyGains() {
@@ -281,6 +314,28 @@ final class AudioEngine {
     func monsterPain(_ k: MonsterKind)  { play(.hiss) { self.synthMonsterPain(k) } }       // aliens hiss when hit
     func monsterDeath(_ k: MonsterKind) { play(k == .queen ? .queenDeath : .droneDeath) { self.synthMonsterDeath(k) } }
     func monsterSight(_ k: MonsterKind) { play(.hiss) { self.synthMonsterSight(k) } }       // aliens hiss when they notice you
+    func monsterAttack(_ k: MonsterKind) { play(.hiss) { self.synthMonsterSight(k) } }       // a sharp hiss as a drone lunges in to strike
+    /// A drone vocalisation from the shared hiss pool. `distant` routes it through the
+    /// muffled + echoing chain at reduced level — the far, unseen swarm you can HEAR
+    /// but not see (a deliberate creep cue); the caller keeps it rare.
+    func droneVox(distant: Bool) {
+        guard distant else { play(.hiss) { self.synthMonsterSight(.alien) }; return }
+        guard engine.isRunning, let buf = bank[.hiss]?.randomElement() else { return }
+        distantNode.volume = Sound.hiss.gain * 0.45
+        distantNode.scheduleBuffer(buf, at: nil, options: .interrupts, completionHandler: nil)
+        if !distantNode.isPlaying { distantNode.play() }
+    }
+    /// The Queen's snarl: a RANDOM sample from her pool, pitched DOWN with random
+    /// per-utterance variation (pitch + tempo) so a few samples never repeat and she
+    /// reads ENORMOUS. Falls back to the synth growl when no queen_snarl* is bundled.
+    func queenSnarl() {
+        guard engine.isRunning, let buf = bank[.queenSnarl]?.randomElement() else { synthQueenSnarl(); return }
+        queenPitch.pitch = queenSnarlPitchBase + Float.random(in: -queenSnarlPitchJitter...queenSnarlPitchJitter)
+        queenPitch.rate  = max(0.5, queenSnarlRateBase + Float.random(in: -queenSnarlRateJitter...queenSnarlRateJitter))
+        queenSnarlNode.volume = Sound.queenSnarl.gain
+        queenSnarlNode.scheduleBuffer(buf, at: nil, options: .interrupts, completionHandler: nil)
+        if !queenSnarlNode.isPlaying { queenSnarlNode.play() }
+    }
     func explosion()   { play(.explosion)   { self.synthExplosion() } }
     func doorOpen()    { play(.doorOpen)    { self.synthDoorOpen() } }
     func locked()      { play(.locked)      { self.synthLocked() } }
@@ -557,6 +612,14 @@ final class AudioEngine {
     private func synthMonsterSight(_ k: MonsterKind) {
         let f: Float = k == .queen ? 84 : 240
         add(AudioEngine.saw, f, f * 0.8, 0.5, 0.12, attack: 0.04, lp: 0.4, send: 0.25)
+    }
+    /// The Queen's snarl fallback (used only until queen_snarl* samples are dropped
+    /// in): a deep, layered broodmother growl — sub rumble + wet mid rasp + a bite.
+    private func synthQueenSnarl() {
+        add(AudioEngine.saw,    70, 50, 0.60, 0.17, attack: 0.02,  lp: 0.32, send: 0.30)   // throaty growl, sliding down
+        add(AudioEngine.sine,   46, 31, 0.60, 0.13, attack: 0.02,  lp: 0.50)               // sub-bass body (size)
+        add(AudioEngine.noise,   1,  1, 0.32, 0.10, attack: 0.01,  lp: 0.30, send: 0.20)   // wet rasp
+        add(AudioEngine.square, 130, 80, 0.10, 0.06, attack: 0.002, lp: 0.50)              // snapping bite at the front
     }
     private func synthExplosion() {
         add(AudioEngine.noise, 1, 1, 0.4, 0.22, lp: 0.3, send: 0.2); add(AudioEngine.sine, 110, 38, 0.5, 0.26)

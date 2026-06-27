@@ -32,20 +32,133 @@ enum FrontEnd {
         for y in stride(from: 0, to: H, by: 2) { c.fillRectBlend(0, y, W, 1, packRGBA(0, 0, 0), 0.1) }
     }
 
+    // ── terminal title palette ──
+    static let amberHi = packRGBA(255, 233, 176)
+    static let amberDim = packRGBA(150, 118, 52)
+    static let cold = packRGBA(150, 200, 212)        // ARC — clinical, alien to the warm phosphor
+    static let coldDim = packRGBA(104, 150, 162)
+    // a memory-dump glyph set (system-font-safe: hex, Greek, symbols)
+    private static let rainGlyphs = Array("0123456789ABCDEFΣΦΩΔΞΨ<>/=+*").map(String.init)
+
+    /// The title is an ARC subsurface terminal. Most of it is glyph-rain; the brand
+    /// lives in the corner seal and the boot-log, never explained.
     static func title(_ c: Canvas2D, t: Float, hs: HighScores) {
-        backdrop(c, t)
-        c.labelCentered("CITADEL", uiS(44), size: uiSf(96), color: red, weight: .heavy, shadow: true, glow: redGlow)
-        c.labelCentered("A STRATARIS WAR STORY", uiS(158), size: uiSf(21), color: amber, weight: .semibold)
-        c.labelCentered("The aliens hold the colonies. Take them back.", uiS(192), size: uiSf(20), color: dim, weight: .medium)
-        if let top = hs.entries.first {
-            c.labelCentered("TOP — \(short(top.name))   \(top.score)", uiS(226), size: uiSf(18), color: packRGBA(200, 196, 150), weight: .semibold)
+        c.fillRect(0, 0, W, H, packRGBA(8, 9, 7))          // dead phosphor screen
+        terminalRain(c, t)
+        crtOverlay(c)
+
+        // ── boot-log: a left-aligned terminal readout in the TOP-LEFT corner ──
+        let bx = uiS(24); var by = uiS(20); let bs = uiSf(10)
+        // recessive readout: small, dim, lighter-weight — it sets tone, never competes.
+        // monospace ⇒ pin the status keywords to a FIXED column; pad each label with a
+        // dotted leader up to it, so LINK LOST / BREACHED / … all left-align.
+        let bootLabel = packRGBA(116, 92, 42)
+        let bootRed = mixRGBA(packRGBA(0, 0, 0), red, 0.6)
+        let bootAmber = mixRGBA(packRGBA(0, 0, 0), amber, 0.62)
+        let cw = c.labelWidth("0", size: bs, weight: .medium, mono: true)
+        let statusCol = bx + 21 * cw
+        func boot(_ label: String, _ status: String, _ sc: UInt32) {
+            var pre = label
+            if !status.isEmpty { pre += " "; while pre.count < 20 { pre += "." } }
+            c.label(pre, bx, by, size: bs, color: bootLabel, weight: .medium, shadow: false, mono: true)
+            if !status.isEmpty { c.label(status, statusCol, by, size: bs, color: sc, weight: .semibold, shadow: false, mono: true) }
+            by += uiS(12)
         }
+        boot("ARC // SUBSURFACE  NODE 0x7F", "", 0)
+        boot("> RELAY STRATARIS", "LINK LOST", bootRed)
+        boot("> POWER", "ON RESERVE", bootAmber)
+        boot("> SECTOR SEAL", "BREACHED", bootRed)
+        boot("> BIOSIGN SWEEP", "ANOMALOUS", bootRed)
+        if Int(t * 1.6) % 2 == 0 { c.label("> \u{2588}", bx, by, size: bs, color: bootAmber, weight: .regular, shadow: false, mono: true) }
+
+        arcSeal(c, cx: W - uiS(52), cy: uiS(46), r: uiS(24), color: coldDim, alpha: 0.72)
+
+        // ── CITADEL — bright core + a SOFT, SYMMETRIC phosphor glow (no hard extrude)
+        //    and a faint 1px chromatic-aberration fringe (crimson right / cyan left) ──
+        let lw = c.labelWidth("CITADEL", size: uiSf(82), weight: .heavy)
+        let lx = (W - lw) / 2, ly = uiS(96)
+        let halo = mixRGBA(packRGBA(0, 0, 0), amber, 0.22)
+        for (ox, oy) in [(-uiS(1), 0), (uiS(1), 0), (0, -uiS(1)), (0, uiS(1)), (-uiS(2), 0), (uiS(2), 0), (0, -uiS(2)), (0, uiS(2))] {
+            c.label("CITADEL", lx + ox, ly + oy, size: uiSf(82), color: halo, weight: .heavy, shadow: false)
+        }
+        c.label("CITADEL", lx + uiS(1), ly, size: uiSf(82), color: red,  weight: .heavy, shadow: false)
+        c.label("CITADEL", lx - uiS(1), ly, size: uiSf(82), color: cold, weight: .heavy, shadow: false)
+        c.label("CITADEL", lx,          ly, size: uiSf(82), color: amberHi, weight: .heavy, shadow: false, glow: packRGBA(110, 80, 28))
+        c.labelCentered("A STRATARIS WAR STORY", uiS(188), size: uiSf(17), color: amber, weight: .semibold, shadow: false, mono: true)
+
+        // ── lower console ──
         if Int(t * 1.5) % 2 == 0 {
-            c.labelCentered("PRESS  FIRE  TO  DESCEND", uiS(268), size: uiSf(34), color: amber, weight: .bold, glow: packRGBA(60, 48, 0))
+            c.labelCentered("> PRESS  FIRE  TO  DESCEND", uiS(252), size: uiSf(28), color: amberHi, weight: .bold, glow: packRGBA(60, 44, 0), mono: true)
         }
-        c.labelCentered("B  Briefing          I  Enemy Intel", uiS(322), size: uiSf(20), color: packRGBA(150, 178, 220), weight: .medium)
-        c.labelCentered("K  Keyboard      C  Controller      ⌘,  Settings", uiS(350), size: uiSf(18), color: dim, weight: .medium)
-        c.labelCentered("A Jorvik Software game", H - uiS(26), size: uiSf(17), color: packRGBA(120, 120, 138), weight: .regular)
+        c.labelCentered("[ B ]  BRIEFING        [ I ]  ENEMY INTEL", uiS(288), size: uiSf(16), color: amber, weight: .medium, shadow: false, mono: true)
+        c.labelCentered("K  Keyboard      C  Controller      \u{2318},  Settings", uiS(312), size: uiSf(13), color: amberDim, weight: .medium, shadow: false, mono: true)
+
+        // ── bottom status bar: three columns under a thin rule ──
+        let sbY = uiS(356)
+        c.fillRectBlend(uiS(20), sbY, W - uiS(40), uiS(1), amberDim, 0.45)
+        let sy = sbY + uiS(7), sCol = packRGBA(150, 130, 80)
+        c.label(hs.entries.first.map { "TOP \($0.score)  \(short($0.name))" } ?? "TOP --", uiS(26), sy, size: uiSf(12), color: sCol, weight: .medium, shadow: false, mono: true)
+        c.labelRight("A JORVIK SOFTWARE GAME", W - uiS(26), sy, size: uiSf(12), color: packRGBA(120, 104, 66), weight: .medium, shadow: false, mono: true)
+    }
+
+    /// Deterministic digital-rain derived purely from `t` (the front-end keeps no
+    /// per-frame state): each column streams at its own speed/phase, glyphs flicker
+    /// on a time bucket, the head is bright (rarely crimson), the tail fades to black.
+    private static func terminalRain(_ c: Canvas2D, _ t: Float) {
+        func hash(_ a: Int, _ b: Int = 0) -> Int { var x = (a &* 73856093) ^ (b &* 19349663); x = (x >> 13) ^ x; return x & 0x7fffffff }
+        // fine + dim: the rain reads BEHIND the title, never competing with it
+        let cellW = uiS(11), cellH = uiS(13), tail = 11
+        let cols = W / cellW + 1, rows = H / cellH, cycle = rows + tail
+        let bucket = Int(t * 7)
+        for i in 0..<cols {
+            let hs = hash(i)
+            let speed = 5.5 + Float(hs % 100) / 100 * 9
+            let phase = Float(hs % cycle)
+            let headRow = Int((t * speed + phase).truncatingRemainder(dividingBy: Float(cycle)))
+            let crimsonHead = (hs % 17) == 0
+            let x = i * cellW
+            for k in 0..<tail {
+                let row = headRow - k
+                if row < 0 || row > rows { continue }
+                let g = rainGlyphs[hash(i, row &* 31 &+ bucket) % rainGlyphs.count]
+                let col = k == 0 ? (crimsonHead ? red : mixRGBA(packRGBA(0, 0, 0), amberHi, 0.82))
+                                 : mixRGBA(packRGBA(0, 0, 0), amber, powf(1 - Float(k) / Float(tail), 2.1) * 0.62)
+                c.label(g, x, row * cellH, size: uiSf(11), color: col, weight: .regular, shadow: false, mono: true)
+            }
+        }
+    }
+
+    /// CRT finish over the rain: tube vignette + scanlines (drawn before the UI text,
+    /// so the logo and console stay crisp on top).
+    private static func crtOverlay(_ c: Canvas2D) {
+        for y in 0..<H {
+            let edge = max(0, 1 - Float(min(y, H - 1 - y)) / Float(uiS(80)))
+            if edge > 0 { c.fillRectBlend(0, y, W, 1, packRGBA(0, 0, 0), edge * 0.5) }
+        }
+        var y = 0
+        while y < H { c.fillRectBlend(0, y, W, uiS(1), packRGBA(0, 0, 0), 0.16); y += uiS(2) }
+    }
+
+
+    /// The ARC corporate seal — a broken outer ring + an inner dome over "ARC",
+    /// drawn from primitives so it scales with the UI. Used on the title and (faintly)
+    /// in the HUD. Cold and clinical: ARC is meant to feel alien wherever it appears.
+    static func arcSeal(_ c: Canvas2D, cx: Int, cy: Int, r: Int, color: UInt32, alpha: Float) {
+        let R = Float(r), CX = Float(cx), CY = Float(cy)
+        let steps = max(72, r * 8), top: Float = 4.712389        // gap at the top of the ring
+        for s in 0..<steps {
+            let ang = Float(s) / Float(steps) * 6.2831853
+            var d = abs(ang - top); if d > 3.14159 { d = 6.2831853 - d }
+            if d < 0.5 { continue }
+            let x = Int(CX + cosf(ang) * R), y = Int(CY + sinf(ang) * R)
+            c.blend(x, y, color, alpha); c.blend(x, y + 1, color, alpha * 0.5)
+        }
+        let ir = R * 0.52                                         // inner dome (upper arc)
+        for s in 0...steps {
+            let ang = 3.14159 + Float(s) / Float(steps) * 3.14159
+            c.blend(Int(CX + cosf(ang) * ir), Int(CY + sinf(ang) * ir - R * 0.04), color, alpha)
+        }
+        c.labelCentered2("ARC", cx - r, r * 2, cy + Int(R * 0.04), size: uiSf(11), color: color, weight: .semibold, shadow: false)
     }
 
     static let briefingLines = [

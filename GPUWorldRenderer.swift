@@ -68,6 +68,15 @@ final class GPUWorldRenderer {
         return h
     }
 
+    /// Build the level-INDEPENDENT GPU resources up front — at launch, while the
+    /// title screen is up — so the first gameplay frame doesn't stall generating the
+    /// procedural texture bank and uploading the wall/flat texture arrays the instant
+    /// the player hits fire. The per-level distance field stays lazy (it's cheap).
+    func prewarm() {
+        if wallArrTex == nil { wallArrTex = GPURaymarch.makeTextureArray(device, Textures.shared.walls) }
+        if flatArrTex == nil { flatArrTex = GPURaymarch.makeTextureArray(device, Textures.shared.flats) }
+    }
+
     private func prepareLevel(_ world: World) {
         let map = world.map
         gpuReady = false

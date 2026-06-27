@@ -98,6 +98,7 @@ final class World {
     // ── the Queen ──
     private var queenBreedCD: Float = 60         // seconds to her next spawn
     private var queenHintCD: Float = 0           // throttle for the "plasma only" hint
+    private var droneVoxCD: Float = 1.2           // throttle for the drone vocal director (one voice at a time: near hiss vs far echo)
     private let queenBreedInterval: Float = 60   // she births a drone about once a minute
     private let queenReviveWindow: Float = 8     // a downed Queen has this long to be burned before she rises
     private let queenDroneCap = 14               // most simultaneous live drones she'll grow the brood to
@@ -270,6 +271,7 @@ final class World {
         map.update(dt: dt, occupied: occupied)
 
         updateMonsters(dt: dt, audio: audio)
+        droneProwl(dt: dt, audio: audio)
         breedQueen(dt: dt, audio: audio)
         updateProjectiles(dt: dt, audio: audio)
         updateMines(dt: dt, audio: audio)
@@ -357,7 +359,7 @@ final class World {
     /// box (static, oriented) or a live fuel drum (dynamic circle). Shared by player
     /// and monster movement so NEITHER walks through furniture. Pure CPU: a handful of
     /// cheap tests per move (bounding-circle rejected first), nothing on the GPU.
-    private func blockedBySolidProp(_ x: Float, _ y: Float, _ r: Float) -> Bool {
+    func blockedBySolidProp(_ x: Float, _ y: Float, _ r: Float) -> Bool {
         for b in propColliders {
             let relx = x - b.c.x, rely = y - b.c.y
             let br = b.boundR + r
@@ -678,6 +680,30 @@ final class World {
     /// The Queen breeds: about once a minute she births a fresh drone beside her,
     /// up to a live-brood cap. Thinning her drones only buys time — the swarm
     /// refills until she herself is dead and burned. (No breeding once she's down.)
+    /// Drone vocal director — keeps the swarm AUDIBLE without the wall of noise that
+    /// per-drone chatter made. ONE voice at a time, well spaced, in two registers:
+    ///   • a CLEAR hiss when the nearest awake drone is close (it's on you), and
+    ///   • a rare MUFFLED, echoing hiss when the nearest is far off (unseen, down the
+    ///     dark) — a deliberate creep cue to keep you on edge.
+    /// Attacks have their own hiss (monsterAttack); this is presence, not contact.
+    private func droneProwl(dt: Float, audio: AudioEngine) {
+        guard !player.dead else { return }
+        var nd = Float.greatestFiniteMagnitude
+        for m in monsters where m.kind == .alien && m.alive && m.awake {
+            let d = vlen(m.pos - player.pos); if d < nd { nd = d }
+        }
+        let hearRange: Float = 22                                  // beyond this even an echo doesn't carry
+        guard nd < hearRange else { droneVoxCD = max(droneVoxCD, 1.0); return }
+        droneVoxCD -= dt
+        if droneVoxCD > 0 { return }
+        let nearRange: Float = 7                                   // within this they're upon you
+        if nd < nearRange {
+            audio.droneVox(distant: false); droneVoxCD = rng.f(2.4, 4.6)   // present, but not constant
+        } else {
+            audio.droneVox(distant: true);  droneVoxCD = rng.f(5.0, 9.5)   // a far, muffled cry now and then
+        }
+    }
+
     private func breedQueen(dt: Float, audio: AudioEngine) {
         guard let qi = monsters.firstIndex(where: { $0.kind == .queen && $0.alive }) else { return }
         queenBreedCD -= dt
@@ -694,7 +720,10 @@ final class World {
                 d.awake = true; d.state = .chase; d.hasSeen = q.hasSeen; d.lastSeen = q.lastSeen
                 monsters.append(d)
                 spawnParticles(at: p, n: 10, color: packRGBA(150, 90, 60), spread: 2, life: 0.4)
-                if vlen(p - player.pos) < 16 { message("THE QUEEN SPAWNS ANOTHER"); audio.monsterSight(.alien) }
+                // No toast — a birth shouldn't announce itself across the level. The
+                // wet birth-cry only carries if you're in the same room as her (she's
+                // in line of sight); otherwise it happens silently, off in the dark.
+                if lineOfSight(q.pos, player.pos) { audio.monsterSight(.alien) }
                 return
             }
         }
@@ -752,7 +781,10 @@ final class World {
             let canSee = !player.dead && lineOfSight(m.pos, player.pos)
             if canSee { m.lastSeen = player.pos; m.hasSeen = true }   // remember where you saw them
             if !m.awake {
-                if canSee && dist < m.def.sight { m.awake = true; audio.monsterSight(m.kind) }
+                if canSee && dist < m.def.sight {
+                    m.awake = true
+                    if m.kind == .queen { audio.queenSnarl() } else { audio.monsterSight(m.kind) }
+                }
                 monsters[i] = m; continue
             }
             if player.dead { monsters[i] = m; continue }
@@ -769,6 +801,7 @@ final class World {
             // melee on contact
             if dist <= meleeRange && m.attackCD <= 0 {
                 damagePlayer(m.def.melee, audio: audio)
+                if m.kind == .alien { audio.monsterAttack(.alien) }   // a hiss/snap as the drone strikes
                 m.attackCD = m.def.attackInterval
                 m.state = .attack; m.stateTime = 0.25
                 monsters[i] = m; continue
@@ -790,12 +823,13 @@ final class World {
             m.state = .chase
             if m.kind == .queen {
                 // rooted brood-mother — she never advances; she lashes out when you're
-                // in reach (her tentacles), and snarls/hisses as you near her lair,
+                // in reach (her tentacles), and snarls ONLY when she has line of sight
+                // to you (a random snarl from her pool, on a randomised cadence),
                 // rousing her brood to defend her
-                if dist < 8 {
+                if canSee && dist < 8 {
                     m.snarlCD -= dt
                     if m.snarlCD <= 0 {
-                        audio.monsterSight(.queen); m.snarlCD = rng.f(2.0, 3.8)
+                        audio.queenSnarl(); m.snarlCD = rng.f(3.0, 5.5)
                         for j in monsters.indices where monsters[j].kind == .alien && monsters[j].alive && vlen(monsters[j].pos - m.pos) < 16 {
                             monsters[j].awake = true; monsters[j].hasSeen = true; monsters[j].lastSeen = player.pos
                         }

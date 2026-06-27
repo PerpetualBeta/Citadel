@@ -37,7 +37,16 @@ final class InputState {
     var turnLeft: Bool    { kb.turnLeft || gp.turnLeft }
     var turnRight: Bool   { kb.turnRight || gp.turnRight }
     var run: Bool         { kb.run || gp.run }
-    var fire: Bool        { kb.fire || gp.fire }
+    // Fire is latched on game start: the button/trigger used to START the game is
+    // almost always still held on the first gameplay frame, which would otherwise
+    // loose a shot the instant you spawn (you'd HEAR a weapon before you're even in
+    // the room). While armed, fire reads false until it's physically released once.
+    var fireArmRequired = false
+    var fire: Bool {
+        let raw = kb.fire || gp.fire
+        if fireArmRequired { if !raw { fireArmRequired = false }; return false }
+        return raw
+    }
     var use: Bool         { kb.use || gp.use }
     var deployMine: Bool  { kb.deployMine || gp.deployMine }
     var weaponNext: Bool  { kb.weaponNext || gp.weaponNext }
@@ -76,6 +85,7 @@ final class InputState {
         moveX = 0; moveY = 0; lookX = 0
         weaponDigit = 0
         mouseTurn = 0
+        fireArmRequired = true   // require a fresh trigger pull before the first shot
     }
 
     /// Drain the accumulated mouse turn (returns it and resets to zero).
