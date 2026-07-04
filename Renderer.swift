@@ -169,6 +169,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         audio.setTension(threat: cue.threat, queen: cue.queen, health: cue.health, combat: cue.combat)
         renderWorld(world)
         hud.draw(world, into: canvas)
+        if world.elevatorPhase == .awaitFire {
+            FrontEnd.descendReport(canvas, world: world, t: world.elapsed)
+        }
 
         if FeatureFlags.screenshotKey && rising(input.screenshot, pShot) { saveScreenshot() }
 
@@ -178,9 +181,17 @@ final class Renderer: NSObject, MTKViewDelegate {
             deathTimer += dt
             if deathTimer > 1.3 { enterGameOver() }
         } else if world.levelComplete {
-            // last floor of a citadel → teleport to the next planet; else descend a floor
-            state = Progression.isLastFloor(world.level) ? .teleport : .levelComplete
-            screenT = 0; audio.stopMusic()
+            // The floor report + FIRE prompt already happened INSIDE the car
+            // (World.awaitFire), and the ride has been ridden — so an ordinary
+            // floor flows straight into the next level: the arrival car's doors
+            // part as it fades in. Only the last floor of a citadel keeps its
+            // interstitial (the planet-to-planet teleport is a story beat).
+            if Progression.isLastFloor(world.level) {
+                state = .teleport; screenT = 0; audio.stopMusic()
+            } else {
+                audio.stopMusic()
+                nextLevel()
+            }
         }
     }
 

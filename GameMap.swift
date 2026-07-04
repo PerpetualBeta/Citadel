@@ -38,7 +38,8 @@ final class GameMap {
 
     var playerStart = SIMD2<Float>(1.5, 1.5)
     var playerDir: Float = 0
-    var exitCell = -1           // wall cell carrying the exit switch
+    var exitCell = -1           // wall cell carrying the exit elevator
+    var entryCell = -1          // wall cell carrying the ARRIVAL elevator (the car you step out of)
 
     /// Door open threshold above which it no longer blocks movement or sight.
     static let passThreshold: Float = 0.82

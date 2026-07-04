@@ -253,6 +253,27 @@ final class GPUWorldRenderer {
             out.append(GPURaymarch.GPULight(posR: SIMD4(p.pos.x, 0.5, p.pos.y, 1 / (rad * rad)),
                                             colI: SIMD4(1.0, 0.86, 0.55, 1.7 * mz)))
         }
+        // elevator cabin light — the car interior is pitch dark once the leaves
+        // shut (no baked light reaches it), so a car in use carries its own lamp.
+        // During the descent the lamp sways and shaft lights sweep past the cage.
+        func cabin(_ cell: Int, descending: Bool) -> GPURaymarch.GPULight {
+            let cx = Float(cell % world.map.w) + 0.5, cz = Float(cell / world.map.w) + 0.5
+            var inten: Float = 0.85
+            if descending {
+                let t = world.elapsed
+                inten = 0.55 + 0.20 * sinf(t * 2.6)                    // the cabin lamp swaying
+                inten += 1.1 * powf(max(0, sinf(t * 3.6)), 12)         // a shaft light sweeping past
+            }
+            let rad: Float = 2.6
+            return GPURaymarch.GPULight(posR: SIMD4(cx, 0.78, cz, 1 / (rad * rad)),
+                                        colI: SIMD4(1.0, 0.93, 0.76, inten))
+        }
+        if world.elevatorPhase != .idle, world.map.exitCell >= 0 {
+            out.append(cabin(world.map.exitCell, descending: world.elevatorPhase == .descending))
+        }
+        if world.map.entryCell >= 0, (world.map.doors[world.map.entryCell]?.open ?? 0) > 0.01 {
+            out.append(cabin(world.map.entryCell, descending: false))
+        }
         for pr in world.projectiles {
             let c: (Float, Float, Float), rad: Float, it: Float
             switch pr.kind {
@@ -281,8 +302,18 @@ final class GPUWorldRenderer {
         }
         let p = world.player
         let plane = RenderConfig.cameraPlane
+        // elevator ride: the car judders — a small deterministic eye jitter
+        // (vertical + view-lateral), scaled by the world's rideShake envelope
+        var eye = SIMD3<Float>(p.pos.x, 0.5, p.pos.y)
+        if world.rideShake > 0.001 {
+            let t = world.elapsed, s = world.rideShake
+            let lat = s * 0.006 * sinf(t * 47 + 1.7)
+            eye.y += s * 0.010 * sinf(t * 34)
+            eye.x += lat * -sinf(p.dir)
+            eye.z += lat * cosf(p.dir)
+        }
         var u = GPURaymarch.Uniforms(
-            ro: SIMD4(p.pos.x, 0.5, p.pos.y, world.elapsed),   // .w = time (lamp flicker)
+            ro: SIMD4(eye.x, eye.y, eye.z, world.elapsed),   // .w = time (lamp flicker)
             fwd: SIMD4(cos(p.dir), 0, sin(p.dir), 0),
             right: SIMD4(-sin(p.dir) * plane, 0, cos(p.dir) * plane, 0),
             up: SIMD4(0, 1, 0, 0),
@@ -334,6 +365,10 @@ final class GPUWorldRenderer {
         u.extra.x = Float(decals.count)
         u.extra.y = Lighting.floodLevel(level: world.level)                          // floor flooding (lowest floors only)
         if decals.isEmpty { decals = [SIMD4<Float>(0, 0, 0, 0)] }                     // ≥1 elem for setBytes
+        // live doors → leaf-anchored texture UVs in the kernel
+        var doorsPack = GPURaymarch.packDoors(world.map)
+        u.extra.w = Float(doorsPack.count)
+        if doorsPack.isEmpty { doorsPack = [SIMD4<Float>(-1, -1, 0, 0)] }             // ≥1 elem; (-1,-1) matches no cell
         if cmons.isEmpty { cmons = [GPURaymarch.GMonster(a: .zero, b: .zero, c: .zero)] }
         if cshapes.isEmpty { cshapes = [GPURaymarch.GShape(a: .zero, b: .zero, col: .zero)] }
         let monBuf = device.makeBuffer(bytes: cmons, length: MemoryLayout<GPURaymarch.GMonster>.stride * cmons.count, options: .storageModeShared)
@@ -349,6 +384,7 @@ final class GPUWorldRenderer {
         enc.setBuffer(monBuf, offset: 0, index: 2)
         enc.setBuffer(shpBuf, offset: 0, index: 3)
         enc.setBytes(&decals, length: MemoryLayout<SIMD4<Float>>.stride * decals.count, index: 4)
+        enc.setBytes(&doorsPack, length: MemoryLayout<SIMD4<Float>>.stride * doorsPack.count, index: 5)
         let tg = MTLSize(width: 16, height: 16, depth: 1)
         let groups = MTLSize(width: (RenderConfig.width + 15) / 16, height: (RenderConfig.viewHeight + 15) / 16, depth: 1)
         enc.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)

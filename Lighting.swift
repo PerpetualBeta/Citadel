@@ -15,8 +15,8 @@
 //     distance falloff and line-of-sight occlusion, so light POOLS in the room
 //     that holds the source and spills only through real openings.
 //
-// Nothing here is authored per-level: place a green computer bank and the room
-// around it goes green, for free, on every generated map.
+// Nothing here is authored per-level: place an amber computer bank and the room
+// around it goes amber, for free, on every generated map.
 
 import Foundation
 import simd
@@ -57,8 +57,8 @@ enum Lighting {
     // The bake (below) lays a soft, occlusion-correct COLOUR FILL into the field.
     // That fill alone reads flat — a uniform per-cell tint with no direction, so
     // PBR materials can't catch it. So we ALSO surface each fixture as a real
-    // shaded point light: a warm key off a strip-light, a teal wash off a computer
-    // bank, a green beacon at the exit, coloured spill from the key doors and the
+    // shaded point light: a warm key off a strip-light, an amber terminal wash off
+    // a computer bank, a green beacon at the exit, coloured spill from the key doors and the
     // hazard pools. These rake the walls at an angle, throw the specular glints and
     // relief shadows the materials were built for, and pool light into open rooms
     // the flat fill just washed grey. Positions/colours come straight off the same
@@ -75,7 +75,7 @@ enum Lighting {
     private static func lightSpec(wall tex: WallTex) -> LSpec? {
         switch tex {
         case .litPanel:   return LSpec(color: SIMD3(1.00, 0.92, 0.78), intensity: 2.0, radius: 6.5, shadow: true)   // warm key
-        case .computer:   return LSpec(color: SIMD3(0.40, 1.00, 0.78), intensity: 1.3, radius: 5.5, shadow: false)  // teal wash
+        case .computer:   return LSpec(color: SIMD3(1.00, 0.74, 0.38), intensity: 1.3, radius: 5.5, shadow: false)  // amber terminal wash (ARC phosphor; oranger than the yellow key-door so they never read alike)
         case .glass:      return LSpec(color: SIMD3(0.52, 0.86, 1.00), intensity: 1.1, radius: 5.5, shadow: false)  // backlit cyan
         case .exitSwitch: return LSpec(color: SIMD3(0.45, 1.00, 0.55), intensity: 1.4, radius: 6.0, shadow: true)   // green beacon (leads to the exit)
         case .doorRed:    return LSpec(color: SIMD3(1.00, 0.32, 0.28), intensity: 1.3, radius: 4.5, shadow: false)
@@ -141,7 +141,7 @@ enum Lighting {
     private static func wallSource(_ tex: WallTex) -> Source? {
         switch tex {
         case .litPanel:   return Source(color: SIMD3(1.00, 0.95, 0.80), reach: 8.0, power: 1.05)
-        case .computer:   return Source(color: SIMD3(0.40, 1.00, 0.78), reach: 7.0, power: 0.95)
+        case .computer:   return Source(color: SIMD3(1.00, 0.74, 0.38), reach: 7.0, power: 0.95)
         case .glass:      return Source(color: SIMD3(0.52, 0.86, 1.00), reach: 7.5, power: 0.90)
         case .exitSwitch: return Source(color: SIMD3(0.45, 1.00, 0.55), reach: 9.0, power: 1.15)  // beckons toward the exit
         case .doorRed:    return Source(color: SIMD3(1.00, 0.32, 0.28), reach: 5.5, power: 0.72)

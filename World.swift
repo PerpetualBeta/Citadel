@@ -91,6 +91,16 @@ final class World {
     var levelComplete = false
     var messages: [(text: String, time: Float)] = []
 
+    // ── the exit elevator ── the ride replaces the old instant teleport: call
+    // the car (doors part), step in, the doors close in front of you, the car
+    // drops with a rumble and a judder, THEN the level completes.
+    enum ElevatorPhase { case idle, boarding, awaitFire, closing, descending }
+    var elevatorPhase: ElevatorPhase = .idle
+    private var prevElevFire = false   // FIRE edge-latch for the descend prompt
+    private var elevatorT: Float = 0
+    private let elevatorRideTime: Float = 2.6
+    var rideShake: Float = 0          // 0…1 envelope, read by the renderer's camera
+
     private var rng: Rng
     private var hazardTimer: Float = 0
     private var steamTimer: Float = 0
@@ -167,6 +177,12 @@ final class World {
         self.rng = Rng(seed: seed ^ 0xABCD_1234)
         self.player = Player(at: gen.map.playerStart, dir: gen.map.playerDir)
         self.lastPlayerPos = gen.map.playerStart
+        // the arrival car's doors part as the level fades in — the marine steps
+        // OUT of the elevator he rode down in (they auto-close behind him)
+        if map.entryCell >= 0, map.doors[map.entryCell] != nil {
+            map.doors[map.entryCell]!.opening = true
+            map.doors[map.entryCell]!.stay = 4
+        }
         for s in gen.monsters { monsters.append(Monster(kind: s.kind, pos: s.pos)) }
         for s in gen.items { items.append(Item(kind: s.kind, pos: s.pos, bob: rng.f(0, 6.28))) }
         for d in gen.drums { drums.append(Drum(pos: d, fuel: drumFuel, health: drumHealth)) }
@@ -268,7 +284,13 @@ final class World {
         // an unburned corpse in the threshold jams the door — it can't close on a
         // body (until fire has consumed it), matching the canStand corpse blocking
         for m in monsters where m.state == .dead && m.burn < 0.85 { occupied.insert(map.idx(Int(m.pos.x), Int(m.pos.y))) }
+        // the closing elevator must shut WITH the marine inside — his cell is
+        // exempt from the hold-open rule once the ride has been committed
+        if elevatorPhase == .closing || elevatorPhase == .descending {
+            occupied.remove(map.exitCell)
+        }
         map.update(dt: dt, occupied: occupied)
+        updateElevator(dt: dt, input: input, audio: audio)
 
         updateMonsters(dt: dt, audio: audio)
         droneProwl(dt: dt, audio: audio)
@@ -390,9 +412,14 @@ final class World {
             guard map.inBounds(cx, cy) else { continue }
             let i = map.idx(cx, cy)
             if i == map.exitCell {
-                completeLevel(audio: audio); return
+                beginElevator(audio: audio); return
             }
             if map.doors[i] != nil {
+                if i == map.entryCell {                       // the car he arrived in — dead controls
+                    message("THE SHAFT ABOVE IS SEALED")
+                    audio.locked()
+                    return
+                }
                 if map.doors[i]!.secret && map.doors[i]!.open == 0 {
                     secretsFound += 1
                     message("A SECRET IS REVEALED!")
@@ -408,7 +435,7 @@ final class World {
                 return
             }
             if map.wall[i] == WallTex.exitSwitch.rawValue {
-                completeLevel(audio: audio); return
+                beginElevator(audio: audio); return
             }
         }
     }
@@ -434,6 +461,79 @@ final class World {
     /// she must be killed (plasma) AND torched (fire). Every level seeds one.
     var queenDefeated: Bool {
         !monsters.contains { $0.kind == .queen && !($0.state == .dead && $0.burn >= 1) }
+    }
+
+    /// USE on the exit: gate on the Queen, then call the car. (Maps whose exit
+    /// has no door — the legacy fallback placement — keep the instant exit.)
+    private func beginElevator(audio: AudioEngine) {
+        guard !levelComplete else { return }
+        if !queenDefeated {
+            message("THE QUEEN STILL LIVES — SHE MUST DIE, THEN BURN")
+            audio.locked()
+            return
+        }
+        guard map.doors[map.exitCell] != nil else { completeLevel(audio: audio); return }
+        guard elevatorPhase == .idle else { return }
+        map.doors[map.exitCell]!.opening = true
+        map.doors[map.exitCell]!.stay = 6
+        elevatorPhase = .boarding
+        message("ELEVATOR OPEN — STEP INSIDE")
+        audio.doorOpen()
+    }
+
+    /// The ride state machine: boarding (doors parted, waiting for the marine)
+    /// → awaitFire (he's in the car; the floor report overlays the view until
+    /// FIRE commits) → closing (the leaves shut in front of him) → descending
+    /// (rumble + judder) → the level completes. Stepping out at any point before
+    /// the doors have shut re-opens them; the ride only commits once they have.
+    private func updateElevator(dt: Float, input: InputState, audio: AudioEngine) {
+        guard elevatorPhase != .idle, let d = map.doors[map.exitCell] else { return }
+        let inCar = map.idx(Int(player.pos.x), Int(player.pos.y)) == map.exitCell
+        let fireEdge = input.fire && !prevElevFire
+        prevElevFire = input.fire
+        switch elevatorPhase {
+        case .idle:
+            break
+        case .boarding:
+            map.doors[map.exitCell]!.stay = max(d.stay, 2)   // never slam mid-boarding
+            if inCar && d.open >= GameMap.passThreshold {
+                elevatorPhase = .awaitFire
+                prevElevFire = true                          // require a FRESH press — a held trigger doesn't commit
+            }
+        case .awaitFire:
+            map.doors[map.exitCell]!.stay = max(d.stay, 2)
+            if !inCar { elevatorPhase = .boarding }          // stepped back out — report hides
+            else if fireEdge {
+                elevatorPhase = .closing
+                map.doors[map.exitCell]!.opening = false
+                map.doors[map.exitCell]!.stay = 0
+            }
+        case .closing:
+            if !inCar {                                       // stepped back out — reopen
+                map.doors[map.exitCell]!.opening = true
+                map.doors[map.exitCell]!.stay = 3
+                elevatorPhase = .boarding
+            } else if d.open <= 0.02 {
+                elevatorPhase = .descending
+                elevatorT = 0
+                message("DESCENDING…")
+                // the winch takes up + the car drops: a long low rumble under a
+                // sub-bass fall — synthesised, so no asset is needed for a one-off
+                audio.trigger(wave: AudioEngine.noise, f0: 1, dur: elevatorRideTime, amp: 0.30, attack: 0.25)
+                audio.trigger(wave: AudioEngine.sine, f0: 52, f1: 30, dur: elevatorRideTime, amp: 0.42, attack: 0.15)
+            }
+        case .descending:
+            elevatorT += dt
+            // ramp the judder in, hold, ease out just before arrival
+            let up = min(1, elevatorT * 2.5)
+            let down = min(1, max(0, (elevatorRideTime - elevatorT) / 0.5))
+            rideShake = up * down
+            if elevatorT >= elevatorRideTime {
+                rideShake = 0
+                elevatorPhase = .idle
+                completeLevel(audio: audio)
+            }
+        }
     }
 
     private func completeLevel(audio: AudioEngine) {
@@ -482,14 +582,17 @@ final class World {
     }
 
     private func handleFire(dt: Float, input: InputState, audio: AudioEngine) {
+        // Committed to the elevator: FIRE belongs to the descend prompt, not the
+        // trigger — the marine doesn't discharge plasma inside the car.
+        let riding = elevatorPhase == .awaitFire || elevatorPhase == .closing || elevatorPhase == .descending
         // The flamethrower roars as one continuous loop while the trigger's held and
         // there's fuel — drive it here every frame (edge-detected) so it tracks the
         // trigger, rather than stuttering as randomly-retriggered one-shots.
         let fdef = player.current.def
-        let flaming = input.fire && player.current == .flamethrower && !player.dead
+        let flaming = !riding && input.fire && player.current == .flamethrower && !player.dead
             && (fdef.ammo == .none || player.ammo[fdef.ammo.rawValue] >= fdef.ammoPerShot)
         audio.flame(flaming)
-        guard input.fire, player.fireCD <= 0 else { return }
+        guard !riding, input.fire, player.fireCD <= 0 else { return }
         let def = player.current.def
         if def.ammo != .none && player.ammo[def.ammo.rawValue] < def.ammoPerShot {
             autoSwitchIfEmpty()
@@ -956,7 +1059,8 @@ final class World {
                 if slipped { m.wallBias = s; m.wallHold = 0.5; moved = true; break }   // commit to the side that worked
             }
             let ax = Int(m.pos.x + dir.x * 0.8), ay = Int(m.pos.y + dir.y * 0.8)
-            if map.isDoorCell(ax, ay), let dr = map.doors[map.idx(ax, ay)], dr.locked == nil {
+            if map.isDoorCell(ax, ay), map.idx(ax, ay) != map.exitCell, map.idx(ax, ay) != map.entryCell,
+               let dr = map.doors[map.idx(ax, ay)], dr.locked == nil {
                 map.tryOpenDoor(ax, ay, keys: [])
             }
         }

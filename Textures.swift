@@ -25,7 +25,7 @@ struct Texture {
 enum WallTex: Int, CaseIterable {
     case none = 0
     case ironPlate, brushedSteel, steelPanel, litPanel, ribbedSteel, pipework, glass, stone, stoneSteel, computer, hazard
-    case doorPanel, doorRed, doorBlue, doorYellow, exitSwitch
+    case doorPanel, doorRed, doorBlue, doorYellow, exitSwitch, doorHazard
 }
 enum FlatTex: Int, CaseIterable {
     case concrete = 0, metalFloor, grate, nukage, ceilTech, ceilDark, ceilStone, rock, blood
@@ -244,19 +244,98 @@ final class Textures {
             }}
 
         case .computer:
-            for y in 0..<s { for x in 0..<s {
-                var r = 22, g = 26, b = 36
-                let cx = x % 64, cy = y % 48
-                if cx >= 6 && cx <= 56 && cy >= 6 && cy <= 32 {                                 // screen blocks
-                    if hash(x / 64, y / 48, 3) > 0.3 {
-                        let lit = hash(x / 16, y / 6, 9)
-                        r = 14; g = 96 + Int(lit * 120); b = 120 + Int(lit * 60)                // cold blue terminals
-                        if y % 6 < 2 { g -= 30 }                                                // scanlines
-                    } else { r = 30; g = 34; b = 46 }
+            // A bank of amber CRT terminals — the same ARC phosphor ramp as the
+            // title screen (Codex.amber/amberHi/amberDim), replacing the old teal
+            // hash-blocks. 64×64 monitor cells tile the 256px texture 4×4 with no
+            // partial row (the old 64×48 grid sliced a monitor at every wrap).
+            // Each live screen bakes one of three content modes — boot log, data
+            // table, scope trace — and the kernel adds the life on top: emission,
+            // flicker, busted units and a rolling CRT refresh bar.
+            let dim = (110, 86, 38), std = (240, 196, 96), hi = (255, 233, 176)
+            func phos(_ c: (Int, Int, Int), _ k: Float) -> UInt32 {
+                rgb(Int(Float(c.0) * k), Int(Float(c.1) * k), Int(Float(c.2) * k))
+            }
+            for my in 0..<4 { for mx in 0..<4 {
+                let x0 = mx * 64, y0 = my * 64, m = my * 4 + mx
+                // case body, panel seams, cable duct down the right edge
+                for cy in 0..<64 { for cx in 0..<64 {
+                    var r = 22, g = 26, b = 36
+                    if cx == 0 || cy == 0 { r = 10; g = 12; b = 16 }
+                    else if cx >= 61 { r = 34; g = 38; b = 48 }
+                    if cx == 61 { r = 52; g = 55; b = 66 }
+                    let wear = Int((hash(x0 + cx, y0 + cy, 21) - 0.5) * 10)
+                    set(x0 + cx, y0 + cy, rgb(r + wear, g + wear, b + wear))
+                }}
+                // vent slots + a status-LED row under the screen
+                for cy in stride(from: 54, through: 58, by: 2) { for cx in 8...36 {
+                    set(x0 + cx, y0 + cy, rgb(12, 14, 20))
+                }}
+                for l in 0..<3 {
+                    let on = l == Int(hash(mx, my, 31) * 3)
+                    let c = on ? phos(std, 1.0) : rgb(40, 36, 30)
+                    set(x0 + 44 + l * 5, y0 + 60, c); set(x0 + 45 + l * 5, y0 + 60, c)
                 }
-                if cx == 0 || cy == 0 { r = 10; g = 12; b = 16 }                                // bezels
-                if cx == 60 { r = 60; g = 62; b = 72 }                                          // cable rail
-                set(x, y, rgb(r, g, b))
+                // screen glass
+                for cy in 6...49 { for cx in 6...57 {
+                    let v = Int(hash(x0 + cx, y0 + cy, 5) * 4)
+                    set(x0 + cx, y0 + cy, rgb(13 + v, 10 + v, 7))
+                }}
+                if hash(mx, my, 3) > 0.85 {                     // dead unit: dark glass, one faint diagonal sheen
+                    for cy in 6...49 { let cx = 20 + (cy - 6); if cx <= 57 { set(x0 + cx, y0 + cy, rgb(24, 22, 20)) } }
+                    continue
+                }
+                let bright = 0.72 + 0.38 * hash(mx, my, 11)     // per-unit tube age
+                // one 2px-high "word" of phosphor glyphs
+                func word(_ x: Int, _ y: Int, _ len: Int, _ c: (Int, Int, Int), _ k: Float) {
+                    for dx in 0..<len where x + dx <= 56 { for dy in 0..<2 {
+                        set(x0 + x + dx, y0 + y + dy, phos(c, k))
+                    }}
+                }
+                switch Int(hash(mx, my, 7) * 3) {
+                case 0:                                         // BOOT LOG — ragged indented lines, dim history, rare bright alerts
+                    var y = 8, r = 0
+                    while y <= 46 {
+                        let head = r == 0
+                        let alert = !head && hash(m, r, 41) > 0.90
+                        let tone = head || alert ? hi : (hash(m, r, 43) > 0.45 ? std : dim)
+                        let k = head || alert ? bright : bright * (0.8 + 0.2 * hash(m, r, 47))
+                        var x = 8 + (head ? 0 : Int(hash(m, r, 53) * 3) * 4)
+                        while x < 50 {
+                            let len = 3 + Int(hash(m, r &* 7 &+ x, 59) * 7)
+                            word(x, y, min(len, 54 - x), tone, k)
+                            x += len + 2 + Int(hash(m, r &* 13 &+ x, 61) * 3)
+                        }
+                        if head { for cx in 8...56 { set(x0 + cx, y0 + y + 3, phos(dim, bright)) }; y += 2 }
+                        y += 4; r += 1
+                    }
+                case 1:                                         // DATA TABLE — labels, right-aligned values, a scrollbar thumb
+                    var y = 8, r = 0
+                    while y <= 44 {
+                        let head = r == 0
+                        word(8, y, 6 + Int(hash(m, r, 67) * 8), head ? hi : (hash(m, r, 71) > 0.3 ? std : dim), bright)
+                        let vlen = 3 + Int(hash(m, r, 73) * 6)
+                        word(50 - vlen, y, vlen, head ? hi : std, bright * 0.95)
+                        if head { for cx in 8...54 { set(x0 + cx, y0 + y + 3, phos(dim, bright)) } }
+                        y += 5; r += 1
+                    }
+                    for cy in 8...46 { set(x0 + 56, y0 + cy, rgb(36, 32, 24)) }
+                    let th = 8 + Int(hash(mx, my, 79) * 26)
+                    for cy in th...(th + 7) { set(x0 + 56, y0 + cy, phos(std, bright)) }
+                default:                                        // SCOPE — grid dots + a jagged live trace, peaks flaring
+                    for cy in stride(from: 8, through: 48, by: 8) { for cx in stride(from: 8, through: 56, by: 8) {
+                        set(x0 + cx, y0 + cy, rgb(46, 37, 18))
+                    }}
+                    let amp = 6 + hash(mx, my, 83) * 8, ph = hash(mx, my, 89) * 6.28
+                    for cx in 6...57 {
+                        let t = Float(cx - 6)
+                        let sine = sinf(t * 0.30 + ph)
+                        let jag = (fbm(t / 6, Float(m) * 3.7, 16, 91) - 0.5) * 7
+                        let fy = 27 + Int(sine * amp + jag)
+                        let tone = abs(sine) > 0.92 ? hi : std
+                        for dy in 0...1 { set(x0 + cx, y0 + min(max(fy + dy, 7), 48), phos(tone, bright)) }
+                    }
+                    word(8, 44, 8, dim, bright); word(20, 44, 5, std, bright)   // status row
+                }
             }}
 
         case .hazard:
@@ -273,18 +352,71 @@ final class Textures {
         case .doorBlue: doorBase(&px, s, band: (66, 110, 226), light: rgb(110, 150, 255))
         case .doorYellow: doorBase(&px, s, band: (226, 196, 56), light: rgb(255, 230, 120))
 
+        case .doorHazard:
+            // the FUEL STORE door — real door leaves (frame groove, centre seam,
+            // hydraulic struts, all from doorBase) under worn diagonal hazard
+            // striping, replacing the flat hazard WALL plate it used to borrow
+            // (which had no door structure at all). Stripes kept dim so they
+            // don't trip the kernel's emissive mask; the red lamps glow faintly.
+            doorBase(&px, s, band: nil, light: 0)
+            let fr = 20
+            for y in fr..<(s - fr) { for x in fr..<(s - fr) {
+                if abs(x - s / 2) < 12 { continue }                                // centre seam + bevel stays clear
+                if (x >= 32 && x <= 44) || (x >= s - 46 && x <= s - 34) { continue }   // struts stay proud
+                guard ((x + y) / 24) % 2 == 0 else { continue }                    // the diagonals
+                let wear = fbm(Float(x) / 18, Float(y) / 18, 16, 33)
+                if wear > 0.62 { continue }                                        // paint chipped through to steel
+                let o = Int((wear - 0.3) * 40)
+                set(x, y, rgb(128 + o, 106 + o, 28))
+            }}
+            for leaf in 0..<2 {                                                    // red warning lamp per leaf
+                let cx = leaf == 0 ? s / 4 : s * 3 / 4
+                for j in -6...6 { for i in -6...6 where i * i + j * j <= 36 {
+                    set(cx + i, 48 + j, i * i + j * j > 22 ? rgb(60, 22, 20) : rgb(225, 64, 48))
+                }}
+            }
+
         case .exitSwitch:
-            panels(cell: 128, base: (80, 84, 96), seed: 9, rivets: true)
-            let a = s / 4, bX = s * 3 / 4, t = s / 5, bY = s * 4 / 5
-            for y in (t - 6)..<(bY + 6) { for x in (a - 6)..<(bX + 6) { set(x, y, rgb(20, 22, 28)) } }   // recess
-            for y in t..<bY { for x in a..<bX {
-                let on = 60 + Int(fbm(Float(x) / 8, Float(y) / 8, 16, 1) * 50)
-                set(x, y, rgb(28, 170 + on / 3, 90))
+            // The colony ELEVATOR — a centre-split pair of freight leaves (the
+            // cell has a real DoorState; the kernel's leaf-anchored UVs make each
+            // half ride its panel). Replaces the old wall-spanning green panel +
+            // giant chevrons. Dark steel body (below the kernel's emissive mask)
+            // so only each leaf's green status lamp glows.
+            for y in 0..<s { for x in 0..<s {
+                // vertical brushed grain, dark machined steel
+                let grain = Int((fbm(Float(x) / 5, Float(y) / 46, 16, 9) - 0.5) * 14)
+                var r = 70 + grain, g = 73 + grain, b = 82 + grain
+                // outer frame groove + inner highlight
+                if x < 10 || x > s - 11 || y < 10 || y > s - 11 { r -= 34; g -= 34; b -= 34 }
+                if x == 10 || y == 10 { r += 22; g += 22; b += 22 }
+                // kick plate along the bottom
+                if y > s - 34 { r -= 18; g -= 18; b -= 16 }
+                // meeting gap + mirrored hazard-stripe safety edges on each leaf
+                let seam = abs(x - s / 2)
+                if seam < 2 { r = 12; g = 13; b = 16 }
+                else if seam < 12 {
+                    if ((y + seam) / 12) % 2 == 0 { r = 128; g = 106; b = 28 }      // worn amber stripe
+                    else { r = 26; g = 26; b = 30 }
+                }
+                set(x, y, rgb(r, g, b))
             }}
-            for c in 0..<3 { for d in 0..<36 {                                                 // down chevrons
-                set(a + 40 + d, t + 28 + c * 36 + d / 2, rgb(220, 255, 220))
-                set(bX - 40 - d, t + 28 + c * 36 + d / 2, rgb(220, 255, 220))
-            }}
+            for leaf in 0..<2 {                                                     // per-leaf furniture (mirrored)
+                let cx = leaf == 0 ? s / 4 : s * 3 / 4
+                // etched DOWN chevron pair, mid-leaf — dim, reads as engraving
+                for c in 0..<2 { for d in 0..<18 { for th in 0..<3 {
+                    let y = s / 2 + c * 26 + d / 2 + th
+                    set(cx - 18 + d, y, rgb(38, 96, 56)); set(cx + 18 - d, y, rgb(38, 96, 56))
+                }}}
+                // green status lamp near the top — the one element that GLOWS
+                for j in -7...7 { for i in -7...7 where i * i + j * j <= 49 {
+                    let edge = i * i + j * j > 30
+                    set(cx + i, s / 6 + j, edge ? rgb(30, 70, 40) : rgb(96, 235, 128))
+                }}
+                // vent slits above the kick plate
+                for row in 0..<3 { for x in (cx - 22)...(cx + 22) where x % 3 != 0 {
+                    set(x, s - 48 + row * 5, rgb(30, 31, 36))
+                }}
+            }
         }
         if reliefOn { applyRelief(&px, s, reliefStrength(wall: tex)) }
         return Texture(size: s, pixels: px)
@@ -322,7 +454,7 @@ final class Textures {
         case .ironPlate: return 1.1
         case .steelPanel: return 1.0
         case .pipework: return 1.0
-        case .doorPanel, .doorRed, .doorBlue, .doorYellow: return 0.9
+        case .doorPanel, .doorRed, .doorBlue, .doorYellow, .doorHazard: return 0.9
         case .exitSwitch: return 0.8
         case .brushedSteel, .litPanel: return 0.7
         case .hazard: return 0.6

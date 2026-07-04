@@ -181,6 +181,70 @@ enum RoomShots {
             break
         }
 
+        // terminal-bank view — verify the amber CRT wall: the monitor grid, baked
+        // telemetry and the rolling refresh bar. Every office room gets a bank
+        // (MapGen.placeTerminalBanks), so scan for one with standing room in
+        // front (two open lit cells, so the bank fills the frame naturally).
+        outer: for seed in stride(from: UInt64(1), through: UInt64(60), by: 1) {
+            let world = World(level: 1, colonyIndex: 0, seed: seed)
+            world.monsters = []; world.drums = []; world.props = []
+            let m = world.map
+            func openLit(_ x: Int, _ y: Int) -> Bool {
+                guard m.inBounds(x, y), !m.blocksMovement(x, y) else { return false }
+                let col = m.lightColor[m.idx(x, y)]
+                return col.x * 0.299 + col.y * 0.587 + col.z * 0.114 > 0.4
+            }
+            for y in 1..<(m.h - 1) { for x in 1..<(m.w - 1) {
+                guard m.wall[m.idx(x, y)] == WallTex.computer.rawValue else { continue }
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    guard openLit(x + dx, y + dy), openLit(x + 2 * dx, y + 2 * dy) else { continue }
+                    let face = SIMD2<Float>(Float(x) + 0.5 + Float(dx) * 0.5, Float(y) + 0.5 + Float(dy) * 0.5)
+                    let cam = SIMD2<Float>(Float(x) + 0.5 + Float(dx) * 2.2, Float(y) + 0.5 + Float(dy) * 2.2)
+                    world.player.pos = cam
+                    world.player.dir = atan2(face.y - cam.y, face.x - cam.x)
+                    world.player.muzzle = 0
+                    let canvas = Canvas2D()
+                    _ = gpu.render(world, into: canvas)
+                    n += 1
+                    Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent("00i-terminals.png"))
+                    print("  wrote 00i-terminals.png — amber terminal bank (seed \(seed))")
+                    break outer
+                }
+            }}
+        }
+
+        // exit-elevator view — the centre-split leaves closed, then parted: the
+        // door plane sits at the room face and the leaf-anchored UVs must carry
+        // each half's artwork (lamp, chevron, hazard edge) WITH its leaf.
+        elev: for seed in stride(from: UInt64(1), through: UInt64(40), by: 1) {
+            let world = World(level: 1, colonyIndex: 0, seed: seed)
+            world.monsters = []; world.drums = []; world.props = []
+            let m = world.map
+            guard m.doors[m.exitCell] != nil else { continue }
+            let ex = m.exitCell % m.w, ey = m.exitCell / m.w
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                guard m.inBounds(ex + dx, ey + dy), !m.blocksMovement(ex + dx, ey + dy),
+                      m.inBounds(ex + 2 * dx, ey + 2 * dy), !m.blocksMovement(ex + 2 * dx, ey + 2 * dy) else { continue }
+                let face = SIMD2<Float>(Float(ex) + 0.5, Float(ey) + 0.5)
+                let cam = SIMD2<Float>(Float(ex) + 0.5 + Float(dx) * 2.2, Float(ey) + 0.5 + Float(dy) * 2.2)
+                world.player.pos = cam
+                world.player.dir = atan2(face.y - cam.y, face.x - cam.x)
+                world.player.muzzle = 0
+                for (oi, open) in [Float(0), GameMap.passThreshold].enumerated() {
+                    world.map.doors[world.map.exitCell]!.open = open
+                    let canvas = Canvas2D()
+                    _ = gpu.render(world, into: canvas)
+                    n += 1
+                    let name = oi == 0 ? "00j-elevator-closed.png" : "00j-elevator-open.png"
+                    Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent(name))
+                }
+                let back = (ex - dx, ey - dy)
+                print("  wrote 00j-elevator-closed/open.png — exit elevator (seed \(seed), "
+                    + "wall id \(m.wall[m.exitCell]), back id \(m.inBounds(back.0, back.1) ? m.wall[m.idx(back.0, back.1)] : -1))")
+                break elev
+            }
+        }
+
         // pickup view — pickups should SIT IN THE WORLD (room/headlamp-lit, faint rim),
         // not floodlit floating beacons. A medkit + cells + a key in a lit room.
         do {

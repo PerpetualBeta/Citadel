@@ -200,6 +200,26 @@ enum FrontEnd {
         c.labelCentered("◀  ESC  ▶", H - uiS(20), size: uiSf(18), color: dim, weight: .medium)
     }
 
+    /// The floor report shown INSIDE the elevator car (doors parted, world live
+    /// behind it): a translucent panel over the 3-D view, not a separate screen.
+    /// FIRE commits the descent (World swallows the shot).
+    static func descendReport(_ c: Canvas2D, world: World, t: Float) {
+        let pw = uiS(430), ph = world.secretTotal > 0 ? uiS(240) : uiS(208)
+        let x0 = (W - pw) / 2, y0 = uiS(58)
+        c.fillRectBlend(x0, y0, pw, ph, packRGBA(4, 10, 6), 0.78)
+        for i in 0..<2 {                                            // green hairline frame
+            c.fillRect(x0, y0 + (ph - 1) * i, pw, 1, packRGBA(60, 160, 90))
+            c.fillRect(x0 + (pw - 1) * i, y0, 1, ph, packRGBA(60, 160, 90))
+        }
+        c.labelCentered("FLOOR CLEARED", y0 + uiS(16), size: uiSf(30), color: packRGBA(120, 230, 150), weight: .heavy, shadow: true, glow: packRGBA(10, 50, 24))
+        c.labelCentered("\(world.colonyName) · FLOOR \(Progression.floorInBuilding(world.level))", y0 + uiS(54), size: uiSf(17), color: ink, weight: .semibold)
+        var y = y0 + uiS(88)
+        statRow(c, "KILLS", "\(world.killCount) / \(world.monsterTotal)", y); y += uiS(30)
+        if world.secretTotal > 0 { statRow(c, "SECRETS", "\(world.secretsFound) / \(world.secretTotal)", y); y += uiS(30) }
+        statRow(c, "SCORE", "\(world.score)", y, color: amber); y += uiS(38)
+        if Int(t * 2) % 2 == 0 { c.labelCentered("PRESS  FIRE  TO  DESCEND", y, size: uiSf(22), color: amber, weight: .bold) }
+    }
+
     static func levelComplete(_ c: Canvas2D, world: World, t: Float) {
         backdrop(c, t, top: packRGBA(6, 16, 10), bottom: packRGBA(10, 30, 16))
         c.labelCentered("CITADEL FLOOR CLEARED", uiS(74), size: uiSf(42), color: packRGBA(120, 230, 150), weight: .heavy, shadow: true, glow: packRGBA(10, 50, 24))

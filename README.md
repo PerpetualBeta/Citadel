@@ -52,7 +52,8 @@ fight.
     then **burn the corpse with the flamethrower**, or she revives and the floor
     never ends.
 - **Descend.** Each of the six planets is a citadel of **eight floors**; clear a
-  floor (kill and burn its Queen, find the exit switch) and drop to the next.
+  floor (kill and burn its Queen), then call the **freight elevator** — the
+  leaves part, you step into the car, and it rides you down to the next.
   Clear the eighth and you **teleport** to the next planet — a fresh citadel that
   runs bright at the surface and dead-dark in the depths, the **lowest floors
   flooded** so you wade. It loops after the sixth planet; only the floors get

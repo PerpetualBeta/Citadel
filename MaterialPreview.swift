@@ -109,6 +109,7 @@ enum MaterialPreview {
         case .doorBlue: return "doorBlue"
         case .doorYellow: return "doorYellow"
         case .exitSwitch: return "exitSwitch"
+        case .doorHazard: return "doorHazard"
         }
     }
     private static func nameF(_ f: FlatTex) -> String {

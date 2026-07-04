@@ -27,33 +27,32 @@ struct GeneratedLevel {
 enum MapGen {
     struct Theme {
         let walls: [WallTex]
-        let accent: WallTex
         let floor: FlatTex
         let ceil: FlatTex
         let hazardFloor: FlatTex
     }
 
     // The descent IS the art direction. A colony is a working facility up top,
-    // raw rock below — so the material set shifts with DEPTH, not colony:
+    // raw rock below — so the material set shifts with DEPTH, not colony.
     //   surface  → clean steel, glass, working strip-lights (a functioning plant)
     //   workings → grimier iron + pipework + hazard markings
     //   deep     → stone wins back the dark; steel infrastructure just clings on
-    // `ci` (colony) nudges the accent so adjacent colonies still feel distinct.
+    // (ARC terminal banks aren't a theme wall — placeTerminalBanks stamps them
+    // into the office rooms on every floor.)
     static func theme(_ ci: Int, level: Int) -> Theme {
-        let accents: [WallTex] = [.computer, .glass, .hazard, .litPanel]
-        let acc = accents[ci % accents.count]
+        _ = ci
         switch Progression.floorInBuilding(level) {   // material tier resets each citadel
         case 1...2:   // surface facility — clean, lit, working
-            return Theme(walls: [.brushedSteel, .steelPanel, .litPanel], accent: acc,
+            return Theme(walls: [.brushedSteel, .steelPanel, .litPanel],
                          floor: .metalFloor, ceil: .ceilTech, hazardFloor: .nukage)
         case 3...4:   // industrial workings — iron, pipes, grime
-            return Theme(walls: [.ironPlate, .pipework, .brushedSteel], accent: .hazard,
+            return Theme(walls: [.ironPlate, .pipework, .brushedSteel],
                          floor: .grate, ceil: .ceilTech, hazardFloor: .nukage)
         case 5...6:   // deep workings — stone starts to intrude
-            return Theme(walls: [.ironPlate, .stoneSteel, .pipework], accent: .glass,
+            return Theme(walls: [.ironPlate, .stoneSteel, .pipework],
                          floor: .concrete, ceil: .ceilDark, hazardFloor: .nukage)
         default:      // the depths — rock dominant, infrastructure failing
-            return Theme(walls: [.stone, .stoneSteel, .ironPlate], accent: .pipework,
+            return Theme(walls: [.stone, .stoneSteel, .ironPlate],
                          floor: .rock, ceil: .ceilStone, hazardFloor: .blood)
         }
     }
@@ -162,6 +161,20 @@ enum MapGen {
         map.playerDir = rng.f(0, 2 * .pi)
         let startCell = map.idx(start.cx, start.cy)
 
+        // ── ARRIVAL elevator ── the marine rode DOWN to get here, so he starts
+        // inside a car on the start room's edge, facing out, its doors parting
+        // (World opens them on spawn). Same rules as the exit car: open front,
+        // solid back. If no side qualifies the level just starts in the room.
+        if let site = elevatorSite(map, room: start) {
+            let i = site.cell
+            let wx = i % map.w, wy = i / map.w
+            map.wall[i] = WallTex.exitSwitch.rawValue
+            map.doors[i] = DoorState()
+            map.entryCell = i
+            map.playerStart = SIMD2<Float>(Float(wx) + 0.5, Float(wy) + 0.5)
+            map.playerDir = atan2(Float(site.front.1 - wy), Float(site.front.0 - wx))
+        }
+
         // ── exit switch in the last room ──
         let exitRoom = rooms[rooms.count - 1]
         let exitCell = placeExitSwitch(map, room: exitRoom)
@@ -172,7 +185,7 @@ enum MapGen {
         var keyCells: [KeyColor: Int] = [:]
         // unlocked flavour doors at a few corridor mouths
         for ci in corridorCells.indices {
-            if rng.chance(0.5), let cell = sealedCell(in: corridorCells[ci], map: map) {
+            if rng.chance(0.5), let cell = sealedCell(in: corridorCells[ci], map: map), doorClear(map, cell) {
                 map.doors[cell] = DoorState()
                 map.wall[cell] = WallTex.doorPanel.rawValue
             }
@@ -185,7 +198,7 @@ enum MapGen {
                 // pick a corridor near the far end (high index) so it gates progress
                 let gIdx = corridorCells.count - 1 - n
                 if gIdx < 1 { break }
-                guard let cell = sealedCell(in: corridorCells[gIdx], map: map) else { continue }
+                guard let cell = sealedCell(in: corridorCells[gIdx], map: map), doorClear(map, cell) else { continue }
                 let color = KeyColor.allCases[n % KeyColor.allCases.count]
                 if usedColors.contains(color) { continue }
                 usedColors.append(color)
@@ -214,7 +227,7 @@ enum MapGen {
 
         // ── secret closet with loot (hidden door textured like the wall) ──
         var secretCount = 0
-        if let (doorCell, lootCell) = carveSecret(map, rooms: rooms, rng: &rng, theme: th) {
+        if let (doorCell, lootCell) = carveSecret(map, rooms: rooms, rng: &rng, theme: th), doorClear(map, doorCell) {
             map.doors[doorCell] = DoorState(secret: true)
             secretCount = 1
             // loot placed below in item pass via secretLoot
@@ -233,8 +246,19 @@ enum MapGen {
             }
         }
 
+        // ── ARC terminal banks in the office-to-be rooms (before the bake, so
+        //    their amber wash lights the room) ──
+        placeTerminalBanks(map, rooms: rooms, rng: &rng)
+
         // ── colored sector lighting (baked once; raycaster just samples it) ──
         Lighting.bake(map, level: level)
+        // The elevator cars are LIT interiors: the bake can't reach inside a door
+        // cell (and the kernel's ceiling-lamp grid skips non-open cells), so stamp
+        // a warm cabin level directly — the dynamic cabin lamp rides on top.
+        for c in [map.exitCell, map.entryCell] where c >= 0 {
+            map.lightColor[c] = SIMD3(0.95, 0.88, 0.72)
+            map.light[c] = 0.85
+        }
 
         // ── spawns ──
         let (monsters, items, drums, sockets, props) = populate(map: map, rooms: rooms, level: level, theme: th,
@@ -263,28 +287,108 @@ enum MapGen {
         _ = rng
     }
 
-    private static func placeExitSwitch(_ map: GameMap, room: Room) -> Int {
-        // a wall cell on the room's edge, with a walkable cell in front
-        let candidates: [(Int, Int)] = [
-            (room.x + room.w / 2, room.y - 1),      // top wall
-            (room.x + room.w / 2, room.y + room.h),  // bottom wall
-            (room.x - 1, room.y + room.h / 2),
-            (room.x + room.w, room.y + room.h / 2),
-        ]
-        for (wx, wy) in candidates {
-            guard map.inBounds(wx, wy) else { continue }
-            let front: (Int, Int) = wy < room.y ? (wx, wy + 1) : wy >= room.y + room.h ? (wx, wy - 1)
-                : wx < room.x ? (wx + 1, wy) : (wx - 1, wy)
-            if map.inBounds(front.0, front.1) && map.wall[map.idx(front.0, front.1)] == 0 {
-                let i = map.idx(wx, wy)
-                map.wall[i] = WallTex.exitSwitch.rawValue
-                return i
+    // ── ARC terminal banks ── every room that will furnish as an OFFICE (the
+    // same small-room predicate `populate` uses) gets a short run of amber CRT
+    // wall on one side: the workstation bank its desk sits under. This is a pure
+    // RETEXTURE — the wall stays solid, so reachability/solvability are untouched
+    // — and it runs before Lighting.bake so each bank's amber wash is baked into
+    // the sector light like any other fixture. (The busted-fixture spark system
+    // in World already covers computer walls.)
+    private static func placeTerminalBanks(_ map: GameMap, rooms: [Room], rng: inout Rng) {
+        for r in rooms {
+            var hazard = false
+            for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) where map.hazard[map.idx(xx, yy)] { hazard = true } }
+            guard r.w * r.h <= 20, !(r.w >= 5 && r.h >= 5 && !hazard) else { continue }   // mirrors populate's office split
+            // four candidate sides: (wall cell, cell in front of it, run direction)
+            var sides: [(w: (Int, Int), f: (Int, Int), d: (Int, Int), len: Int)] = [
+                ((r.x + r.w / 2, r.y - 1),   (r.x + r.w / 2, r.y),           (1, 0), r.w),
+                ((r.x + r.w / 2, r.y + r.h), (r.x + r.w / 2, r.y + r.h - 1), (1, 0), r.w),
+                ((r.x - 1, r.y + r.h / 2),   (r.x, r.y + r.h / 2),           (0, 1), r.h),
+                ((r.x + r.w, r.y + r.h / 2), (r.x + r.w - 1, r.y + r.h / 2), (0, 1), r.h),
+            ]
+            let rot = rng.i(0, 3)                        // vary which side hosts the bank
+            sides = Array(sides[rot...] + sides[..<rot])
+            for side in sides {
+                let run = min(3, side.len), half = run / 2
+                var cells: [Int] = [], ok = true
+                for k in -half...(run - half - 1) {
+                    let wx = side.w.0 + side.d.0 * k, wy = side.w.1 + side.d.1 * k
+                    let fx = side.f.0 + side.d.0 * k, fy = side.f.1 + side.d.1 * k
+                    guard map.inBounds(wx, wy), map.inBounds(fx, fy) else { ok = false; break }
+                    let wi = map.idx(wx, wy), fi = map.idx(fx, fy)
+                    // only plain structural wall converts (never a door, the exit
+                    // switch, the fuel store's hazard plating, or another bank),
+                    // and the room cell in front must be open so the bank shows
+                    guard map.wall[wi] >= WallTex.ironPlate.rawValue, map.wall[wi] <= WallTex.stoneSteel.rawValue,
+                          map.doors[wi] == nil, map.wall[fi] == 0, map.doors[fi] == nil else { ok = false; break }
+                    cells.append(wi)
+                }
+                guard ok, !cells.isEmpty else { continue }
+                for i in cells { map.wall[i] = WallTex.computer.rawValue }
+                break
             }
+        }
+    }
+
+    private static func placeExitSwitch(_ map: GameMap, room: Room) -> Int {
+        // the exit is the colony ELEVATOR: a real centre-split door whose plane
+        // sits at the room face (buildDistanceField offsets it), so the cell
+        // behind the leaves is the car — which must be a fully sealed box
+        if let site = elevatorSite(map, room: room) {
+            map.wall[site.cell] = WallTex.exitSwitch.rawValue
+            map.doors[site.cell] = DoorState()
+            return site.cell
         }
         // fallback: any wall adjacent to an open cell in the room
         let i = map.idx(room.x, room.y - 1)
         if map.inBounds(room.x, room.y - 1) { map.wall[i] = WallTex.exitSwitch.rawValue; return i }
         return map.idx(room.x, room.y)
+    }
+
+    /// Scan a room's border for a cell that can host an ELEVATOR. The car must
+    /// be a CLOSED BOX: an open room cell in front (the doorway), and solid,
+    /// door-free back AND side-jamb cells — a missing jamb exposes the shaft
+    /// interior (a car with a wall missing). Wall-run midpoints are preferred
+    /// (a centred door reads best); any qualifying border cell will do.
+    private static func elevatorSite(_ map: GameMap, room: Room) -> (cell: Int, front: (Int, Int))? {
+        var sides: [((Int, Int), (Int, Int))] = []   // (wall cell, front cell)
+        for x in room.x..<(room.x + room.w) {
+            sides.append(((x, room.y - 1), (x, room.y)))
+            sides.append(((x, room.y + room.h), (x, room.y + room.h - 1)))
+        }
+        for y in room.y..<(room.y + room.h) {
+            sides.append(((room.x - 1, y), (room.x, y)))
+            sides.append(((room.x + room.w, y), (room.x + room.w - 1, y)))
+        }
+        for (w, f) in sides.sorted(by: {
+            abs($0.0.0 - room.cx) + abs($0.0.1 - room.cy) < abs($1.0.0 - room.cx) + abs($1.0.1 - room.cy)
+        }) {
+            let (wx, wy) = w, (fx, fy) = f
+            guard map.inBounds(wx, wy), map.inBounds(fx, fy) else { continue }
+            let wi = map.idx(wx, wy)
+            guard map.wall[wi] != 0, map.doors[wi] == nil,
+                  map.wall[map.idx(fx, fy)] == 0, map.doors[map.idx(fx, fy)] == nil else { continue }
+            let dx = fx - wx, dy = fy - wy
+            var boxOK = true
+            for (bx, by) in [(wx - dx, wy - dy), (wx + dy, wy + dx), (wx - dy, wy - dx)] {   // back + both jambs
+                guard map.inBounds(bx, by), map.wall[map.idx(bx, by)] != 0,
+                      map.doors[map.idx(bx, by)] == nil else { boxOK = false; break }
+            }
+            guard boxOK, doorClear(map, wi) else { continue }
+            return (wi, f)
+        }
+        return nil
+    }
+
+    /// No door may sit in a cell 4-adjacent to another door: the leaves slide
+    /// INTO the jambs, so side-by-side doors are mechanically impossible (there
+    /// is no wall for either leaf to retract into) — and they read absurd.
+    private static func doorClear(_ map: GameMap, _ cell: Int) -> Bool {
+        let x = cell % map.w, y = cell / map.w
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            if map.inBounds(x + dx, y + dy), map.doors[map.idx(x + dx, y + dy)] != nil { return false }
+        }
+        return true
     }
 
     /// First corridor cell with walls on both perpendicular sides (so a door seals it).
@@ -374,9 +478,9 @@ enum MapGen {
                     if map.wall[ni] == 0 { sealed = false; break seal }          // leaks into open space
                 }
             }
-            if !sealed { continue }
+            if !sealed || !doorClear(map, dCell) { continue }
             map.floor[dCell] = theme.floor.rawValue; map.ceil[dCell] = theme.ceil.rawValue; map.light[dCell] = 0.6
-            map.wall[dCell] = WallTex.hazard.rawValue                          // yellow-black hazard door — the "fuel store" sign
+            map.wall[dCell] = WallTex.doorHazard.rawValue                      // hazard-striped DOOR leaves — the "fuel store" sign
             map.doors[dCell] = DoorState()
             var cells: [SIMD2<Float>] = []
             for (cx, cy) in chamber {
@@ -695,8 +799,15 @@ enum MapGen {
                         i += 1
                     }
                 } else if area <= 20 {
-                    // OFFICE: a desk + powered terminal, a chair tucked in front, a locker
-                    if let desk = slots.first(where: { freeCell($0.pos, 0.85) }) {
+                    // OFFICE: a desk + powered terminal, a chair tucked in front, a
+                    // locker. The desk prefers the slot backed by the room's terminal
+                    // bank (placeTerminalBanks), so the workstation sits under its CRTs.
+                    let bankBacked: (Slot) -> Bool = { s in
+                        let bx = s.x - Int(s.inward.x), by = s.y - Int(s.inward.y)
+                        return map.inBounds(bx, by) && map.wall[map.idx(bx, by)] == WallTex.computer.rawValue
+                    }
+                    if let desk = slots.first(where: { bankBacked($0) && freeCell($0.pos, 0.85) })
+                                ?? slots.first(where: { freeCell($0.pos, 0.85) }) {
                         placeProp(.desk, desk)
                         // the chair sits just in front of the (now wall-flush) desk, facing it
                         let chairP = desk.pos + desk.inward * 0.62

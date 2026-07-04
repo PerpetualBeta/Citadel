@@ -24,12 +24,40 @@ enum SmokeTest {
             let g = MapGen.generate(level: level, colonyIndex: level - 1, seed: UInt64(level) &* 7919 &+ 13)
             let m = g.map
             let sx = Int(m.playerStart.x), sy = Int(m.playerStart.y)
-            check(m.wall[m.idx(sx, sy)] == 0, "L\(level) player start is walkable")
+            let si = m.idx(sx, sy)
+            check(m.wall[si] == 0 || (si == m.entryCell && m.doors[si] != nil),
+                  "L\(level) player start is walkable (or the arrival car)")
             check(m.exitCell >= 0 && m.exitCell < m.wall.count, "L\(level) exit switch placed")
             check(!g.monsters.isEmpty, "L\(level) has monsters (\(g.monsters.count))")
             check(!g.items.isEmpty, "L\(level) has items (\(g.items.count))")
             // exit reachable from start (ignoring locks — MapGen already verifies keyed reachability)
             check(reachableIgnoringLocks(m), "L\(level) exit reachable from start")
+            // side-by-side doors are mechanically impossible (leaves slide into
+            // the jambs — adjacent doors have nowhere to go); the generator must
+            // never produce them. And the exit must be a real elevator door.
+            var adjacentDoors = 0
+            for (di, _) in m.doors {
+                let dx0 = di % m.w, dy0 = di / m.w
+                for (ddx, ddy) in [(1, 0), (0, 1)] where m.inBounds(dx0 + ddx, dy0 + ddy) {
+                    if m.doors[m.idx(dx0 + ddx, dy0 + ddy)] != nil { adjacentDoors += 1 }
+                }
+            }
+            check(adjacentDoors == 0, "L\(level) no side-by-side doors")
+            check(m.doors[m.exitCell] != nil, "L\(level) exit is an elevator (real door)")
+            check(m.entryCell >= 0 && m.doors[m.entryCell] != nil, "L\(level) arrival elevator placed")
+            // each car must be a sealed box: exactly ONE open neighbour (the
+            // doorway) — an open jamb or back exposes the shaft interior
+            var sealedCars = true
+            for cell in [m.entryCell, m.exitCell] where cell >= 0 && m.doors[cell] != nil {
+                let cx0 = cell % m.w, cy0 = cell / m.w
+                var openN = 0
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] where m.inBounds(cx0 + dx, cy0 + dy) {
+                    let ni = m.idx(cx0 + dx, cy0 + dy)
+                    if m.wall[ni] == 0 || m.doors[ni] != nil { openN += 1 }
+                }
+                if openN != 1 { sealedCars = false }
+            }
+            check(sealedCars, "L\(level) elevator cars are sealed boxes")
             // count baked unlit floor — the headlamp's reason to exist
             for i in 0..<(m.w * m.h) where m.wall[i] == 0 && m.doors[i] == nil {
                 let c = m.lightColor[i]
@@ -132,9 +160,23 @@ enum SmokeTest {
         }
         check(debrisPiles > 0, "rubble debris built at shattered fixtures (\(debrisPiles) piles)")
 
-        // 2e. enemy AI: a clump of drones disperses (boid separation / anti-clump)
+        // 2e. enemy AI: a clump of drones disperses (boid separation / anti-clump).
+        // Spawn the clump on open floor IN FRONT of the marine — he starts inside
+        // the arrival car now, so a fixed westward offset can land in bedrock.
+        // The clump needs ROOM to disperse into: find the nearest 3x3 clearing of
+        // open cells (a single open cell against a wall pins the boids together).
         let aw = World(level: 1, colonyIndex: 0, seed: 7)
-        let cc = aw.player.pos + SIMD2<Float>(-3, 0)
+        var cc = aw.player.pos
+        search: for r in 1..<12 { for dy in -r...r { for dx in -r...r {
+            let x = Int(aw.player.pos.x) + dx, y = Int(aw.player.pos.y) + dy
+            var clear = true
+            for ny in -1...1 { for nx in -1...1 where !(aw.map.inBounds(x + nx, y + ny) && !aw.map.blocksMovement(x + nx, y + ny)) {
+                clear = false
+            }}
+            if clear { cc = SIMD2(Float(x) + 0.5, Float(y) + 0.5); break search }
+        }}}
+        aw.player.pos = cc + SIMD2<Float>(-1.1, 0)   // marine + clump together in the clearing (as before the arrival-car start)
+        cc += SIMD2<Float>(1.1, 0)
         aw.monsters = (0..<5).map { k in
             var m = Monster(kind: .alien, pos: cc + SIMD2(Float(k) * 0.05, 0)); m.awake = true; m.state = .chase; return m
         }
@@ -144,7 +186,7 @@ enum SmokeTest {
             return mn
         }
         let gap0 = minPairDist(aw.monsters)
-        for _ in 0..<120 { aw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+        for _ in 0..<180 { aw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
         let gap1 = minPairDist(aw.monsters)
         check(gap1 > gap0 * 3, "clumped drones separate (min gap \(String(format: "%.2f", gap0)) → \(String(format: "%.2f", gap1)))")
 

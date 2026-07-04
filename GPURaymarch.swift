@@ -164,7 +164,7 @@ enum GPURaymarch {
         if (id == 4u)  return 0.85;
         if (id == 16u) return 1.05;
         if (id == 10u) return 0.60;
-        if (id == 13u || id == 14u || id == 15u) return 0.45;
+        if (id == 13u || id == 14u || id == 15u || id == 17u) return 0.45;
         return 0.0;
     }
     static inline float flatEmissive(uint id) { return id == 3u ? 0.85 : 0.0; }
@@ -228,7 +228,7 @@ enum GPURaymarch {
             case 8u:  return float2(0.92, 0.00);   // hewn rock — matte
             case 9u:  return float2(0.66, 0.35);   // rock + steel struts
             case 10u: return float2(0.50, 0.20);   // computer banks — screens
-            case 12u: case 13u: case 14u: case 15u: return float2(0.50, 0.50);  // blast doors — painted steel
+            case 12u: case 13u: case 14u: case 15u: case 17u: return float2(0.50, 0.50);  // blast doors — painted steel
             case 16u: return float2(0.50, 0.45);   // exit switch panel
             default:  return float2(0.58, 0.50);   // iron plate / steel panel / lit panel / hazard — grimy iron
         }
@@ -259,10 +259,15 @@ enum GPURaymarch {
     // intervals. Shaded only (albedo + normal), so it gives the flat walls real
     // depth + steelwork at zero march cost. uv in world units (1 = a cell).
     static inline float wallRelief(float2 uv) {
-        float gv = smoothstep(0.04, 0.12, abs(fract(uv.x * 1.7) - 0.5));        // vertical seam grooves
-        float gh = smoothstep(0.04, 0.12, abs(fract(uv.y * 2.5) - 0.5));        // horizontal seam grooves
+        // Groove frequency 2.0/unit on BOTH axes: the baked wall textures panel
+        // at 128px = half a 256px tile = half a world cell, so the shaded seams
+        // land exactly on the textures' own panel seams and on cell boundaries.
+        // (They were 1.7/2.5 — a second, unrelated seam grid sliced across the
+        // baked one and the walls read as a mess.)
+        float gv = smoothstep(0.04, 0.12, abs(fract(uv.x * 2.0) - 0.5));        // vertical seam grooves
+        float gh = smoothstep(0.04, 0.12, abs(fract(uv.y * 2.0) - 0.5));        // horizontal seam grooves
         float panel = min(gv, gh);                                             // recessed where the seams cross
-        float rib = 1.0 - smoothstep(0.40, 0.50, abs(fract(uv.x * 0.5) - 0.5));  // a raised steel rib every 2 cells
+        float rib = 1.0 - smoothstep(0.40, 0.50, abs(fract(uv.x * 0.5) - 0.5));  // a raised steel rib every 2 cells (on cell boundaries)
         return panel * 0.7 + rib * 0.5;
     }
     // Fresnel-weighted Blinn-Phong specular lobe (BeautyProof's spec term).
@@ -362,6 +367,7 @@ enum GPURaymarch {
                          constant GMonster* mons   [[buffer(2)]],
                          constant GShape* shapes   [[buffer(3)]],
                          constant float4* decals   [[buffer(4)]],   // (x,z,radius,w): w>0 scorch · w<0 blood
+                         constant float4* doorsB   [[buffer(5)]],   // (cellX, cellY, part 0…1, flags: bit0 slideX · bit1 elevator)
                          constant Uniforms& U [[buffer(0)]]) {
         float screenW = U.params.x, viewH = U.params.y, horizon = U.params.z, ceilH = U.params.w;
         if (gid.x >= uint(screenW) || gid.y >= uint(viewH)) return;
@@ -416,16 +422,25 @@ enum GPURaymarch {
                         alb = mix(alb, float3(0.15, 0.02, 0.018), blood * 0.6);     // dried blood, pooled low
                         rough = clamp(0.72 + 0.3 * gr, 0.55, 0.97);                 // rough, matte, uneven — kills the sheen
                     } else {
-                        // a LIVE terminal: a grid of glyphs scrolling upward with CRT
-                        // scanlines + flicker — reads as running telemetry, not a blank
-                        // light panel. (p.y = up the screen; p.x+p.z = across the face,
-                        // robust to the prop's yaw since the screen is vertical.)
-                        float rows = p.y * 52.0 + time * 4.0;                       // rows scroll up
-                        float glyph = hash21(float2(floor((p.x + p.z) * 30.0), floor(rows)));
-                        float on = step(0.35, glyph);                              // ~⅔ of cells lit
+                        // a LIVE terminal: scrolling LINES of amber text with CRT
+                        // scanlines + flicker. Not independent random cells (those read
+                        // as blobs) — glyphs come in WORD RUNS along each row (1D value
+                        // noise → runs of lit cells with gaps), rows vary in density,
+                        // some are blank (paragraph breaks) and a few flare as alerts.
+                        // (p.y = up the screen; p.x+p.z = across the face, robust to
+                        // the prop's yaw since the screen is vertical.)
+                        float col = (p.x + p.z) * 34.0;
+                        float row = floor(p.y * 52.0 + time * 4.0);                // rows scroll up
+                        float rh = hash21(float2(row, 7.0));                       // per-line personality
+                        float word = vnoise2(float2(col * 0.55 + rh * 90.0, row * 3.1));
+                        float on = step(1.0 - (0.35 + 0.45 * rh), word);           // word runs; density per line
+                        float kind = hash21(float2(row, 3.0));
+                        on *= step(0.12, kind);                                    // ~12% blank lines
+                        float alert = step(0.94, kind);                            // rare bright alert lines
+                        float glyph = 0.55 + 0.45 * hash21(float2(floor(col), row));   // per-glyph sparkle
                         float scan = 0.80 + 0.20 * sin(p.y * 240.0);               // scanlines
-                        float flick = 0.90 + 0.10 * sin(time * 36.0 + floor(rows) * 1.7);
-                        alb *= (0.28 + 0.95 * on * glyph) * scan * flick;          // dark gaps between bright glyphs
+                        float flick = 0.90 + 0.10 * sin(time * 36.0 + row * 1.7);
+                        alb *= (0.22 + (0.85 + 0.75 * alert) * on * glyph) * scan * flick;
                     }
                     float lum = dot(alb, float3(0.299, 0.587, 0.114));
                     emis = smoothstep(1.0, 1.45, lum) * 2.4;                        // only the powered screen pushes past 1 → glows
@@ -495,43 +510,107 @@ enum GPURaymarch {
                     int2 c = clamp(int2(floor(p.xz - n.xz * 0.5)), int2(0), dim - 1);
                     uint id = wallId.read(uint2(c)).r;
                     float along = (abs(n.x) > abs(n.z)) ? p.z : p.x;
+                    // ── DOOR LEAF? A door plane lies strictly INSIDE its cell, so the
+                    //   containing cell is the exact lookup (the half-step boundary
+                    //   trick above can land in the open cell in front — especially
+                    //   for the elevator, whose plane sits at the room-side face).
+                    int2 cc = clamp(int2(floor(p.xz)), int2(0), dim - 1);
+                    uint idc = wallId.read(uint2(cc)).r;
+                    int nDoors = int(U.extra.w);
+                    bool doorHit = false;
+                    if (idc >= 12u && idc <= 17u && nDoors > 0) {
+                        float part = 0.0, dflags = -1.0;
+                        for (int di = 0; di < nDoors; di++) {
+                            if (int(doorsB[di].x) == cc.x && int(doorsB[di].y) == cc.y) {
+                                part = doorsB[di].z; dflags = doorsB[di].w; break;
+                            }
+                        }
+                        if (dflags >= 0.0) {
+                            doorHit = true;
+                            bool slideX = (int(dflags) & 1) != 0;
+                            bool edgeFace = slideX ? (abs(n.x) > abs(n.z)) : (abs(n.z) > abs(n.x));
+                            if (edgeFace) {
+                                // the leaf's exposed meeting edge (and the jamb reveal):
+                                // machined dark steel, lightly brushed — never a stretched
+                                // smear of the face texture
+                                alb = float3(0.14, 0.145, 0.16)
+                                    * (0.85 + 0.30 * fbm2(float2(p.y * 9.0, (p.x + p.z) * 2.0)));
+                                rough = 0.45; metal = 0.6; emis = 0.0;
+                            } else {
+                                // LEAF-ANCHORED UVs: the texture rides the sliding panel.
+                                // Each leaf has slid `gap` into its jamb, so the visible
+                                // span maps back to the leaf's own half of the texture —
+                                // the centre-seam artwork parts WITH the leaves instead of
+                                // the panels sliding through a wall-anchored image.
+                                float uLoc = fract(slideX ? p.x : p.z);
+                                float gap = 0.5 * part;
+                                float u = (uLoc < 0.5) ? (uLoc + gap) : (uLoc - gap);
+                                alb = wallArr.sample(ts, float2(u, 1.0 - p.y), idc).rgb;
+                                float2 wm = wallMaterial(idc); rough = wm.x; metal = wm.y;
+                                // status lights / key bands / lamps glow; the slab doesn't
+                                float strip = smoothstep(0.36, 0.54, dot(alb, float3(0.299, 0.587, 0.114)));
+                                emis = wallEmissive(idc) * strip;
+                            }
+                            // doors are machined slabs: no bulkhead relief, no soot pass —
+                            // they stay crisp (the grime/relief below is walls-only)
+                        }
+                    }
+                    if (!doorHit) {
                     alb = wallArr.sample(ts, float2(along, 1.0 - p.y), id).rgb;
                     emis = wallEmissive(id);
                     // ── battle scarring ── only the EMBEDDED light (the bright
                     //   strip / screen) emits, fails and flickers — not the whole
                     //   bulkhead. Mask by texel brightness so the dark panel body
                     //   stays steady while just the fixture pulses or dies.
+                    float screenGlass = 0.0;                    // lit-glass mask (screens / strip lights) — kept clean below
                     if (id == 4u || id == 10u) {
                         float strip = smoothstep(0.36, 0.54, dot(alb, float3(0.299, 0.587, 0.114)));
                         emis *= strip;                                          // panel body doesn't glow
+                        screenGlass = strip;
                         if (fixtureBusted(c)) { emis = 0.0; alb = mix(alb, alb * 0.30, strip); }  // dead: only the strip burns out
                         else emis *= fixtureFlicker(float2(c), time);           // only the strip flickers
+                        if (id == 10u && emis > 0.0) {
+                            // CRT refresh bar rolling down each monitor of the bank
+                            // (a 4×4 monitor grid per texture tile — Textures .computer),
+                            // phase-offset per monitor so the bank doesn't sweep in
+                            // lockstep — the baked text reads as a live raster.
+                            float2 mcell = floor(float2(along, 1.0 - p.y) * 4.0);
+                            float roll = fract((1.0 - p.y) * 4.0 - time * 0.25 + hash21(mcell));
+                            emis *= 0.90 + 0.55 * smoothstep(0.84, 1.0, roll);
+                        }
                     }
+                    float dirt = 1.0 - screenGlass;             // powered glass stays clean (matches the desk terminals)
                     float low = clamp(1.0 - p.y * 1.3, 0.0, 1.0);
                     float scorch = smoothstep(0.42, 0.78, fbm2(float2(along * 1.3, p.y * 1.4))) * (0.45 + 0.55 * low);
-                    alb *= 1.0 - 0.82 * scorch;                                // sooty patches, heavier low
+                    alb *= 1.0 - 0.82 * scorch * dirt;                         // sooty patches, heavier low
                     float streak = smoothstep(0.5, 0.92, fbm2(float2(along * 5.3, p.y * 0.5 + 11.0))) * clamp(p.y, 0.0, 1.0);
-                    alb = mix(alb, alb * float3(0.52, 0.47, 0.42), streak * 0.6);   // grime bleeding down
+                    alb = mix(alb, alb * float3(0.52, 0.47, 0.42), streak * 0.6 * dirt);   // grime bleeding down
                     float blood = smoothstep(0.55, 0.82, fbm2(float2(along * 2.1 + 7.0, p.y * 1.9))) * clamp(1.3 - p.y * 2.2, 0.0, 1.0);
-                    alb = mix(alb, float3(0.2, 0.03, 0.022), blood * 0.85);    // dried blood up the base
+                    alb = mix(alb, float3(0.2, 0.03, 0.022), blood * 0.85 * dirt);    // dried blood up the base
                     // material + micro-relief — a grimy-iron sheen, with grain
                     // breaking up the highlight (was flat, matte, light-frozen)
                     float2 wm = wallMaterial(id); rough = wm.x; metal = wm.y;
-                    float3 tU = (abs(n.x) > abs(n.z)) ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
-                    // ── structural depth ── recessed bulkhead panels + raised steel
-                    //   ribs: grooves read darker (recessed), ribs as brighter steel,
-                    //   and the normal follows the relief so the flat wall has DEPTH.
-                    float2 ruv = float2(along, p.y);
-                    float panelLit = smoothstep(0.04, 0.12, abs(fract(along * 1.7) - 0.5))
-                                   * smoothstep(0.04, 0.12, abs(fract(p.y * 2.5) - 0.5));
-                    alb *= 0.5 + 0.5 * panelLit;                               // grooves recessed (darker)
-                    float ribLit = 1.0 - smoothstep(0.40, 0.50, abs(fract(along * 0.5) - 0.5));
-                    alb = mix(alb, alb * 1.45 + float3(0.05), ribLit * 0.5);   // ribs catch as proud steel
-                    float re = 0.03;
-                    float rdu = wallRelief(ruv + float2(re, 0.0)) - wallRelief(ruv - float2(re, 0.0));
-                    float rdv = wallRelief(ruv + float2(0.0, re)) - wallRelief(ruv - float2(0.0, re));
-                    n = normalize(n - (tU * rdu + float3(0.0, 1.0, 0.0) * rdv) * 0.85);   // relief shapes the normal
-                    n = bumpNormal(float2(along, p.y), n, tU, float3(0.0, 1.0, 0.0), 2.6, 0.12 * smoothstep(0.15, 0.55, rough));   // + fine grain
+                    if (id != 10u && (id < 12u || id > 17u)) {
+                        // ── structural depth ── recessed bulkhead panels + raised steel
+                        //   ribs: grooves read darker (recessed), ribs as brighter steel,
+                        //   and the normal follows the relief so the flat wall has DEPTH.
+                        //   (Skipped on a terminal bank — its structure IS the monitor
+                        //   grid — and on door/elevator faces, which are machined slabs;
+                        //   grooves would slice through the screens/leaves.)
+                        float3 tU = (abs(n.x) > abs(n.z)) ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+                        float2 ruv = float2(along, p.y);
+                        float panelLit = smoothstep(0.04, 0.12, abs(fract(along * 2.0) - 0.5))
+                                       * smoothstep(0.04, 0.12, abs(fract(p.y * 2.0) - 0.5));
+                        alb *= 0.5 + 0.5 * panelLit;                               // grooves recessed (darker)
+                        float ribLit = 1.0 - smoothstep(0.40, 0.50, abs(fract(along * 0.5) - 0.5));
+                        alb = mix(alb, alb * 1.45 + float3(0.05), ribLit * 0.5);   // ribs catch as proud steel
+                        float re = 0.03;
+                        float rdu = wallRelief(ruv + float2(re, 0.0)) - wallRelief(ruv - float2(re, 0.0));
+                        float rdv = wallRelief(ruv + float2(0.0, re)) - wallRelief(ruv - float2(0.0, re));
+                        n = normalize(n - (tU * rdu + float3(0.0, 1.0, 0.0) * rdv) * 0.85);   // relief shapes the normal
+                        n = bumpNormal(float2(along, p.y), n, tU, float3(0.0, 1.0, 0.0), 2.6, 0.12 * smoothstep(0.15, 0.55, rough));   // + fine grain
+                    }
+                    }   // !doorHit — generic wall path ends
                 } else if (dF <= dC) {                           // floor
                     int2 c = clamp(int2(floor(p.xz)), int2(0), dim - 1);
                     uint id = floorId.read(uint2(c)).r;
@@ -839,6 +918,31 @@ enum GPURaymarch {
         return lx && rx
     }
 
+    /// Through-axis centre of the ELEVATOR door plane: offset toward the open
+    /// (room) side, so the rest of the cell is the car interior. 0.5 when the
+    /// open side can't be determined (degrades to an ordinary centred door).
+    private static func elevatorPlane(_ map: GameMap, _ cx: Int, _ cy: Int, slideX: Bool) -> Float {
+        let (nx, ny) = slideX ? (cx, cy - 1) : (cx - 1, cy)       // lower-side neighbour on the through axis
+        let (px, py) = slideX ? (cx, cy + 1) : (cx + 1, cy)
+        let lowOpen  = map.inBounds(nx, ny) && map.wall[map.idx(nx, ny)] == 0
+        let highOpen = map.inBounds(px, py) && map.wall[map.idx(px, py)] == 0
+        if lowOpen == highOpen { return 0.5 }
+        return lowOpen ? 0.20 : 0.80
+    }
+
+    /// Pack the live doors for the kernel: (cellX, cellY, part 0…1,
+    /// flags bit0 = slides-along-x · bit1 = elevator). The kernel uses this for
+    /// leaf-anchored texture UVs, so each leaf's artwork rides its sliding panel.
+    static func packDoors(_ map: GameMap) -> [SIMD4<Float>] {
+        map.doors.map { (i, d) in
+            let cx = i % map.w, cy = i / map.w
+            let slideX = doorSlidesAlongX(map, cx, cy)
+            let part = min(1, d.open / GameMap.passThreshold)
+            let flags = (slideX ? 1 : 0) + ((i == map.exitCell || i == map.entryCell) ? 2 : 0)
+            return SIMD4(Float(cx), Float(cy), part, Float(flags))
+        }
+    }
+
     /// Distance (world units) from every sub-cell texel to the nearest wall.
     /// Doors are sampled at sub-cell resolution as CENTRE-SPLIT sliding panels: the
     /// parted gap (empty) grows from the cell centre out to the jambs as `open` →
@@ -866,7 +970,13 @@ enum GPURaymarch {
                     // moving). Solid only near the doorway plane (thin in the through
                     // axis) and only outside the parted centre gap, so a slim panel
                     // centre-splits and slides into the jambs while the wall stays put.
-                    solid = (abs(thruC - 0.5) < 0.14) && (abs(slideC - 0.5) >= 0.5 * part)
+                    // The ELEVATOR (the exit cell's door) offsets its plane to the
+                    // ROOM-side face: the cell interior behind the leaves becomes the
+                    // car — the marine steps through, stands clear of the plane, and
+                    // the doors close in front of his face for the ride down.
+                    let thruMid = (ci == map.exitCell || ci == map.entryCell)
+                        ? elevatorPlane(map, cx, cy, slideX: slideX) : 0.5
+                    solid = (abs(thruC - thruMid) < 0.14) && (abs(slideC - 0.5) >= 0.5 * part)
                 }
                 f[j * sw + i] = solid ? 0 : big
             }
@@ -1189,7 +1299,9 @@ enum GPURaymarch {
                     iBox(SIMD3(0, 0.185, -hl + 0.11), SIMD3(hw - 0.03, 0.034, 0.085), 0.03, pillow, 0.01),  // pillow at the head
                     iBox(SIMD3(0, 0.22, -hl - 0.01), SIMD3(hw + 0.02, 0.14, 0.02), 0.01, steel, 0.005)]     // headboard against the wall
         case .desk:                                            // office desk + still-powered terminal facing the room
-            let top = SIMD3<Float>(0.37, 0.38, 0.41), screen = SIMD3<Float>(0.42, 1.55, 1.25)
+            // screen = ARC amber phosphor (title-screen ratio 240:196:96), authored
+            // over-bright (lum ≈ 1.2, same as the old teal) so it self-glows.
+            let top = SIMD3<Float>(0.37, 0.38, 0.41), screen = SIMD3<Float>(1.45, 1.18, 0.58)
             return [iBox(SIMD3(0, 0.30, 0), SIMD3(0.36, 0.018, 0.19), 0.008, top, 0.005),                  // desk top
                     iBox(SIMD3(0, 0.15, -0.15), SIMD3(0.34, 0.15, 0.018), 0.004, top * 0.8, 0.005),        // modesty panel (wall side)
                     iBox(SIMD3(-0.30, 0.15, 0.13), SIMD3(0.025, 0.15, 0.025), 0.004, steel, d),            // front legs
