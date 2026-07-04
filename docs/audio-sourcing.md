@@ -65,10 +65,35 @@ room", "machinery rumble". Freesound CC0 + Sonniss are strongest here. If sourci
 four matched stems is hard, ship `bed_drone` first (the engine fades the others in
 only as you provide them; missing layers are just silent).
 
+**FILLED (all four)** — sector / pulse / airy / urgent from the SRG774 *Dark
+Sci-Fi Audio Pack* (one cohesive palette), loop-conditioned per below.
+
 ## Title theme
 
 - `music_title` — dark industrial, loopable, brooding (not melodic chiptune).
   Search "dark industrial loop", "sci-fi horror theme" on CC0/CC-BY sources.
+
+**FILLED** — *Derelict* (OGA CC0 - Dark Music), loop-conditioned per below.
+
+## Loop conditioning (required for anything the engine loops)
+
+The engine loops music/ambient stems as **whole buffers** (`scheduleBuffer(_,
+options: .loops)`) with **no engine-side crossfade**, so a stem must wrap
+seamlessly *in the file*. Raw tracks almost never do: MP3/Ogg sources carry
+leading encoder/authored silence and fade-out tails (the shipped beds once had
+up to 2.7 s of dead air at every wrap). Condition every looping stem with
+`docs/condition-loop.py` (stdlib + numpy):
+
+1. decode to WAV (`afconvert -f WAVE -d LEI16@44100 -c 2 in.ext out.wav`),
+2. `condition-loop.py in.wav out.wav <xfade-s> <search-s>` — trims silence and
+   authored fades (cut points derived from the RMS envelope), then equal-power
+   crossfades the tail into the head at an envelope-correlation-matched splice
+   (rhythmic material lands on its own beat grid automatically),
+3. encode AAC (`afconvert -f m4af -d aac -b 256000 -q 127 out.wav out.m4a`) —
+   AAC-in-m4a is CoreAudio-gapless (priming/remainder trimmed to the exact frame
+   count; bare MP3 is not), and verify the round-trip frame count matches.
+
+One-shots (SFX) don't loop and don't need any of this.
 
 ## Acceptance check
 

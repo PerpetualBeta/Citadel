@@ -11,8 +11,10 @@ HOW IT WORKS
 - Variations: drop  <base>1.<ext> , <base>2.<ext> … up to <base>4 and the game
   picks one at random per trigger (great for footsteps, hits, weapon shots).
 - Accepted extensions, in priority order: wav, caf, aiff, aif, m4a, mp3, ogg.
-  Prefer WAV or CAF (uncompressed) for one-shots; m4a/mp3/ogg are fine for the
-  long ambient/music loops. (macOS AVFoundation decodes Ogg Vorbis natively.)
+  Prefer WAV or CAF (uncompressed) for one-shots. LOOPING stems (bed_*,
+  music_title) must be loop-conditioned m4a — see docs/audio-sourcing.md;
+  bare MP3/Ogg decode with silent padding that punches a hole in every wrap.
+  (macOS AVFoundation decodes Ogg Vorbis natively.)
 
 - A CC0 STARTER SET (Kenney Sci-Fi Sounds, public domain) is bundled as the
   current placeholders — *.ogg files here. Replace any of them with your finals

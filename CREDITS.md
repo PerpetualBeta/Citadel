@@ -45,11 +45,19 @@ Ogrebane — *Monster Sound Effects 2* (<https://opengameart.org/content/monster
 | player_death | marine death cry | HaelDB Male Grunt/Yelling | yell10 |
 | wade, wade1 (L/R, alternating) | wading splash — flooded floors 7 & 8 | rubberduck 40 CC0 water splash/slime SFX | splash_12 / splash_14 |
 | bed_drone | ambient bed: room tone (always on) | SRG774 Dark Sci-Fi Audio Pack | sector |
-| bed_swarm | ambient bed: tension layer (fades in as the swarm nears) | SRG774 Dark Sci-Fi Audio Pack | urgent |
-| music_title | title-screen theme (loops; click-free, fades to a breath each cycle) | OpenGameArt CC0 - Dark Music | Derelict |
+| bed_pulse | ambient bed: slow machinery throb (grows with threat) | SRG774 Dark Sci-Fi Audio Pack | pulse |
+| bed_tension | ambient bed: eerie floating dissonance (high threat) | SRG774 Dark Sci-Fi Audio Pack | airy |
+| bed_swarm | ambient bed: peak layer (swarm near / Queen present) | SRG774 Dark Sci-Fi Audio Pack | urgent |
+| music_title | title-screen theme (seamless loop) | OpenGameArt CC0 - Dark Music | Derelict |
 
-The reactive bed currently has **two layers** (drone + swarm crossfaded by threat);
-`bed_pulse` / `bed_tension` are unfilled, so those layers are silent for now.
+The reactive bed is the full **four-layer** design (drone / pulse / tension / swarm,
+crossfaded by live threat). All four stems and the title theme are **loop-conditioned**
+from the originals — leading/trailing silence and authored fade-outs trimmed, then the
+tail equal-power-crossfaded into the head at an envelope-matched splice point — so each
+wraps seamlessly under the engine's whole-buffer looping (the pack author's own note says
+the raw tracks expect an engine-side crossfade, which Citadel deliberately doesn't do).
+Shipped as AAC (.m4a): unlike bare MP3, CoreAudio decodes it gapless to the exact frame
+count. Method + script: `docs/audio-sourcing.md` / `docs/condition-loop.py`.
 
 _Every sound above is now a real CC0 sample; the synth in AudioEngine.swift is only a safety
 fallback for a missing file. Drones HISS; the Queen SNARLS — a CC0 creature roar pitched

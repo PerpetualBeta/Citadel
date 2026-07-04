@@ -40,6 +40,14 @@ enum SmokeTest {
 
         // 2. game loop: run a world for a few seconds of simulated play
         let audio = AudioEngine()
+
+        // 2a0. the shipped sample set is complete: every logical sound decoded at
+        // least one file from Resources/Audio. The synth fallback makes a missing
+        // or broken asset inaudible as a failure, so assert it here instead.
+        let missing = Set(AudioEngine.Sound.allCases).subtracting(audio.sampledSounds)
+        check(missing.isEmpty,
+              missing.isEmpty ? "audio bank complete (all \(AudioEngine.Sound.allCases.count) sounds sampled)"
+                              : "audio bank missing: \(missing.map(\.base).sorted().joined(separator: ", "))")
         let input = InputState()
         let world = World(level: 2, colonyIndex: 0, seed: 4242)
         input.kb.forward = true

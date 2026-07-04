@@ -243,6 +243,11 @@ final class AudioEngine {
     /// True if at least the base drone layer is sampled (gates the reactive bed).
     private var hasSampleBeds: Bool { bank[.bedDrone] != nil }
 
+    /// Every logical sound that decoded at least one sample file. The smoke test
+    /// asserts this covers ALL cases — a missing or undecodable asset would
+    /// otherwise hide behind the synth fallback indefinitely.
+    var sampledSounds: Set<Sound> { Set(bank.keys) }
+
     // ── playback helpers ───────────────────────────────────────────────────────
     private func playOneShot(_ bufs: [AVAudioPCMBuffer], gain: Float) {
         guard engine.isRunning, let buf = bufs.randomElement() else { return }
