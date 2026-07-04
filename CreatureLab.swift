@@ -167,7 +167,33 @@ enum CreatureLab {
     /// trick (the floor clips the pool into a flat puddle). The 3-D SDF renderer
     /// has no such clip, so it passes decals: false — those become grotesque
     /// floating blobs otherwise.
-    static func deadShapes(_ base: [Shape], d: Float, gib: Bool, decals: Bool = true) -> [Shape] {
+    /// A corpse being consumed by fire: it must NEVER shrink like a deflating
+    /// balloon. Tissue burns from the outside in — thin extremities (claws,
+    /// fangs, pipes, tail tip) wither and vanish first, then the masses slump
+    /// to the deck, draw inward and FUSE (k rises) into a low charred mound.
+    /// Full scale throughout; the char colour ramp lives in packCreatures.
+    static func charShapes(_ base: [Shape], burn: Float) -> [Shape] {
+        guard burn > 0 else { return base }
+        let b = min(1, burn)
+        var out = [Shape]()
+        for s in base {
+            let thin = max(s.r1, s.r2) < 0.05
+            if thin && b > 0.35 { continue }                        // consumed
+            var a = s.a, bb = s.b
+            let slump = 1 - 0.8 * b
+            a.y = max(0.04, a.y * slump); bb.y = max(0.04, bb.y * slump)
+            a.x *= 1 - 0.35 * b; bb.x *= 1 - 0.35 * b               // caving toward the centreline
+            a.z *= 1 - 0.35 * b; bb.z *= 1 - 0.35 * b
+            var r1 = s.r1, r2 = s.r2
+            if thin { r1 *= 1 - b; r2 *= 1 - b }                    // withering before it vanishes
+            // k stays FIXED: raising the smooth-blend during the burn inflated the
+            // union (smin adds material between shapes) — the corpse visibly puffed
+            out.append(Shape(a: a, b: bb, r1: r1, r2: r2, col: s.col, k: s.k, sphere: s.sphere))
+        }
+        return out
+    }
+
+    static func deadShapes(_ base: [Shape], d: Float, gib: Bool, decals: Bool = true, sprawl: Float = 1) -> [Shape] {
         var cen = SIMD3<Float>(0, 0, 0)
         for s in base { cen += s.a }
         cen /= Float(max(1, base.count))
@@ -191,11 +217,14 @@ enum CreatureLab {
                 // modest — a violent topple flings tall parts sideways past the
                 // sprite frame, where the tile clips them into a hard straight edge.
                 func sink(_ p: SIMD3<Float>) -> SIMD3<Float> {
+                    // `sprawl` scales the sideways spread + topple: the drone keels
+                    // over (1); the rooted Queen only SLUMPS (≈0.15) — the generic
+                    // topple smeared her huge sac sideways into a balloon.
                     let droop = 1 - d * 0.62
-                    let topple = p.y * d * 0.24
-                    return SIMD3(p.x * (1 + d * 0.16) + topple,
+                    let topple = p.y * d * 0.24 * sprawl
+                    return SIMD3(p.x * (1 + d * 0.16 * sprawl) + topple,
                                  max(0.05, p.y * droop),
-                                 p.z * (1 + d * 0.20))
+                                 p.z * (1 + d * 0.20 * sprawl))
                 }
                 a = sink(s.a); b = sink(s.b)
                 r1 = s.r1 * (1 + d * 0.10); r2 = s.r2 * (1 + d * 0.10)
@@ -651,6 +680,18 @@ enum CreatureLab {
                 s.append(C(SIMD3(sx * 0.1, 1.42 + bob, 0.14), SIMD3(sx * 0.17, 1.62 + bob, 0.72), 0.05, 0.03, dark, 0.03))
                 s.append(C(SIMD3(sx * 0.2, 1.36 + bob, 0.14), SIMD3(sx * 0.29, 1.52 + bob, 0.66), 0.045, 0.026, dark, 0.03))
             }
+            // ── MUSCULATURE ── corded masses fused over the frame (smooth-blend k
+            //    melts them into the hide): trapezius cords into the neck, heavy
+            //    deltoids, biceps bulges, pectoral plates and haunch quads — the
+            //    drone reads as strung muscle under the chitin, not tubing.
+            for sx in [Float(-1), 1] {
+                s.append(C(SIMD3(sx * 0.16, 1.5 + bob, 0.06), SIMD3(0, 1.54 + bob, -0.16), 0.05, 0.03, carapace, 0.05))    // trapezius cord
+                s.append(S(SIMD3(sx * 0.25, 1.45 + bob, -0.01), 0.1, carapace, 0.05))                                       // deltoid mass
+                s.append(C(SIMD3(sx * 0.27, 1.4 + bob, -0.04), SIMD3(sx * 0.4, 1.1 + bob, -0.18), 0.075, 0.045, carapace, 0.05))   // biceps bulge
+                s.append(C(SIMD3(sx * 0.05, 1.3 + bob, -0.14), SIMD3(sx * 0.19, 1.24 + bob, -0.1), 0.065, 0.05, carapace, 0.045))  // pectoral plate
+                let kn = (sx > 0 ? g : -g) * 0.22
+                s.append(C(SIMD3(sx * 0.16, 0.94 + bob, 0.1), SIMD3(sx * 0.27, 0.62, -0.02 + kn * 0.7), 0.105, 0.06, carapace, 0.05))  // haunch quad
+            }
             // ── long spindly arms swinging to the floor, ending in raking claws ──
             for sx in [Float(-1), 1] {
                 let sw = (sx > 0 ? -g : g) * 0.06           // arms counter-swing to the legs
@@ -659,13 +700,21 @@ enum CreatureLab {
                 s.append(C(SIMD3(sx * 0.22, 1.44 + bob, 0.0), elbow, 0.05, 0.036, carapace))
                 let wrist = SIMD3(sx * 0.48, 0.38, -0.46 - lunge + sw)
                 s.append(C(elbow, wrist, 0.034, 0.024, carapace))
+                // a bone spur juts back off each elbow; a sinew cord rides the forearm
+                s.append(C(elbow, elbow + SIMD3(sx * 0.08, 0.1, 0.14), 0.02, 0.0, bone, 0.01))
+                s.append(C(elbow + SIMD3(sx * 0.015, 0, -0.02), wrist + SIMD3(sx * 0.015, 0.04, 0), 0.014, 0.01, dark, 0.015))
                 for f in 0..<4 { let o = Float(f) - 1.5; s.append(C(wrist, wrist + SIMD3(sx * 0.02 + o * 0.035, -0.22, -0.24), 0.016, 0.0, carapace, 0.012)) }
             }
             // ── neck + a long, low skull that THRUSTS forward at the prey ──
             s.append(C(SIMD3(0, 1.46 + bob, -0.14 - lunge), SIMD3(0, 1.5 + bob, -0.34 - lunge), 0.1, 0.1, carapace))   // neck
             // cranium = a low wedge driving forward, swept back into a crest (no dome)
-            s.append(C(SIMD3(0, 1.5 + bob, -0.54 - lunge), SIMD3(0, 1.64 + bob, 0.6 - lunge * 0.5), 0.135, 0.045, carapace, 0.08))   // upper skull → crest
-            s.append(C(SIMD3(0, 1.4 + bob, -0.64 - lunge), SIMD3(0, 1.5 + bob, 0.12 - lunge * 0.5), 0.105, 0.07, carapace, 0.06))    // lower skull, jutting forward
+            s.append(C(SIMD3(0, 1.5 + bob, -0.54 - lunge), SIMD3(0, 1.64 + bob, 0.6 - lunge * 0.5), 0.115, 0.04, carapace, 0.07))   // upper skull → crest (narrowed: no dome)
+            s.append(C(SIMD3(0, 1.4 + bob, -0.64 - lunge), SIMD3(0, 1.5 + bob, 0.12 - lunge * 0.5), 0.09, 0.06, carapace, 0.05))    // lower skull, jutting forward
+            // armored cheek plates sweep back from the muzzle — head-on the skull
+            // reads as a narrow bladed wedge, not a smooth dome
+            for sx in [Float(-1), 1] {
+                s.append(C(SIMD3(sx * 0.055, 1.5 + bob, -0.5 - lunge), SIMD3(sx * 0.14, 1.42 + bob, -0.12 - lunge * 0.5), 0.045, 0.02, dark, 0.03))
+            }
             s.append(C(SIMD3(0, 1.64 + bob, 0.42 - lunge * 0.5), SIMD3(0, 1.46 + bob, 1.12 - lunge * 0.5), 0.05, 0.0, carapace, 0.05))  // crest tip, swept back
             // a segmented sagittal crest — raised vertebral ridges down the skull, so
             // the head reads ribbed and predatory rather than a smooth shell
@@ -675,12 +724,15 @@ enum CreatureLab {
             for sx in [Float(-1), 1] { s.append(S(SIMD3(sx * 0.085, 1.43 + bob, -0.6 - lunge), 0.046, dark, 0.02)) }   // sunken sockets
             // ── a long lipless jaw + a wide GAPING maw, long interlocking fangs ──
             s.append(C(SIMD3(0, 1.42 + bob, -0.5 - lunge), SIMD3(0, 1.27 + bob, -0.84 - lunge), 0.105, 0.058, carapace))   // jaw, thrust forward-down
-            let mawR = 0.11 + atk * 0.07
-            s.append(S(SIMD3(0, 1.34 + bob, -0.74 - lunge), mawR, maw, 0.03))   // wide gaping mouth
-            for tt in 0..<6 {
-                let x = -0.078 + Float(tt) * 0.031
-                s.append(C(SIMD3(x, 1.41 + bob, -0.76 - lunge), SIMD3(x * 1.12, 1.29 + bob, -0.82 - lunge), 0.017, 0.0, bone, 0.006))        // long upper fang, curving in
-                s.append(C(SIMD3(x + 0.015, 1.25 + bob, -0.8 - lunge), SIMD3(x + 0.015, 1.37 + bob, -0.84 - lunge), 0.015, 0.0, bone, 0.006))  // long lower fang
+            let mawR = 0.085 + atk * 0.06
+            let mawDeep = SIMD3<Float>(16, 4, 6)
+            s.append(S(SIMD3(0, 1.34 + bob, -0.74 - lunge), mawR, mawDeep, 0.025))   // gaping mouth — near-black gullet, not a red ball
+            // needle fangs: thinner, duller bone, interlocking — a trap, not a grin
+            let fang = SIMD3<Float>(168, 156, 128)
+            for tt in 0..<7 {
+                let x = -0.075 + Float(tt) * 0.025
+                s.append(C(SIMD3(x, 1.41 + bob, -0.76 - lunge), SIMD3(x * 1.15, 1.28 + bob, -0.83 - lunge), 0.011, 0.0, fang, 0.005))        // upper needle, curving in
+                s.append(C(SIMD3(x + 0.012, 1.25 + bob, -0.8 - lunge), SIMD3(x + 0.012, 1.38 + bob, -0.85 - lunge), 0.009, 0.0, fang, 0.005))  // lower needle
             }
             // inner jaw — the xenomorph second mouth, lunges out on the strike
             let ij = -0.82 - lunge - atk * 0.2

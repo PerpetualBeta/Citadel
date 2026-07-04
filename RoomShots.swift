@@ -49,7 +49,10 @@ enum RoomShots {
             // line of sight) and stand back to frame it — the cleanest model check
             let world = World(level: 1, colonyIndex: 0, seed: seed)
             world.monsters = []; world.props = []; world.sockets = []
-            let target = world.player.pos
+            // the marine now STARTS inside the arrival car — stage in the room
+            let fwd0 = SIMD2<Float>(cos(world.player.dir), sin(world.player.dir))
+            world.player.pos += fwd0 * 1.6
+            let target = world.player.pos + fwd0 * 1.2
             world.drums = [Drum(pos: target, fuel: 150, health: 24)]
             func openLit(_ c: SIMD2<Float>) -> Bool {
                 let x = Int(c.x), y = Int(c.y)
@@ -120,6 +123,7 @@ enum RoomShots {
             world.monsters = []; world.drums = []; world.sockets = []; world.props = []
             world.player.current = .flamethrower
             world.player.ammo[AmmoType.fuel.rawValue] = 300
+            world.player.pos += SIMD2<Float>(cos(world.player.dir), sin(world.player.dir)) * 1.6   // step out of the car
             let sp = world.player.pos
             let dirs = [SIMD2<Float>(1, 0), SIMD2<Float>(-1, 0), SIMD2<Float>(0, 1), SIMD2<Float>(0, -1)]
             var aim = dirs[0], bestClear: Float = 0
@@ -243,6 +247,31 @@ enum RoomShots {
                     + "wall id \(m.wall[m.exitCell]), back id \(m.inBounds(back.0, back.1) ? m.wall[m.idx(back.0, back.1)] : -1))")
                 break elev
             }
+        }
+
+        // gib-remains view — the entrails a rocket kill leaves: gut ropes + small
+        // torn gobbets pressed low to the deck, NOT furniture-scale slabs
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 1)
+            world.monsters = []; world.drums = []; world.props = []
+            let fwd = SIMD2<Float>(cos(world.player.dir), sin(world.player.dir))
+            world.player.pos += fwd * 1.6                         // step out of the arrival car
+            let side = SIMD2<Float>(-fwd.y, fwd.x)
+            for off in [SIMD2<Float>(1.2, -0.4), SIMD2<Float>(1.8, 0.35)] {
+                let gp = world.player.pos + fwd * off.x + side * off.y
+                world.decals.append(SIMD4(gp.x, gp.y, 0.7, -2.85))
+                world.decals.append(SIMD4(gp.x + 0.4, gp.y - 0.3, 0.4, -2.6))
+                world.decals.append(SIMD4(gp.x - 0.2, gp.y + 0.4, 0.5, -0.8))
+            }
+            // …and a burned-out corpse's smoldering ash patch beside them
+            let ap = world.player.pos + fwd * 2.6 + side * 0.5
+            world.decals.append(SIMD4(ap.x, ap.y, 0.9, 2.9))
+            world.decals.append(SIMD4(ap.x, ap.y, 1.1, 0.95))
+            let canvas = Canvas2D()
+            _ = gpu.render(world, into: canvas)
+            n += 1
+            Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent("00k-gore.png"))
+            print("  wrote 00k-gore.png — gib remains (gut ropes + gobbets)")
         }
 
         // pickup view — pickups should SIT IN THE WORLD (room/headlamp-lit, faint rim),

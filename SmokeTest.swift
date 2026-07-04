@@ -58,6 +58,24 @@ enum SmokeTest {
                 if openN != 1 { sealedCars = false }
             }
             check(sealedCars, "L\(level) elevator cars are sealed boxes")
+            // …and their interiors are plain steel: no terminal bank (or other
+            // fixture) may ever be stamped into a car's back or jamb walls
+            var plainCars = true
+            for cell in [m.entryCell, m.exitCell] where cell >= 0 && m.doors[cell] != nil {
+                let cx0 = cell % m.w, cy0 = cell / m.w
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] where m.inBounds(cx0 + dx, cy0 + dy) {
+                    if m.wall[m.idx(cx0 + dx, cy0 + dy)] == WallTex.computer.rawValue { plainCars = false }
+                }
+            }
+            check(plainCars, "L\(level) no terminal banks inside the elevator cars")
+            // a routed wall pipe must never run across a terminal bank's face
+            var pipedBanks = 0
+            for y in 0..<m.h { for x in 0..<m.w where m.pipe[m.idx(x, y)] >= 0.5 && m.wall[m.idx(x, y)] == 0 {
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] where m.inBounds(x + dx, y + dy) {
+                    if m.wall[m.idx(x + dx, y + dy)] == WallTex.computer.rawValue { pipedBanks += 1 }
+                }
+            }}
+            check(pipedBanks == 0, "L\(level) no pipework across terminal banks")
             // count baked unlit floor — the headlamp's reason to exist
             for i in 0..<(m.w * m.h) where m.wall[i] == 0 && m.doors[i] == nil {
                 let c = m.lightColor[i]
@@ -65,6 +83,24 @@ enum SmokeTest {
             }
         }
         check(darkPockets > 0, "levels carry unlit pockets for the headlamp (\(darkPockets) dark cells)")
+
+        // the sealed-box invariant must hold across MANY seeds — later carving
+        // (secret closets, fuel stores) once punched hidden rooms into a car
+        var boxViolations = 0
+        for sd in UInt64(1)...40 {
+            let g2 = MapGen.generate(level: 3, colonyIndex: 0, seed: sd &* 733 &+ 7)
+            let mm = g2.map
+            for cell in [mm.entryCell, mm.exitCell] where cell >= 0 && mm.doors[cell] != nil {
+                let bx = cell % mm.w, by = cell / mm.w
+                var openN = 0
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] where mm.inBounds(bx + dx, by + dy) {
+                    let ni = mm.idx(bx + dx, by + dy)
+                    if mm.wall[ni] == 0 || mm.doors[ni] != nil { openN += 1 }
+                }
+                if openN != 1 { boxViolations += 1 }
+            }
+        }
+        check(boxViolations == 0, "elevator boxes stay sealed across a 40-seed sweep (\(boxViolations) violated)")
 
         // 2. game loop: run a world for a few seconds of simulated play
         let audio = AudioEngine()
@@ -125,6 +161,12 @@ enum SmokeTest {
             world.update(dt: 0.05, input: InputState(), audio: audio)
             check(world.killCount >= before, "kill accounting ran")
             check(world.decals.contains { $0.w < 0 }, "kill stamps a blood decal at the site")
+            // the explosive kill OBLITERATES the drone: gibbed, nothing to burn,
+            // never blocks the way, and the burst leaves organic debris behind
+            check(world.monsters[i].gibbed && world.monsters[i].burn >= 1, "rocket kill gibs the drone (no corpse to burn)")
+            check(world.decals.contains { $0.w < -2 }, "gibbing splatters offal decals")
+            for _ in 0..<40 { world.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+            check(GPURaymarch.poseShapes(world.monsters[i]).isEmpty, "a gibbed drone leaves no rendered corpse")
         }
 
         // 2b. flamethrower: standard issue, FINITE fuel, ignites + clears corpses
@@ -134,7 +176,8 @@ enum SmokeTest {
         check(fw.player.ammoCount(.fuel) > 0, "marine starts with fuel (\(fw.player.ammoCount(.fuel)))")
         if let mi = fw.monsters.firstIndex(where: { $0.alive }) {
             let cpos = fw.monsters[mi].pos
-            fw.projectiles.append(Projectile(pos: cpos, vel: .zero, kind: .rocket, damage: 999, fromPlayer: true, life: 0.01))
+            // plasma kill — an explosive kill now GIBS the drone and leaves no corpse
+            fw.projectiles.append(Projectile(pos: cpos, vel: .zero, kind: .plasma, damage: 999, fromPlayer: true, life: 0.01))
             for _ in 0..<40 { fw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }   // die → corpse
             check(fw.monsters.contains { $0.state == .dead }, "killed monster leaves a corpse")
             fw.player.pos = cpos + SIMD2<Float>(0.9, 0)
@@ -142,14 +185,26 @@ enum SmokeTest {
             fw.player.current = .flamethrower
             let burn = InputState(); burn.kb.fire = true
             var ignited = false
-            for _ in 0..<240 {
+            for _ in 0..<420 {
                 fw.update(dt: 1.0 / 60, input: burn, audio: audio)
                 if fw.monsters.contains(where: { $0.state == .dead && $0.burn > 0 }) { ignited = true }
                 if fw.monsters.contains(where: { $0.state == .dead && $0.burn >= 1 }) { break }
             }
             check(ignited, "flamethrower ignites the corpse")
             check(fw.monsters.contains { $0.state == .dead && $0.burn >= 1 }, "corpse burns to charred remains")
-            check(fw.decals.contains { $0.w > 0 }, "burned-out corpse stamps a scorch decal")
+            check(fw.decals.contains { $0.w > 0 && $0.w <= 1 }, "burned-out corpse stamps a scorch decal")
+            check(fw.decals.contains { $0.w > 2 }, "burned-out corpse stamps smoldering ash")
+            if let bi = fw.monsters.firstIndex(where: { $0.state == .dead && $0.burn >= 1 }) {
+                check(GPURaymarch.poseShapes(fw.monsters[bi]).isEmpty, "a burned-out corpse renders no solid remains")
+            }
+        }
+        // a drone KILLED BY FIRE ignites where it drops — no second pass needed
+        let iw = World(level: 1, colonyIndex: 0, seed: 137)
+        if let fi = iw.monsters.firstIndex(where: { $0.alive && $0.kind == .alien }) {
+            while iw.monsters[fi].alive { iw.damageMonsterForTest(fi, 60, audio: audio, kind: .fire) }
+            for _ in 0..<40 { iw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }   // dying → dead
+            check(iw.monsters[fi].state == .dead && iw.monsters[fi].burn > 0,
+                  "a flame kill self-ignites the corpse (burn \(String(format: "%.2f", iw.monsters[fi].burn)))")
         }
 
         // 2d. rubble debris built at battle-damage sites (across several levels)

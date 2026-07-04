@@ -274,6 +274,23 @@ final class GPUWorldRenderer {
         if world.map.entryCell >= 0, (world.map.doors[world.map.entryCell]?.open ?? 0) > 0.01 {
             out.append(cabin(world.map.entryCell, descending: false))
         }
+        // detonations flash the room — a fierce warm light decaying over 0.3s
+        for b in world.blasts {
+            let f = max(0, b.t / 0.3)
+            let rad: Float = 5.5
+            out.append(GPURaymarch.GPULight(posR: SIMD4(b.pos.x, 0.5, b.pos.y, 1 / (rad * rad)),
+                                            colI: SIMD4(1.0, 0.62, 0.28, 2.4 * f)))
+        }
+        // burning corpses cast a live orange firelight that builds and dies with
+        // the pyre — the room flickers while a body burns
+        for (i, m) in world.monsters.enumerated() where m.state == .dead && m.burn > 0 && m.burn < 1 {
+            let flare = sinf(m.burn * .pi)
+            let flick = 0.85 + 0.15 * sinf(world.elapsed * 13 + Float(i) * 1.7)
+            let rad: Float = 3.4
+            out.append(GPURaymarch.GPULight(posR: SIMD4(m.pos.x, 0.45, m.pos.y, 1 / (rad * rad)),
+                                            colI: SIMD4(1.0, 0.55, 0.22, (0.4 + 1.3 * flare) * flick)))
+            if out.count >= 14 { break }
+        }
         for pr in world.projectiles {
             let c: (Float, Float, Float), rad: Float, it: Float
             switch pr.kind {

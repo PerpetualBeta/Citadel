@@ -97,12 +97,15 @@ final class World {
     enum ElevatorPhase { case idle, boarding, awaitFire, closing, descending }
     var elevatorPhase: ElevatorPhase = .idle
     private var prevElevFire = false   // FIRE edge-latch for the descend prompt
+    private var entryOpenSounded = false, entryShutSounded = false
     private var elevatorT: Float = 0
     private let elevatorRideTime: Float = 2.6
     var rideShake: Float = 0          // 0…1 envelope, read by the renderer's camera
 
     private var rng: Rng
     private var hazardTimer: Float = 0
+    private var monsterHazardTimer: Float = 0
+    var blasts: [(pos: SIMD2<Float>, t: Float)] = []   // explosion flashes (renderer light)
     private var steamTimer: Float = 0
     private var sparkTimer: Float = 0
     // ── the Queen ──
@@ -271,6 +274,13 @@ final class World {
         if player.berserk > 0 { player.berserk = max(0, player.berserk - dt) }
         queenHintCD = max(0, queenHintCD - dt)
 
+        // the ARRIVAL car's leaves sound as they part on spawn and seal behind him
+        if map.entryCell >= 0, let ed = map.doors[map.entryCell] {
+            if !entryOpenSounded && ed.open > 0.02 { entryOpenSounded = true; audio.elevatorDoor(open: true) }
+            if entryOpenSounded && !entryShutSounded && !ed.opening && ed.open < GameMap.passThreshold * 0.6 {
+                entryShutSounded = true; audio.elevatorDoor(open: false)
+            }
+        }
         // doors (held open while something stands in them)
         var occupied = Set<Int>()
         // count EVERY cell the player's collision radius touches, so a door never
@@ -303,6 +313,16 @@ final class World {
         refuelAtDrums(dt: dt, audio: audio)
         rechargeAtSockets(dt: dt, audio: audio)
         hazardTick(dt: dt, audio: audio)
+        // the corpse-fire bed rides the nearest pyre: full roar beside a mid-burn
+        // blaze, silent once everything is ash (smolder whispers)
+        var burnIntensity: Float = 0
+        for m in monsters where m.state == .dead && m.burn > 0 && m.burn < 1 {
+            let flare = powf(sinf(m.burn * .pi), 0.6)
+            burnIntensity = max(burnIntensity, flare * max(0, 1 - vlen(m.pos - player.pos) / 9))
+        }
+        audio.burning(burnIntensity)                 // smoldering ash is SILENT — smoke, not fire
+        for bi in blasts.indices { blasts[bi].t -= dt }
+        blasts.removeAll { $0.t <= 0 }
         emitSteam(dt: dt)
         emitQueenDrips(dt: dt)
         emitSparks(dt: dt)
@@ -478,7 +498,7 @@ final class World {
         map.doors[map.exitCell]!.stay = 6
         elevatorPhase = .boarding
         message("ELEVATOR OPEN — STEP INSIDE")
-        audio.doorOpen()
+        audio.elevatorDoor(open: true)
     }
 
     /// The ride state machine: boarding (doors parted, waiting for the marine)
@@ -507,16 +527,19 @@ final class World {
                 elevatorPhase = .closing
                 map.doors[map.exitCell]!.opening = false
                 map.doors[map.exitCell]!.stay = 0
+                audio.elevatorDoor(open: false)
             }
         case .closing:
             if !inCar {                                       // stepped back out — reopen
                 map.doors[map.exitCell]!.opening = true
                 map.doors[map.exitCell]!.stay = 3
                 elevatorPhase = .boarding
+                audio.elevatorDoor(open: true)
             } else if d.open <= 0.02 {
                 elevatorPhase = .descending
                 elevatorT = 0
                 message("DESCENDING…")
+                audio.elevatorMove(true)
                 // the winch takes up + the car drops: a long low rumble under a
                 // sub-bass fall — synthesised, so no asset is needed for a one-off
                 audio.trigger(wave: AudioEngine.noise, f0: 1, dur: elevatorRideTime, amp: 0.30, attack: 0.25)
@@ -531,6 +554,7 @@ final class World {
             if elevatorT >= elevatorRideTime {
                 rideShake = 0
                 elevatorPhase = .idle
+                audio.elevatorMove(false)                     // the winch stops WITH the car
                 completeLevel(audio: audio)
             }
         }
@@ -634,8 +658,9 @@ final class World {
             if d > def.range || d < 0.0001 { continue }
             let nd = rel / d
             if nd.x * dir.x + nd.y * dir.y < cosHalf { continue }   // outside the cone
+            guard lineOfSight(player.pos, monsters[i].pos) else { continue }   // fire doesn't cook through walls
             if monsters[i].alive { damageMonster(i, def.damage, audio: audio, kind: .fire) }
-            else if monsters[i].state == .dead { monsters[i].burn = max(monsters[i].burn, 0.06) }   // light it up (and commits a downed Queen to ash)
+            else if monsters[i].state == .dead && !monsters[i].gibbed && !monsters[i].dissolving { monsters[i].burn = max(monsters[i].burn, 0.06) }   // light it up (and commits a downed Queen to ash)
         }
         // playing the flame over a drum cooks it off — torch one across the room
         for di in drums.indices where drums[di].health > 0 {
@@ -646,23 +671,47 @@ final class World {
             if nd.x * dir.x + nd.y * dir.y < cosHalf { continue }
             damageDrum(di, def.damage, audio: audio)
         }
-        // a coherent JET of flame — overlapping fire particles seeded along the WHOLE
-        // aim, from the nozzle out to the cone's reach: tight + white-hot at the
-        // nozzle, broadening and cooling downrange. Re-seeded densely every tick so it
-        // reads as one continuous stream, not the scattered puffs it threw before.
-        for _ in 0..<18 {
-            let t = rng.f(0, 1)                                     // fraction along the jet (0 nozzle … 1 tip)
-            let widen = def.spread * (0.15 + 0.85 * t)             // narrow at the nozzle, opening downrange
-            let a = player.dir + rng.f(-widen, widen)
+        // ── the JET ── a PRESSURISED stream of burning fuel: every droplet is
+        // born AT THE NOZZLE with real velocity down the aim — ignited as it
+        // leaves (the age ramp runs white-hot → orange → deep red → smoke while
+        // each droplet flies), drooping slightly as burning fuel does. The
+        // stream is clipped by the first wall, where the fuel SPLASHES into
+        // licking flame instead of passing through.
+        let nozzle = player.pos + dir * 0.35
+        var wallD = def.range
+        var probe = nozzle, travelled: Float = 0
+        while travelled < def.range {
+            probe += dir * 0.15; travelled += 0.15
+            if map.blocksMovement(Int(probe.x), Int(probe.y)) { wallD = travelled; break }
+        }
+        // Density × life × alpha is the additive-glow budget: these droplets live
+        // ~2× as long as the old puffs (they must fly the whole stream), so the
+        // count and alpha come DOWN to compensate — a readable core of flame, not
+        // a screen-filling whiteout at close range.
+        for _ in 0..<9 {
+            let a = player.dir + rng.f(-def.spread * 0.35, def.spread * 0.35)
             let fdir = SIMD2<Float>(cos(a), sin(a))
-            let dist = 0.3 + t * (def.range - 0.3)
-            let jit: Float = 0.03 + 0.06 * t
-            let o = player.pos + fdir * dist + SIMD2(rng.f(-jit, jit), rng.f(-jit, jit))
-            particles.append(Particle(pos: o,
-                                      vel: fdir * (5.0 - 3.0 * t),                  // fast at the nozzle, easing downrange
-                                      life: rng.f(0.10, 0.22), maxLife: 0.22, color: 0,
-                                      size: 6 + 16 * t, height: 0.30 + 0.34 * t, rise: 0.3 + 0.5 * t,
-                                      maxAlpha: 0.9, fire: true))
+            let speed = rng.f(8.5, 12.0)
+            let life = min((wallD - 0.1) / speed, rng.f(0.30, 0.46))
+            particles.append(Particle(pos: nozzle + SIMD2(rng.f(-0.04, 0.04), rng.f(-0.04, 0.04)),
+                                      vel: fdir * speed,
+                                      life: life, maxLife: 0.46, color: 0,
+                                      size: rng.f(5, 10), height: 0.38 + rng.f(-0.03, 0.03),
+                                      rise: rng.f(-0.22, 0.06),
+                                      maxAlpha: 0.55, fire: true))
+        }
+        particles.append(Particle(pos: nozzle, vel: dir * rng.f(2, 4) + SIMD2(rng.f(-0.5, 0.5), rng.f(-0.5, 0.5)),
+                                  life: rng.f(0.05, 0.12), maxLife: 0.12, color: packRGBA(255, 240, 190),
+                                  size: 1.5, height: 0.4, rise: 0, maxAlpha: 1, fire: true))   // nozzle ignition glint
+        if wallD < def.range {   // fuel splashing and climbing the wall it hits
+            let hit = nozzle + dir * (wallD - 0.2)
+            for _ in 0..<3 {
+                particles.append(Particle(pos: hit + SIMD2(rng.f(-0.15, 0.15), rng.f(-0.15, 0.15)),
+                                          vel: SIMD2(rng.f(-0.9, 0.9), rng.f(-0.9, 0.9)) - dir * rng.f(0.4, 1.2),
+                                          life: rng.f(0.25, 0.5), maxLife: 0.5, color: 0,
+                                          size: rng.f(8, 13), height: rng.f(0.1, 0.5), rise: rng.f(0.5, 1.1),
+                                          maxAlpha: 0.5, fire: true))
+            }
         }
         if particles.count > 700 { particles.removeFirst(particles.count - 700) }
     }
@@ -734,6 +783,11 @@ final class World {
         return true
     }
 
+    /// Smoke-test hook: deliver a typed hit without a projectile round-trip.
+    func damageMonsterForTest(_ i: Int, _ amt: Int, audio: AudioEngine, kind: DamageKind) {
+        damageMonster(i, amt, audio: audio, kind: kind)
+    }
+
     private func damageMonster(_ i: Int, _ amt: Int, audio: AudioEngine, kind: DamageKind = .generic) {
         var m = monsters[i]
         if !m.alive { return }
@@ -766,6 +820,43 @@ final class World {
             spawnParticles(at: m.pos, n: 14, color: packRGBA(200, 20, 20), spread: 3.2, life: 0.5)
             addDecal(m.pos, radius: m.def.radius * 1.7 + 0.28, w: -0.85)   // blood pool at the kill site
             audio.monsterDeath(m.kind)
+            if kind == .explosive && m.kind == .alien {
+                // OBLITERATED — the blast tears the drone apart: the death pose is
+                // the gib burst (chunks flying), blood sheets out, entrails splatter
+                // the room as persistent organic debris + satellite splats — and
+                // there is no corpse left to burn; the way is already clear.
+                m.gibbed = true
+                m.burn = 1
+                spawnParticles(at: m.pos, n: 80, color: packRGBA(160, 18, 16), spread: 6.5, life: 0.8)
+                spawnParticles(at: m.pos, n: 32, color: packRGBA(96, 12, 12), spread: 4.2, life: 1.1)
+                for _ in 0..<10 {                              // heavier chunks arcing out
+                    let a = rng.f(0, 6.2832), sp = rng.f(1.5, 4.5)
+                    particles.append(Particle(pos: m.pos, vel: SIMD2(cos(a) * sp, sin(a) * sp),
+                                              life: rng.f(0.5, 0.9), maxLife: 0.9, color: packRGBA(120, 16, 14),
+                                              size: rng.f(3.5, 6.5), height: rng.f(0.2, 0.5), rise: rng.f(-0.8, -0.3),
+                                              maxAlpha: 1))
+                }
+                for _ in 0..<6 {
+                    let a = rng.f(0, 6.2832), r = rng.f(0.4, 1.8)
+                    addDecal(m.pos + SIMD2(cos(a) * r, sin(a) * r), radius: rng.f(0.3, 0.65), w: -0.7)
+                }
+                // entrails as OFFAL DECALS (w < -2): chunky strewn-meat masks on
+                // the deck — flat, so they read right at any scale (solids for
+                // gore rendered as glossy furniture)
+                addDecal(m.pos, radius: rng.f(0.6, 0.9), w: -2.85)
+                for _ in 0..<4 {
+                    let a = rng.f(0, 6.2832), r = rng.f(0.35, 1.2)
+                    addDecal(m.pos + SIMD2(cos(a) * r, sin(a) * r), radius: rng.f(0.3, 0.55), w: -rng.f(2.5, 2.9))
+                }
+            } else if !m.gibbed && map.hazard[map.idx(Int(m.pos.x), Int(m.pos.y))] {
+                // it died IN the acid: the pool takes the body — it sinks and
+                // dissolves (no floating corpse, nothing to burn)
+                m.dissolving = true
+            } else if kind == .fire {
+                // torched alive: the drone drops and IGNITES where it stands — it
+                // burns straight down to char without a second flamethrower pass
+                m.burn = max(m.burn, 0.06)
+            }
             if m.kind == .queen { m.revive = queenReviveWindow; message("THE QUEEN IS DOWN — BURN THE BODY, NOW!") }
         } else {
             if rng.chance(m.def.painChance) { m.state = .pain; m.stateTime = 0.2 }
@@ -838,28 +929,94 @@ final class World {
         let fast: Float = FeatureFlags.fastMonsters ? 1.6 : 1
         for i in monsters.indices {
             var m = monsters[i]
-            m.animTime += dt
+            // the walk cycle advances with DISTANCE COVERED (steerMove adds it), so
+            // feet stop sliding and the stride matches travel; this is just a slow
+            // idle breathe. The rooted Queen keeps full-rate animation — her idle
+            // writhe IS her menace.
+            m.animTime += dt * (m.kind == .queen ? 1.0 : 0.15)
             m.painFlash = max(0, m.painFlash - dt)
             if m.state == .dead {
-                if m.burn > 0 && m.burn < 1 {                       // a corpse set alight, burning down
-                    let nb = min(1, m.burn + dt * 0.5)
+                if m.dissolving {                                    // the pool eats the body
+                    m.dissolveT += dt
+                    if m.dissolveT >= 1.8 { m.burn = 1 }             // gone — nothing blocks, nothing to burn
+                    else if rng.chance(0.5) {                        // caustic boil around the sinking corpse
+                        particles.append(Particle(pos: m.pos + SIMD2(rng.f(-0.3, 0.3), rng.f(-0.3, 0.3)),
+                                                  vel: SIMD2(rng.f(-0.05, 0.05), rng.f(-0.05, 0.05)),
+                                                  life: rng.f(0.3, 0.7), maxLife: 0.7, color: packRGBA(120, 220, 90),
+                                                  size: rng.f(2, 5), height: rng.f(0.0, 0.1), rise: rng.f(0.2, 0.5),
+                                                  maxAlpha: 0.7))
+                    }
+                    monsters[i] = m; continue
+                }
+                if m.burn > 0 && m.burn < 1 {                       // a corpse set alight — the PYRE
+                    let nb = min(1, m.burn + dt * 0.35)
+                    // the ash bed goes down EARLY, under cover of the blaze, so when
+                    // the flames thin the remains are simply already there — there is
+                    // never a visible corpse→ash swap
+                    if m.burn < 0.5 && nb >= 0.5 {
+                        addDecal(m.pos, radius: m.def.radius * 2.0 + 0.34, w: 0.95)   // scorch
+                        addDecal(m.pos, radius: m.def.radius * 1.5 + 0.26, w: 2.9)    // smoldering ash + embers
+                    }
                     if nb >= 1 {
-                        addDecal(m.pos, radius: m.def.radius * 2.0 + 0.34, w: 0.95)   // scorch where it burned out
+                        m.smolder = 10
                         if m.kind == .queen { message("THE QUEEN IS ASHES — THE WAY IS OPEN") }
                     }
                     m.burn = nb
-                    if rng.chance(0.7) {
-                        let jit = SIMD2<Float>(rng.f(-0.32, 0.32), rng.f(-0.32, 0.32))
-                        if rng.f(0, 1) < 0.4 {                       // dark smoke curling up
-                            particles.append(Particle(pos: m.pos + jit, vel: SIMD2(rng.f(-0.08, 0.08), rng.f(-0.08, 0.08)),
-                                                      life: rng.f(0.7, 1.2), maxLife: 1.2, color: packRGBA(70, 64, 60),
-                                                      size: rng.f(11, 19), height: rng.f(0.25, 0.7), rise: rng.f(0.7, 1.3), maxAlpha: 0.4))
-                        } else {                                     // flame licking off the corpse
+                    // emission follows a BELL over the burn: it catches, RAGES at the
+                    // midpoint (a fireball that swallows the body while it burns away),
+                    // then thins into smoke and embers over the revealed ash
+                    // a WIDE peak (pow < 1 flattens the bell) + a guaranteed dense
+                    // core right over the body through the whole consumption window,
+                    // so the burn-away is never visible through a thin flame
+                    let flare = powf(sinf(m.burn * .pi), 0.6)
+                    let rad = m.def.radius
+                    var nFire = Int(flare * 5); if rng.chance(0.4 + flare) { nFire += 1 }
+                    for _ in 0..<nFire {
+                        let jit = SIMD2<Float>(rng.f(-rad, rad), rng.f(-rad, rad)) * 0.9
+                        particles.append(Particle(pos: m.pos + jit, vel: SIMD2(rng.f(-0.15, 0.15), rng.f(-0.15, 0.15)),
+                                                  life: rng.f(0.3, 0.7), maxLife: 0.7, color: 0,
+                                                  size: rng.f(10, 15 + 14 * flare), height: rng.f(0.02, 0.3 + 0.5 * flare),
+                                                  rise: rng.f(0.5, 1.2), maxAlpha: 0.85, fire: true))
+                    }
+                    if m.burn > 0.3 && m.burn < 0.95 {
+                        for _ in 0..<2 {
+                            let jit = SIMD2<Float>(rng.f(-rad, rad), rng.f(-rad, rad)) * 0.4
                             particles.append(Particle(pos: m.pos + jit, vel: SIMD2(rng.f(-0.1, 0.1), rng.f(-0.1, 0.1)),
-                                                      life: rng.f(0.35, 0.75), maxLife: 0.75, color: 0,
-                                                      size: rng.f(9, 15), height: rng.f(0.05, 0.45), rise: rng.f(0.6, 1.1),
-                                                      maxAlpha: 0.8, fire: true))
+                                                      life: rng.f(0.35, 0.7), maxLife: 0.7, color: 0,
+                                                      size: rng.f(14, 26), height: rng.f(0.05, 0.55),
+                                                      rise: rng.f(0.4, 1.0), maxAlpha: 0.9, fire: true))
                         }
+                    }
+                    if rng.chance(0.25 + 0.5 * max(0, m.burn - 0.5)) {   // smoke thickens as the fire dies
+                        particles.append(Particle(pos: m.pos + SIMD2(rng.f(-0.32, 0.32), rng.f(-0.32, 0.32)),
+                                                  vel: SIMD2(rng.f(-0.08, 0.08), rng.f(-0.08, 0.08)),
+                                                  life: rng.f(0.7, 1.3), maxLife: 1.3, color: packRGBA(70, 64, 60),
+                                                  size: rng.f(11, 20), height: rng.f(0.25, 0.7), rise: rng.f(0.7, 1.3), maxAlpha: 0.4))
+                    }
+                    if rng.chance(0.12) {                        // embers popping off
+                        particles.append(Particle(pos: m.pos + SIMD2(rng.f(-0.25, 0.25), rng.f(-0.25, 0.25)),
+                                                  vel: SIMD2(rng.f(-0.4, 0.4), rng.f(-0.4, 0.4)),
+                                                  life: rng.f(0.2, 0.5), maxLife: 0.5, color: packRGBA(255, 180, 80),
+                                                  size: 1.4, height: rng.f(0.05, 0.4), rise: rng.f(0.8, 1.6), maxAlpha: 1, fire: true))
+                    }
+                    if particles.count > 700 { particles.removeFirst(particles.count - 700) }
+                }
+                if m.burn >= 1 && m.smolder > 0 {              // the ash smolders on
+                    m.smolder = max(0, m.smolder - dt)
+                    let inten = m.smolder / 10
+                    if rng.chance(0.22 * inten) {
+                        particles.append(Particle(pos: m.pos + SIMD2(rng.f(-0.3, 0.3), rng.f(-0.3, 0.3)),
+                                                  vel: SIMD2(rng.f(-0.05, 0.05), rng.f(-0.05, 0.05)),
+                                                  life: rng.f(0.9, 1.6), maxLife: 1.6, color: packRGBA(64, 60, 58),
+                                                  size: rng.f(8, 14), height: rng.f(0.04, 0.2), rise: rng.f(0.5, 0.9),
+                                                  maxAlpha: 0.3 * inten))
+                    }
+                    if rng.chance(0.05 * inten) {
+                        particles.append(Particle(pos: m.pos + SIMD2(rng.f(-0.25, 0.25), rng.f(-0.25, 0.25)),
+                                                  vel: SIMD2(rng.f(-0.3, 0.3), rng.f(-0.3, 0.3)),
+                                                  life: rng.f(0.2, 0.45), maxLife: 0.45, color: packRGBA(255, 170, 70),
+                                                  size: 1.3, height: rng.f(0.02, 0.15), rise: rng.f(0.6, 1.2),
+                                                  maxAlpha: 1, fire: true))
                     }
                 }
                 // a downed Queen who hasn't been set alight claws her way back up
@@ -1030,6 +1187,8 @@ final class World {
     private func steerMove(_ m: inout Monster, desired: SIMD2<Float>, dt: Float, fast: Float, speedScale: Float) {
         let dl = vlen(desired)
         if dl < 0.001 { return }
+        let strideFrom = m.pos                       // walk cycle advances with ground actually covered
+        defer { m.animTime += vlen(m.pos - strideFrom) * 1.8 }
         let dir = desired / dl
         let speed = m.def.speed * fast * speedScale * dt
         let r = m.def.radius
@@ -1037,6 +1196,10 @@ final class World {
         func free(_ x: Float, _ y: Float) -> Bool {
             if blockedBySolidProp(x, y, r) { return false }                  // furniture/drums are solid for aliens too
             if m.def.flying { return !map.blocksMovement(Int(x), Int(y)) }   // flyers ignore hazard, not walls
+            // the pools burn THEM too: a drone treats acid as a wall and routes
+            // around it — unless it's already standing in one (it must climb out)
+            if map.inBounds(Int(x), Int(y)), map.hazard[map.idx(Int(x), Int(y))],
+               !map.hazard[map.idx(Int(m.pos.x), Int(m.pos.y))] { return false }
             return !map.blocksMovement(Int(x - r), Int(y - r)) && !map.blocksMovement(Int(x + r), Int(y + r))
                 && !map.blocksMovement(Int(x - r), Int(y + r)) && !map.blocksMovement(Int(x + r), Int(y - r))
         }
@@ -1118,6 +1281,25 @@ final class World {
 
     private func explode(at pos: SIMD2<Float>, radius: Float, damage: Int, fromPlayer: Bool, audio: AudioEngine) {
         spawnParticles(at: pos, n: 24, color: packRGBA(255, 150, 60), spread: 4.5, life: 0.5)
+        // a real DETONATION: a fireball that blooms and rises, a smoke plume that
+        // outlives it, and a flash of light thrown across the room (gatherDynLights)
+        blasts.append((pos, 0.3))
+        for _ in 0..<14 {
+            let a = rng.f(0, 6.2832), sp = rng.f(0.8, 3.0)
+            particles.append(Particle(pos: pos + SIMD2(rng.f(-0.25, 0.25), rng.f(-0.25, 0.25)),
+                                      vel: SIMD2(cos(a) * sp, sin(a) * sp),
+                                      life: rng.f(0.25, 0.55), maxLife: 0.55, color: 0,
+                                      size: rng.f(12, 26), height: rng.f(0.1, 0.6), rise: rng.f(0.4, 1.1),
+                                      maxAlpha: 0.9, fire: true))
+        }
+        for _ in 0..<8 {
+            particles.append(Particle(pos: pos + SIMD2(rng.f(-0.3, 0.3), rng.f(-0.3, 0.3)),
+                                      vel: SIMD2(rng.f(-0.2, 0.2), rng.f(-0.2, 0.2)),
+                                      life: rng.f(1.0, 1.8), maxLife: 1.8, color: packRGBA(58, 54, 52),
+                                      size: rng.f(14, 24), height: rng.f(0.2, 0.7), rise: rng.f(0.8, 1.4),
+                                      maxAlpha: 0.45))
+        }
+        if particles.count > 700 { particles.removeFirst(particles.count - 700) }
         audio.explosion()
         for i in monsters.indices where monsters[i].alive {
             let d = vlen(monsters[i].pos - pos)
@@ -1363,6 +1545,16 @@ final class World {
         if onHazard && hazardTimer <= 0 {
             hazardTimer = 0.45
             damagePlayer(5, audio: audio, armorBypass: true)
+        }
+        // the pools are as caustic to the swarm as to the marine
+        monsterHazardTimer -= dt
+        if monsterHazardTimer <= 0 {
+            monsterHazardTimer = 0.45
+            for i in monsters.indices where monsters[i].alive {
+                if map.hazard[map.idx(Int(monsters[i].pos.x), Int(monsters[i].pos.y))] {
+                    damageMonster(i, 5, audio: audio, kind: .generic)
+                }
+            }
         }
     }
 

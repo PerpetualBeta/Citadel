@@ -25,7 +25,7 @@ struct Texture {
 enum WallTex: Int, CaseIterable {
     case none = 0
     case ironPlate, brushedSteel, steelPanel, litPanel, ribbedSteel, pipework, glass, stone, stoneSteel, computer, hazard
-    case doorPanel, doorRed, doorBlue, doorYellow, exitSwitch, doorHazard
+    case doorPanel, doorRed, doorBlue, doorYellow, exitSwitch, doorHazard, elevatorSealed
 }
 enum FlatTex: Int, CaseIterable {
     case concrete = 0, metalFloor, grate, nukage, ceilTech, ceilDark, ceilStone, rock, blood
@@ -377,49 +377,61 @@ final class Textures {
             }
 
         case .exitSwitch:
-            // The colony ELEVATOR — a centre-split pair of freight leaves (the
-            // cell has a real DoorState; the kernel's leaf-anchored UVs make each
-            // half ride its panel). Replaces the old wall-spanning green panel +
-            // giant chevrons. Dark steel body (below the kernel's emissive mask)
-            // so only each leaf's green status lamp glows.
-            for y in 0..<s { for x in 0..<s {
-                // vertical brushed grain, dark machined steel
-                let grain = Int((fbm(Float(x) / 5, Float(y) / 46, 16, 9) - 0.5) * 14)
-                var r = 70 + grain, g = 73 + grain, b = 82 + grain
-                // outer frame groove + inner highlight
-                if x < 10 || x > s - 11 || y < 10 || y > s - 11 { r -= 34; g -= 34; b -= 34 }
-                if x == 10 || y == 10 { r += 22; g += 22; b += 22 }
-                // kick plate along the bottom
-                if y > s - 34 { r -= 18; g -= 18; b -= 16 }
-                // meeting gap + mirrored hazard-stripe safety edges on each leaf
-                let seam = abs(x - s / 2)
-                if seam < 2 { r = 12; g = 13; b = 16 }
-                else if seam < 12 {
-                    if ((y + seam) / 12) % 2 == 0 { r = 128; g = 106; b = 28 }      // worn amber stripe
-                    else { r = 26; g = 26; b = 30 }
-                }
-                set(x, y, rgb(r, g, b))
-            }}
-            for leaf in 0..<2 {                                                     // per-leaf furniture (mirrored)
-                let cx = leaf == 0 ? s / 4 : s * 3 / 4
-                // etched DOWN chevron pair, mid-leaf — dim, reads as engraving
-                for c in 0..<2 { for d in 0..<18 { for th in 0..<3 {
-                    let y = s / 2 + c * 26 + d / 2 + th
-                    set(cx - 18 + d, y, rgb(38, 96, 56)); set(cx + 18 - d, y, rgb(38, 96, 56))
-                }}}
-                // green status lamp near the top — the one element that GLOWS
-                for j in -7...7 { for i in -7...7 where i * i + j * j <= 49 {
-                    let edge = i * i + j * j > 30
-                    set(cx + i, s / 6 + j, edge ? rgb(30, 70, 40) : rgb(96, 235, 128))
-                }}
-                // vent slits above the kick plate
-                for row in 0..<3 { for x in (cx - 22)...(cx + 22) where x % 3 != 0 {
-                    set(x, s - 48 + row * 5, rgb(30, 31, 36))
-                }}
-            }
+            // the DESCENDER — green go-lamps + down-chevrons (shared leaf bones
+            // in elevatorLeaves; the arrival car below reads visibly different)
+            elevatorLeaves(set, s, sealed: false)
+
+        case .elevatorSealed:
+            // the ARRIVAL car — red standby pips + crossed SEALED bars: this
+            // lift only came DOWN; the shaft above is closed. Distinct at a
+            // glance from the descender that leaves the floor.
+            elevatorLeaves(set, s, sealed: true)
         }
         if reliefOn { applyRelief(&px, s, reliefStrength(wall: tex)) }
         return Texture(size: s, pixels: px)
+    }
+
+    /// Shared freight-elevator leaves: dark brushed steel, frame groove, kick
+    /// plate, hazard-striped meeting edges, vents — with per-role furniture:
+    /// the descender gets green go-lamps + down-chevrons; the sealed arrival
+    /// car gets red standby pips + crossed bars.
+    private func elevatorLeaves(_ set: (Int, Int, UInt32) -> Void, _ s: Int, sealed: Bool) {
+        for y in 0..<s { for x in 0..<s {
+            let grain = Int((fbm(Float(x) / 5, Float(y) / 46, 16, 9) - 0.5) * 14)
+            var r = 70 + grain, g = 73 + grain, b = 82 + grain
+            if x < 10 || x > s - 11 || y < 10 || y > s - 11 { r -= 34; g -= 34; b -= 34 }
+            if x == 10 || y == 10 { r += 22; g += 22; b += 22 }
+            if y > s - 34 { r -= 18; g -= 18; b -= 16 }
+            let seam = abs(x - s / 2)
+            if seam < 2 { r = 12; g = 13; b = 16 }
+            else if seam < 12 {
+                if ((y + seam) / 12) % 2 == 0 { r = 128; g = 106; b = 28 }
+                else { r = 26; g = 26; b = 30 }
+            }
+            set(x, y, rgb(r, g, b))
+        }}
+        for leaf in 0..<2 {
+            let cx = leaf == 0 ? s / 4 : s * 3 / 4
+            if sealed {
+                for d in -26...26 { for th in 0..<4 {                       // crossed SEALED bars
+                    set(cx + d, s / 2 + d + th, rgb(96, 34, 30))
+                    set(cx + d, s / 2 - d + th, rgb(96, 34, 30))
+                }}
+            } else {
+                for c in 0..<2 { for d in 0..<18 { for th in 0..<3 {        // etched DOWN chevrons
+                    let y = s / 2 + c * 26 + d / 2 + th
+                    set(cx - 18 + d, y, rgb(38, 96, 56)); set(cx + 18 - d, y, rgb(38, 96, 56))
+                }}}
+            }
+            for j in -7...7 { for i in -7...7 where i * i + j * j <= 49 {   // status lamp
+                let edge = i * i + j * j > 30
+                if sealed { set(cx + i, s / 6 + j, edge ? rgb(52, 20, 18) : rgb(190, 54, 40)) }
+                else { set(cx + i, s / 6 + j, edge ? rgb(30, 70, 40) : rgb(96, 235, 128)) }
+            }}
+            for row in 0..<3 { for x in (cx - 22)...(cx + 22) where x % 3 != 0 {   // vents
+                set(x, s - 48 + row * 5, rgb(30, 31, 36))
+            }}
+        }
     }
 
     // ── directional relief (top-lit emboss baked from luminance) ────────────────
@@ -455,6 +467,7 @@ final class Textures {
         case .steelPanel: return 1.0
         case .pipework: return 1.0
         case .doorPanel, .doorRed, .doorBlue, .doorYellow, .doorHazard: return 0.9
+        case .elevatorSealed: return 0.8
         case .exitSwitch: return 0.8
         case .brushedSteel, .litPanel: return 0.7
         case .hazard: return 0.6

@@ -168,7 +168,7 @@ enum MapGen {
         if let site = elevatorSite(map, room: start) {
             let i = site.cell
             let wx = i % map.w, wy = i / map.w
-            map.wall[i] = WallTex.exitSwitch.rawValue
+            map.wall[i] = WallTex.elevatorSealed.rawValue
             map.doors[i] = DoorState()
             map.entryCell = i
             map.playerStart = SIMD2<Float>(Float(wx) + 0.5, Float(wy) + 0.5)
@@ -227,7 +227,7 @@ enum MapGen {
 
         // ── secret closet with loot (hidden door textured like the wall) ──
         var secretCount = 0
-        if let (doorCell, lootCell) = carveSecret(map, rooms: rooms, rng: &rng, theme: th), doorClear(map, doorCell) {
+        if let (doorCell, lootCell) = carveSecret(map, rooms: rooms, rng: &rng, theme: th) {
             map.doors[doorCell] = DoorState(secret: true)
             secretCount = 1
             // loot placed below in item pass via secretLoot
@@ -318,9 +318,12 @@ enum MapGen {
                     let wi = map.idx(wx, wy), fi = map.idx(fx, fy)
                     // only plain structural wall converts (never a door, the exit
                     // switch, the fuel store's hazard plating, or another bank),
-                    // and the room cell in front must be open so the bank shows
+                    // the room cell in front must be open so the bank shows — and
+                    // never the walls of an elevator car: a lift lined with ARC
+                    // terminals reads absurd from inside
                     guard map.wall[wi] >= WallTex.ironPlate.rawValue, map.wall[wi] <= WallTex.stoneSteel.rawValue,
-                          map.doors[wi] == nil, map.wall[fi] == 0, map.doors[fi] == nil else { ok = false; break }
+                          map.doors[wi] == nil, map.wall[fi] == 0, map.doors[fi] == nil,
+                          !nearElevator(map, wx, wy) else { ok = false; break }
                     cells.append(wi)
                 }
                 guard ok, !cells.isEmpty else { continue }
@@ -380,6 +383,16 @@ enum MapGen {
         return nil
     }
 
+    /// True within one cell (Chebyshev) of either elevator car. NOTHING may carve
+    /// or open there — a secret closet or fuel chamber that touches the car
+    /// punches a hidden room into what must stay a sealed box.
+    private static func nearElevator(_ map: GameMap, _ x: Int, _ y: Int) -> Bool {
+        for cell in [map.entryCell, map.exitCell] where cell >= 0 {
+            if abs(x - cell % map.w) <= 1 && abs(y - cell / map.w) <= 1 { return true }
+        }
+        return false
+    }
+
     /// No door may sit in a cell 4-adjacent to another door: the leaves slide
     /// INTO the jambs, so side-by-side doors are mechanically impossible (there
     /// is no wall for either leaf to retract into) — and they read absurd.
@@ -416,6 +429,10 @@ enum MapGen {
             let closet = map.idx(dx + 1, dy)
             if map.wall[map.idx(dx - 1, dy)] != 0 { continue }   // need open room cell in front
             if map.wall[doorCell] == 0 || map.wall[closet] == 0 { continue }
+            // ALL validation happens BEFORE the carve (a rejected carve must leave
+            // no hole): never beside another door, never touching an elevator car
+            if !doorClear(map, doorCell) { continue }
+            if nearElevator(map, dx, dy) || nearElevator(map, dx + 1, dy) { continue }
             // doorCell stays SOLID with its existing wall texture (hidden); only
             // the closet behind is hollowed. The secret DoorState is added by the
             // caller, so USE reveals it and it slides up like the wall it mimics.
@@ -456,9 +473,10 @@ enum MapGen {
                 let cx = door.0 + outward.0 * d + perp.0 * w
                 let cy = door.1 + outward.1 * d + perp.1 * w
                 if cx < 1 || cy < 1 || cx >= map.w - 1 || cy >= map.h - 1 || map.wall[map.idx(cx, cy)] == 0 { ok = false }
+                if nearElevator(map, cx, cy) { ok = false }        // never dig into a car's box
                 chamber.append((cx, cy))
             } }
-            if !ok { continue }
+            if !ok || nearElevator(map, door.0, door.1) { continue }
             let dCell = map.idx(door.0, door.1)
             // the door must sit IN a wall — solid on both flanks — never a free-standing
             // hazard pillar in the open
@@ -875,6 +893,7 @@ enum MapGen {
                     let ni = map.idx(nx, ny)
                     if isOpeningCell(ni) { clear = false }                                  // a 2-cell buffer round any door / the exit
                     else if max(abs(dx), abs(dy)) == 1 && map.wall[ni] == 0 && roomOf[ni] != ri { clear = false }  // 1 cell off a room-mouth
+                    else if max(abs(dx), abs(dy)) == 1 && map.wall[ni] == WallTex.computer.rawValue { clear = false }  // a pipe never flows ACROSS a terminal bank
                 } }
                 if clear { map.pipe[i] = 1 }
             } }

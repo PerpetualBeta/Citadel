@@ -263,7 +263,18 @@ struct SpriteCompositor {
         let screenX = Int(Float(W) / 2 * (1 + tX / tY))
         let screenY = horizon + Int(lineFull * 0.5) - Int(lineFull * pa.height)
         if screenX < 0 || screenX >= W || tY >= c.zbuffer[screenX] { return }
-        let r = max(1, Int(lineFull * 0.05 * pa.size))
+        // CAP + STRIDE: a soft particle right at the camera used to project to a
+        // radius of THOUSANDS of pixels, and this loop is O(r²) CPU pixel blends —
+        // one close flame could demand tens of millions of read-modify-writes and
+        // the frame rate collapsed near any pyre. The radius caps at a QUARTER of
+        // the view (a flame can still fill the screen when tongues overlap), and
+        // big glows draw alternate ROWS at doubled weight — exact integrated
+        // energy, and the scanline dither vanishes inside the additive stack.
+        // (The first cut capped at viewH/8 with under-weighted dither and the
+        // fire looked pathetic — this keeps the drama at ~1/6 the worst cost.)
+        let r = max(1, min(Int(lineFull * 0.05 * pa.size), viewH / 4))
+        let stride = r > 56 ? 2 : 1
+        let weight: Float = stride == 2 ? 2.0 : 1.0
         let lifeF = max(0, min(1, pa.life / pa.maxLife))
         if pa.fire {
             if pa.color == 0 {
@@ -274,13 +285,18 @@ struct SpriteCompositor {
                 if age < 0.25 { col = mixRGBA(packRGBA(255, 250, 210), packRGBA(255, 196, 70), age / 0.25) }
                 else if age < 0.6 { col = mixRGBA(packRGBA(255, 196, 70), packRGBA(232, 96, 26), (age - 0.25) / 0.35) }
                 else { col = mixRGBA(packRGBA(232, 96, 26), packRGBA(60, 46, 44), (age - 0.6) / 0.4) }
-                let glow = (1 - age) * pa.maxAlpha
-                for oy in -r...r { for ox in -r...r {
-                    let d2 = ox * ox + oy * oy
-                    if d2 > r * r { continue }
-                    let fall = 1 - Float(d2).squareRoot() / Float(r)
-                    c.blendAdd(screenX + ox, screenY + oy, col, glow * fall * fall)
-                }}
+                let glow = (1 - age) * pa.maxAlpha * weight
+                var oy = -r
+                while oy <= r {
+                    for ox in -r...r {
+                        let d2 = ox * ox + oy * oy
+                        if d2 <= r * r {
+                            let fall = 1 - Float(d2).squareRoot() / Float(r)
+                            c.blendAdd(screenX + ox, screenY + oy, col, glow * fall * fall)
+                        }
+                    }
+                    oy += stride
+                }
             } else {
                 // spark: a sharp, tiny, bright glint (1–2px, flat additive — NOT a
                 // soft orb) with a short streak trailing its arc through the air
@@ -295,12 +311,21 @@ struct SpriteCompositor {
             }
             return
         }
-        let a = lifeF * pa.maxAlpha
-        for oy in -r...r { for ox in -r...r {            // soft round puff (radial alpha falloff)
-            let d2 = ox * ox + oy * oy
-            if d2 > r * r { continue }
-            let fall = 1 - Float(d2).squareRoot() / Float(r)
-            c.blend(screenX + ox, screenY + oy, pa.color, a * fall * fall)
-        }}
+        let a = lifeF * pa.maxAlpha * weight
+        var oy2 = -r
+        while oy2 <= r {
+            for ox2 in -r...r {
+                puffPixel(pa, c, screenX, screenY, ox2, oy2, r, a)
+            }
+            oy2 += stride
+        }
+        return
+    }
+    @inline(__always) private func puffPixel(_ pa: Particle, _ c: Canvas2D, _ screenX: Int, _ screenY: Int,
+                                             _ ox: Int, _ oy: Int, _ r: Int, _ a: Float) {
+        let d2 = ox * ox + oy * oy
+        if d2 > r * r { return }
+        let fall = 1 - Float(d2).squareRoot() / Float(r)
+        c.blend(screenX + ox, screenY + oy, pa.color, a * fall * fall)
     }
 }

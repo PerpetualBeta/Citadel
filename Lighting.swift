@@ -78,6 +78,7 @@ enum Lighting {
         case .computer:   return LSpec(color: SIMD3(1.00, 0.74, 0.38), intensity: 1.3, radius: 5.5, shadow: false)  // amber terminal wash (ARC phosphor; oranger than the yellow key-door so they never read alike)
         case .glass:      return LSpec(color: SIMD3(0.52, 0.86, 1.00), intensity: 1.1, radius: 5.5, shadow: false)  // backlit cyan
         case .exitSwitch: return LSpec(color: SIMD3(0.45, 1.00, 0.55), intensity: 1.4, radius: 6.0, shadow: true)   // green beacon (leads to the exit)
+        case .elevatorSealed: return LSpec(color: SIMD3(1.00, 0.30, 0.24), intensity: 0.5, radius: 3.0, shadow: false)  // dead-car red standby
         case .doorRed:    return LSpec(color: SIMD3(1.00, 0.32, 0.28), intensity: 1.3, radius: 4.5, shadow: false)
         case .doorBlue:   return LSpec(color: SIMD3(0.40, 0.55, 1.00), intensity: 1.3, radius: 4.5, shadow: false)
         case .doorYellow: return LSpec(color: SIMD3(1.00, 0.85, 0.32), intensity: 1.3, radius: 4.5, shadow: false)
@@ -144,6 +145,7 @@ enum Lighting {
         case .computer:   return Source(color: SIMD3(1.00, 0.74, 0.38), reach: 7.0, power: 0.95)
         case .glass:      return Source(color: SIMD3(0.52, 0.86, 1.00), reach: 7.5, power: 0.90)
         case .exitSwitch: return Source(color: SIMD3(0.45, 1.00, 0.55), reach: 9.0, power: 1.15)  // beckons toward the exit
+        case .elevatorSealed: return Source(color: SIMD3(1.00, 0.30, 0.24), reach: 4.0, power: 0.35)
         case .doorRed:    return Source(color: SIMD3(1.00, 0.32, 0.28), reach: 5.5, power: 0.72)
         case .doorBlue:   return Source(color: SIMD3(0.40, 0.55, 1.00), reach: 5.5, power: 0.72)
         case .doorYellow: return Source(color: SIMD3(1.00, 0.85, 0.32), reach: 5.5, power: 0.72)

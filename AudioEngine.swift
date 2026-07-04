@@ -39,6 +39,7 @@ final class AudioEngine {
         case droneDeath, queenDeath
         case explosion, doorOpen, locked, pickup, secret, exit, playerPain, playerDeath, wade
         case musicTitle, bedDrone, bedPulse, bedTension, bedSwarm
+        case elevatorMove, elevatorDoor, elevatorShut
 
         var base: String {
             switch self {
@@ -63,6 +64,9 @@ final class AudioEngine {
             case .bedPulse: return "bed_pulse"
             case .bedTension: return "bed_tension"
             case .bedSwarm: return "bed_swarm"
+            case .elevatorMove: return "elevator_move"
+            case .elevatorDoor: return "elevator_door"
+            case .elevatorShut: return "elevator_shut"
             }
         }
         // bus: 0 music, 1 sfx, 2 ambient.
@@ -81,6 +85,8 @@ final class AudioEngine {
             case .queenDeath, .queenSnarl: return 0.95
             case .plasma, .droneDeath, .exit: return 0.9
             case .flamethrower: return 0.55
+            case .elevatorMove: return 0.45
+            case .elevatorDoor, .elevatorShut: return 0.85
             case .wade: return 0.5
             default: return 0.8
             }
@@ -99,6 +105,10 @@ final class AudioEngine {
     private var loopNodes: [Sound: AVAudioPlayerNode] = [:]   // one node per looping stem
     private let flameNode = AVAudioPlayerNode()               // the flamethrower's continuous roar (SFX bus)
     private var flameOn = false
+    private let elevatorNode = AVAudioPlayerNode()            // the winch hum — loops during the ride, stops on arrival
+    private var elevatorOn = false
+    private let burnNode = AVAudioPlayerNode()                // corpse-fire crackle bed — volume rides the nearest pyre
+    private var burnOn = false
     private let queenSnarlNode = AVAudioPlayerNode()          // dedicated Queen-snarl voice → pitch shifter
     private let queenPitch = AVAudioUnitTimePitch()           // pitches her snarls DOWN + varies them, per utterance
     // Queen-snarl pitch manipulation — she's a VAST broodmother, so each snarl is
@@ -160,6 +170,8 @@ final class AudioEngine {
         sfxPool = (0..<12).map { _ in AVAudioPlayerNode() }
         for n in sfxPool { engine.attach(n); engine.connect(n, to: sfxMix, format: canonical) }
         engine.attach(flameNode); engine.connect(flameNode, to: sfxMix, format: canonical)
+        engine.attach(elevatorNode); engine.connect(elevatorNode, to: sfxMix, format: canonical)
+        engine.attach(burnNode); engine.connect(burnNode, to: sfxMix, format: canonical)
         // the Queen's snarl runs through a time-pitch unit so it can be dropped and
         // varied per utterance (she's a giant): node → pitch → SFX bus.
         engine.attach(queenSnarlNode); engine.attach(queenPitch)
@@ -267,7 +279,7 @@ final class AudioEngine {
         return true
     }
 
-    private func stopAllLoops() { for (_, n) in loopNodes { n.stop() }; flameNode.stop(); flameOn = false }
+    private func stopAllLoops() { for (_, n) in loopNodes { n.stop() }; flameNode.stop(); flameOn = false; elevatorNode.stop(); elevatorOn = false; burnNode.stop(); burnOn = false }
     private func setLoopVol(_ s: Sound, _ v: Float) { loopNodes[s]?.volume = max(0, v) }
 
     /// The flamethrower's continuous roar: a looped 5-second stem on the SFX bus that
@@ -342,6 +354,44 @@ final class AudioEngine {
         if !queenSnarlNode.isPlaying { queenSnarlNode.play() }
     }
     func explosion()   { play(.explosion)   { self.synthExplosion() } }
+    /// The freight elevator: heavy hydraulic leaves + the winch's low hum on
+    /// descent (a LOOP on its own node so it stops the instant the car does;
+    /// the synth sub-bass rumble plays beneath it).
+    func elevatorDoor(open: Bool) { play(open ? .elevatorDoor : .elevatorShut) { self.synthDoorOpen() } }
+    /// The corpse-fire bed IS the flamethrower's roar, boosted — one fire, one
+    /// voice: the same thruster loop the weapon plays, but driven louder by the
+    /// nearest pyre so a burning body RAGES (the weapon itself sits at 0.55).
+    func burning(_ intensity: Float) {
+        let on = intensity > 0.01
+        if on != burnOn {
+            burnOn = on
+            if on, engine.isRunning, let buf = bank[.flamethrower]?.first {
+                burnNode.stop()
+                burnNode.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+                burnNode.play()
+            } else {
+                burnNode.stop()
+            }
+        }
+        // purely proportional — the roar diminishes exactly as the fire loses
+        // its ferocity (the intensity bell falls to 0 at burn-out; a floor here
+        // made the sound drone past the flames and then cut off hard)
+        if on { burnNode.volume = min(1, intensity * 1.15) }
+    }
+
+    func elevatorMove(_ on: Bool) {
+        guard on != elevatorOn else { return }
+        elevatorOn = on
+        guard engine.isRunning else { return }
+        if on, let buf = bank[.elevatorMove]?.first {
+            elevatorNode.stop()
+            elevatorNode.volume = Sound.elevatorMove.gain
+            elevatorNode.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+            elevatorNode.play()
+        } else {
+            elevatorNode.stop()
+        }
+    }
     func doorOpen()    { play(.doorOpen)    { self.synthDoorOpen() } }
     func locked()      { play(.locked)      { self.synthLocked() } }
     func pickup()      { play(.pickup)      { self.synthPickup() } }
@@ -523,8 +573,8 @@ final class AudioEngine {
 
     /// Legacy shim kept for compatibility.
     func trigger(wave: Int, f0: Float, f1: Float? = nil, dur: Float, amp: Float,
-                 attack: Float = 0.004, drive: Float = 1, bus: Int = 1) {
-        add(wave, f0, f1 ?? f0, dur, amp, attack: attack, bus: bus)
+                 attack: Float = 0.004, drive: Float = 1, bus: Int = 1, lp: Float = 1) {
+        add(wave, f0, f1 ?? f0, dur, amp, attack: attack, lp: lp, bus: bus)
     }
 
     private func note(_ m: Int) -> Float { 440 * powf(2, Float(m - 69) / 12) }

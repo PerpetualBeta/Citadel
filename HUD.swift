@@ -15,10 +15,70 @@ struct HUD {
     func draw(_ world: World, into c: Canvas2D) {
         drawFlashes(world, c)
         drawArcWatermark(c)
+        drawTracker(world, c)
         drawViewmodel(world, c)
         drawCrosshair(c)
         drawMessages(world, c)
         drawStatusBar(world, c)
+    }
+
+    /// The MOTION TRACKER — an Aliens-style scope, bottom-left above the bar:
+    /// the marine at centre, forward = up, awake drones as green phosphor blips
+    /// that brighten as they close, the live Queen as a fat red return. This is
+    /// the direction-finder for the swarm you can hear but can't see.
+    private func drawTracker(_ world: World, _ c: Canvas2D) {
+        let R = uiS(52)
+        let cx = uiS(74), cy = viewH - uiS(74)
+        let range: Float = 14
+        let p = world.player
+        // scope face — dark translucent disc + rings + cross
+        for oy in -R...R { for ox in -R...R {
+            let d2 = ox * ox + oy * oy
+            if d2 > R * R { continue }
+            c.blend(cx + ox, cy + oy, packRGBA(4, 14, 8), 0.55)
+        }}
+        for ring in [R, R * 2 / 3, R / 3] {
+            var a: Float = 0
+            while a < 6.2832 {
+                c.blend(cx + Int(cosf(a) * Float(ring)), cy + Int(sinf(a) * Float(ring)), packRGBA(40, 110, 62), 0.5)
+                a += 0.55 / Float(ring)
+            }
+        }
+        for d in -R...R { c.blend(cx + d, cy, packRGBA(30, 80, 46), 0.25); c.blend(cx, cy + d, packRGBA(30, 80, 46), 0.25) }
+        // a slow radial sweep, phosphor-fading — pure dressing, but it sells it
+        let swA = world.elapsed * 2.4
+        for tail in 0..<14 {
+            let a = swA - Float(tail) * 0.05
+            let fade = (1 - Float(tail) / 14) * 0.35
+            var rr: Float = 4
+            while rr < Float(R) {
+                c.blend(cx + Int(cosf(a) * rr), cy - Int(sinf(a) * rr), packRGBA(60, 170, 96), fade)
+                rr += 1
+            }
+        }
+        // blips — rotated into scope space (forward = up)
+        let fwd = SIMD2<Float>(cosf(p.dir), sinf(p.dir))
+        let right = SIMD2<Float>(-fwd.y, fwd.x)
+        let scale = Float(R - 4) / range
+        for m in world.monsters where m.alive {
+            if m.kind != .queen && !m.awake { continue }        // the tracker reads MOTION
+            let rel = m.pos - p.pos
+            let d = vlen(rel)
+            if d > range { continue }
+            let bx = cx + Int((rel.x * right.x + rel.y * right.y) * scale)
+            let by = cy - Int((rel.x * fwd.x + rel.y * fwd.y) * scale)
+            let near = 1 - d / range
+            let pulse = 0.7 + 0.3 * sinf(world.elapsed * 6 + d)
+            let br = m.kind == .queen ? 4 : 2
+            let col = m.kind == .queen ? packRGBA(255, 70, 50) : packRGBA(110, 255, 140)
+            for oy in -br...br { for ox in -br...br {
+                if ox * ox + oy * oy > br * br { continue }
+                c.blend(bx + ox, by + oy, col, (0.45 + 0.55 * near) * pulse)
+            }}
+        }
+        // the marine — a steady centre dot
+        for oy in -1...1 { for ox in -1...1 { c.blend(cx + ox, cy + oy, packRGBA(220, 245, 225), 0.9) } }
+        c.label("TRACKER", cx - uiS(24), cy + R + uiS(6), size: uiSf(10), color: packRGBA(70, 160, 96), weight: .semibold)
     }
 
     private func drawFlashes(_ world: World, _ c: Canvas2D) {

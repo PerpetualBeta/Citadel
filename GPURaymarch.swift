@@ -165,6 +165,7 @@ enum GPURaymarch {
         if (id == 16u) return 1.05;
         if (id == 10u) return 0.60;
         if (id == 13u || id == 14u || id == 15u || id == 17u) return 0.45;
+        if (id == 18u) return 0.5;
         return 0.0;
     }
     static inline float flatEmissive(uint id) { return id == 3u ? 0.85 : 0.0; }
@@ -228,7 +229,7 @@ enum GPURaymarch {
             case 8u:  return float2(0.92, 0.00);   // hewn rock — matte
             case 9u:  return float2(0.66, 0.35);   // rock + steel struts
             case 10u: return float2(0.50, 0.20);   // computer banks — screens
-            case 12u: case 13u: case 14u: case 15u: case 17u: return float2(0.50, 0.50);  // blast doors — painted steel
+            case 12u: case 13u: case 14u: case 15u: case 17u: case 18u: return float2(0.50, 0.50);  // blast doors — painted steel
             case 16u: return float2(0.50, 0.45);   // exit switch panel
             default:  return float2(0.58, 0.50);   // iron plate / steel panel / lit panel / hazard — grimy iron
         }
@@ -445,6 +446,10 @@ enum GPURaymarch {
                     float lum = dot(alb, float3(0.299, 0.587, 0.114));
                     emis = smoothstep(1.0, 1.45, lum) * 2.4;                        // only the powered screen pushes past 1 → glows
                 }
+                // ground-contact AO on the OBJECT side: grounded bulk darkens toward
+                // the deck (the floor discs below do the other half) — without this
+                // a lit base rim floats everything visually
+                if (!isItem && !isProj) alb *= 0.55 + 0.45 * smoothstep(0.0, 0.18, p.y);
                 if (isDrum) {                                    // weathered industrial barrel — rusty, ribbed, matte
                     rough = 0.86; metal = 0.20;
                     float3 rust = float3(0.34, 0.15, 0.07);
@@ -518,7 +523,7 @@ enum GPURaymarch {
                     uint idc = wallId.read(uint2(cc)).r;
                     int nDoors = int(U.extra.w);
                     bool doorHit = false;
-                    if (idc >= 12u && idc <= 17u && nDoors > 0) {
+                    if (idc >= 12u && idc <= 18u && nDoors > 0) {
                         float part = 0.0, dflags = -1.0;
                         for (int di = 0; di < nDoors; di++) {
                             if (int(doorsB[di].x) == cc.x && int(doorsB[di].y) == cc.y) {
@@ -590,7 +595,7 @@ enum GPURaymarch {
                     // material + micro-relief — a grimy-iron sheen, with grain
                     // breaking up the highlight (was flat, matte, light-frozen)
                     float2 wm = wallMaterial(id); rough = wm.x; metal = wm.y;
-                    if (id != 10u && (id < 12u || id > 17u)) {
+                    if (id != 10u && (id < 12u || id > 18u)) {
                         // ── structural depth ── recessed bulkhead panels + raised steel
                         //   ribs: grooves read darker (recessed), ribs as brighter steel,
                         //   and the normal follows the relief so the flat wall has DEPTH.
@@ -659,6 +664,31 @@ enum GPURaymarch {
                     // located damage — blood at exact kill sites, scorch under
                     // corpses that burned out (a runtime world-space decal channel,
                     // stamped by gameplay events rather than baked from the cell hash)
+                    // ── CONTACT SHADOWS ── the grid-only AO can't see the SDF
+                    //   objects, so lit floor ran straight under drums / props /
+                    //   corpses and they all read as FLOATING. A soft occlusion
+                    //   disc under each object's bulk plants everything on the
+                    //   deck. Objects hovering above the floor (bobbing pickups,
+                    //   projectiles) shadow proportionally less.
+                    // (distance-gated: this is O(floor pixels × objects) and it was
+                    // measurably heating the GPU — contact shadows are unreadable
+                    // beyond ~14 units anyway, and a cheap box-reject skips the
+                    // maths for every object that isn't near this pixel)
+                    if (t < 14.0) {
+                        for (int mi = 0; mi < nMon; mi++) {
+                            GMonster mm = mons[mi];
+                            // a CONTACT shadow hugs the footprint — wide discs read as
+                            // the shadow of something hovering, the opposite of the goal
+                            float groundR = mm.b.z * mm.a.w * 0.55;
+                            float2 dxz = p.xz - mm.a.xy;
+                            if (abs(dxz.x) > groundR || abs(dxz.y) > groundR) continue;
+                            float dr2 = dot(dxz, dxz) / max(groundR * groundR, 0.0025);
+                            if (dr2 >= 1.0) continue;
+                            float dr = sqrt(dr2);
+                            float hover = clamp(1.0 - mm.c.y * 2.0, 0.0, 1.0);
+                            alb *= 1.0 - 0.6 * hover * (1.0 - dr) * (1.0 - dr);
+                        }
+                    }
                     int nD = int(U.extra.x);
                     if (nD > 0 && id != 2u && id != 3u && id != 8u) {
                         float dn = 0.5 + 0.5 * fbm2(p.xz * 3.3 + 5.0);          // one irregular-edge sample, shared
@@ -668,9 +698,36 @@ enum GPURaymarch {
                             if (rr >= 1.0) continue;
                             float edge = 1.0 - smoothstep(0.15, 1.0, rr);
                             float fall = edge * (0.62 + 0.38 * dn);             // solid core, noise erodes the rim
-                            if (dc.w >= 0.0) alb *= 1.0 - 0.93 * fall * dc.w;    // scorch → charred black
-                            else { float b = clamp(fall * (-dc.w) * 1.1, 0.0, 1.0);   // blood → dark wet pool
+                            if (dc.w > 2.0) {
+                                // SMOLDERING ASH (strength w−2) — a burned-out corpse:
+                                // chunky charcoal patches, live embers glowing in the
+                                // thickest lumps and flickering as they die. Flat — the
+                                // marine walks straight over what's left.
+                                float st = clamp(dc.w - 2.0, 0.0, 1.0);
+                                float lump = vnoise2(p.xz * 26.0);
+                                float ash = smoothstep(0.45, 0.70, lump) * fall * st;
+                                alb = mix(alb, float3(0.07, 0.065, 0.06), min(1.0, ash * 1.8));
+                                float fleck = smoothstep(0.80, 0.95, lump) * fall * st;
+                                float glowT = 0.55 + 0.45 * sin(time * 2.3 + lump * 37.0);
+                                alb = mix(alb, float3(0.9, 0.35, 0.08), fleck * glowT * 0.8);
+                                emis += fleck * glowT * 0.5;
+                            }
+                            else if (dc.w >= 0.0) alb *= 1.0 - 0.93 * fall * dc.w;    // scorch → charred black
+                            else if (dc.w > -2.0) { float b = clamp(fall * (-dc.w) * 1.1, 0.0, 1.0);   // blood → dark wet pool
                                    alb = mix(alb, float3(0.13, 0.014, 0.011), b); }
+                            else {
+                                // OFFAL (w < -2, strength = -(w+2)) — a gibbed drone's
+                                // remains as a CHUNKY mask: noise cells read as strewn
+                                // meat lumps, the thickest glisten wet. Flat geometry,
+                                // so it reads right at any scale and angle — solids for
+                                // gore kept rendering as furniture.
+                                float st = clamp(-(dc.w + 2.0), 0.0, 1.0);
+                                float lump = vnoise2(p.xz * 22.0);
+                                float meat = smoothstep(0.55, 0.75, lump) * fall * st;
+                                alb = mix(alb, float3(0.30, 0.035, 0.03), min(1.0, meat * 1.7));
+                                float glisten = smoothstep(0.74, 0.92, lump) * fall * st;
+                                alb = mix(alb, float3(0.52, 0.10, 0.08), glisten);
+                            }
                         }
                     }
                 } else {                                         // ceiling + recessed lamp housings
@@ -1021,8 +1078,32 @@ enum GPURaymarch {
     static func poseShapes(_ m: Monster) -> [CreatureLab.Shape] {
         let cdef = MonsterBake.cdef(m.kind)
         switch m.state {
-        case .dead:   return CreatureLab.deadShapes(cdef.build(0, 0), d: 1, gib: false, decals: false)
-        case .dying:  return CreatureLab.deadShapes(cdef.build(0, 0), d: min(1, m.stateTime / 0.5), gib: false, decals: false)
+        case .dead:
+            if m.gibbed { return [] }                    // obliterated — only the splatter remains
+            if m.dissolving {
+                // the pool takes the body: it SINKS below the deck as the acid eats
+                // it (rays hit the floor plane first, so the sunken bulk vanishes)
+                if m.dissolveT >= 1.8 { return [] }
+                let corpse = CreatureLab.deadShapes(cdef.build(0, 0), d: 1, gib: false, decals: false,
+                                                    sprawl: m.kind == .queen ? 0.15 : 1)
+                let sink = (m.dissolveT / 1.8) * 0.9
+                return corpse.map { sh in
+                    var c = sh; c.a.y -= sink; c.b.y -= sink; return c
+                }
+            }
+            // the body is fully consumed MID-BLAZE (0.7), while the pyre is at its
+            // peak — the fireball hides the hand-off to the ash bed stamped beneath,
+            // so there is never a visible swap
+            if m.burn >= 0.7 { return [] }
+            let corpse = CreatureLab.deadShapes(cdef.build(0, 0), d: 1, gib: false, decals: false,
+                                                sprawl: m.kind == .queen ? 0.15 : 1)
+            return m.burn > 0 ? CreatureLab.charShapes(corpse, burn: m.burn / 0.7) : corpse
+        case .dying:
+            // a gibbed drone's death anim IS the burst — chunks flying apart. The
+            // rooted Queen slumps in place (sprawl low): the generic topple smeared
+            // her huge birthing sac into a balloon.
+            return CreatureLab.deadShapes(cdef.build(0, 0), d: min(1, m.stateTime / 0.5), gib: m.gibbed, decals: false,
+                                          sprawl: m.kind == .queen ? 0.15 : 1)
         case .attack: return cdef.build(0.25, 1)
         default:      return cdef.build(m.animTime - floorf(m.animTime), 0)
         }
@@ -1030,7 +1111,7 @@ enum GPURaymarch {
 
     /// Pack visible monsters into GPU buffers: scale each creature to fit the
     /// room height (feet on the floor), bound it, and flatten its shapes.
-    static func packCreatures(_ monsters: [Monster], shapeBudget: Int = 360) -> ([GMonster], [GShape]) {
+    static func packCreatures(_ monsters: [Monster], shapeBudget: Int = 1024) -> ([GMonster], [GShape]) {
         var mons: [GMonster] = [], shapes: [GShape] = []
         for m in monsters {
             let sl = poseShapes(m)
@@ -1062,9 +1143,10 @@ enum GPURaymarch {
             // to ~0.92 of the wall ignored the sprite's transparent padding and
             // rendered creatures far larger than they ever looked.)
             let fit = m.def.billboardH / MonsterBake.cdef(m.kind).viewH
-            // a burning corpse shrinks toward a charred husk (~⅓ size) and darkens —
-            // it doesn't vanish; scorched remains stay on the floor
-            var scale = min(fit, 0.92 / bodyH) * max(0.34, 1 - m.burn * 0.66)
+            // A burning corpse does NOT shrink — bodies don't deflate. charShapes
+            // (already applied by poseShapes) slumps it into a charred mound at
+            // full scale: extremities burn away, masses collapse and fuse.
+            var scale = min(fit, 0.92 / bodyH)
             // Keep the rendered body within the collision radius so it can't bulge
             // through walls/doors: movement only keeps the CENTER ~radius clear, so a
             // wide pose (extended claws, the Queen's bulk) would otherwise poke past
