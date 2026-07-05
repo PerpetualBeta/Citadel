@@ -33,4 +33,10 @@ enum FeatureFlags {
         let v = d.integer(forKey: "FixedSeed")
         return v > 0 ? UInt64(v) : 0
     }
+
+    /// Warp new runs to a specific floor for testing (0 = off, start on floor 1).
+    static var startLevel: Int {
+        let v = d.integer(forKey: "StartLevel")
+        return v > 0 ? v : 0
+    }
 }

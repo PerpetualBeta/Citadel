@@ -252,7 +252,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     private func startGame() {
         baseSeed = FeatureFlags.fixedSeed > 0 ? FeatureFlags.fixedSeed : UInt64.random(in: 1...UInt64.max)
-        level = 1; colonyIndex = Progression.planetIndex(level); carry = nil
+        level = max(1, FeatureFlags.startLevel); colonyIndex = Progression.planetIndex(level); carry = nil
         world = World(level: level, colonyIndex: colonyIndex, seed: baseSeed &+ UInt64(level))
         input.resetControls()
         deathTimer = 0
