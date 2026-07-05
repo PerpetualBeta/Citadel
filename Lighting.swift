@@ -43,14 +43,47 @@ enum Lighting {
     /// How flooded the floor is at this depth: 0 = dry industrial deck, 1 = standing
     /// water. An installation floor isn't a mirror — only the bottom of a building
     /// floods (drainage has failed that far down), so reflections are reserved for
-    /// the lowest floors. Keyed to floor-within-building, like `ambient`. (Liquid
-    /// pools — nukage, blood — stay locally reflective at any depth; in-shader.)
+    /// the lowest floor. Keyed to floor-within-building, like `ambient`. Floor 7
+    /// does NOT flood: water finds its way down, so what reaches 7 drains on to 8
+    /// and stands there — 7 gets discrete puddles instead (see `puddle(at:)`).
+    /// (Liquid pools — nukage, blood — stay locally reflective at any depth;
+    /// in-shader.)
     static func floodLevel(level: Int) -> Float {
         switch Progression.floorInBuilding(level) {
         case 8:  return 0.85                          // the lowest floor — drainage gone, standing water
-        case 7:  return 0.30                          // nearing the bottom — water creeping in
-        default: return 0.0                           // dry industrial deck
+        default: return 0.0                           // dry deck; floor 7 pools, it doesn't flood
         }
+    }
+
+    // ── standing water on the deep rock floors ────────────────────────────────
+    // One noise field decides where floor 7's puddles lie: the kernel draws them
+    // (puddleField/puddleMask in GPURaymarch), the game wades and drips in them
+    // (World.waterDepth / drip sites). Built on the INTEGER-hash value noise so
+    // CPU and GPU compute the identical field — the same lockstep trick as
+    // fixtureBusted. Change one side and you must change the other.
+    private static func ihash01(_ x: Int, _ y: Int) -> Float {
+        var h = UInt32(truncatingIfNeeded: x) &* 374761393 &+ UInt32(truncatingIfNeeded: y) &* 668265263
+        h = (h ^ (h >> 13)) &* 1274126177
+        return Float((h ^ (h >> 16)) & 0xFFFF) / 65535
+    }
+    private static func inoise2(_ q: SIMD2<Float>) -> Float {
+        let ix = q.x.rounded(.down), iy = q.y.rounded(.down)
+        var f = q - SIMD2(ix, iy)
+        f = f * f * (SIMD2(repeating: 3) - 2 * f)
+        let cx = Int(ix), cy = Int(iy)
+        let a = ihash01(cx, cy), b = ihash01(cx + 1, cy)
+        let c = ihash01(cx, cy + 1), d = ihash01(cx + 1, cy + 1)
+        let top = a + (b - a) * f.x, bot = c + (d - c) * f.x
+        return top + (bot - top) * f.y
+    }
+    /// 0…1 standing-water mask at a world position. Callers add the level's own
+    /// water-table offset (World.waterOff) so no two floors pool alike. A broad
+    /// octave shapes the pools, a finer one frays their edges — mirrors the
+    /// kernel's puddleField + puddleMask exactly.
+    static func puddle(at p: SIMD2<Float>) -> Float {
+        let n = 0.65 * inoise2(p * 0.55) + 0.35 * inoise2(p * 1.9 + SIMD2(repeating: 31))
+        let t = min(1, max(0, (n - 0.50) / (0.60 - 0.50)))
+        return t * t * (3 - 2 * t)
     }
 
     // ── emitters as DRAMATIC point lights (the GPU directional-key model) ───────

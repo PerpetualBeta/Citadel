@@ -117,6 +117,12 @@ final class World {
     private let queenDroneCap = 14               // most simultaneous live drones she'll grow the brood to
     var steamVents: [SteamVent] = []   // pipework/grille vents (built per level)
     var sparkSites: [SteamVent] = []   // busted-fixture spark/smoke emitters (built per level)
+    // ── ground water (the deep rock floors) ──
+    // The level's water table: a per-level offset into the shared CPU/GPU puddle
+    // noise field (Lighting.puddle ↔ the kernel's puddleField), so no two floors
+    // pool alike. The renderer reads it into the kernel's env.xy.
+    let waterOff: SIMD2<Float>
+    private var dripSites: [SteamVent] = []   // ceiling-drip points over the pools (phase = next-plink countdown)
     // ── resource props ──
     var drums: [Drum] = []             // fuel drums (refuel + shootable bombs)
     var deployedMines: [Mine] = []     // proximity mines the marine has dropped
@@ -178,6 +184,10 @@ final class World {
         self.colonyName = gen.colonyName
         self.secretTotal = gen.secretCount
         self.rng = Rng(seed: seed ^ 0xABCD_1234)
+        // the water table gets its own stream so drawing it never shifts the
+        // level's other rolls (item bobs, vent phases, …)
+        var wrng = Rng(seed: seed ^ 0x57A7_E12D)
+        self.waterOff = SIMD2(wrng.f(0, 256), wrng.f(0, 256))
         self.player = Player(at: gen.map.playerStart, dir: gen.map.playerDir)
         self.lastPlayerPos = gen.map.playerStart
         // the arrival car's doors part as the level fades in — the marine steps
@@ -204,6 +214,7 @@ final class World {
         buildSteamVents()
         buildSparkSites()
         buildDebris()
+        buildDripSites()
         if FeatureFlags.allWeapons { grantAllWeapons() }
         message("RETAKE \(colonyName) — FLOOR \(Progression.floorInBuilding(level))")
     }
@@ -247,11 +258,11 @@ final class World {
         let stride: Float = max(0.62, 0.52 + 0.06 * (moved / max(dt, 1e-4)))
         stepDist += moved
         if stepDist >= stride {
-            let flood = Lighting.floodLevel(level: level)
-            while stepDist >= stride {                            // on the flooded lower floors (7 & 8) it splashes
+            let water = waterDepth(at: player.pos)                // the flooded floor 8, or a floor-7 puddle underfoot
+            while stepDist >= stride {                            // splash only where water actually stands
                 stepDist -= stride
                 stepFoot ^= 1
-                if flood > 0 { audio.wade(flood, foot: stepFoot) }   // alternate left/right, louder the deeper the water
+                if water > 0.02 { audio.wade(water, foot: stepFoot) }   // alternate left/right, louder the deeper the water
             }
         }
         // smoothed player velocity for monster lead-aim (clamped to a sane top speed)
@@ -325,6 +336,7 @@ final class World {
         blasts.removeAll { $0.t <= 0 }
         emitSteam(dt: dt)
         emitQueenDrips(dt: dt)
+        emitWaterDrips(dt: dt, audio: audio)
         emitSparks(dt: dt)
         map.visited[map.idx(Int(player.pos.x), Int(player.pos.y))] = true
     }
@@ -1592,6 +1604,72 @@ final class World {
             let gx = Int(v.pos.x), gy = Int(v.pos.y), gi = map.idx(gx, gy)
             if map.inBounds(gx, gy) && map.wall[gi] == 0 && !map.hazard[gi] {
                 map.floor[gi] = FlatTex.grate.rawValue
+            }
+        }
+    }
+
+    /// Standing-water depth under a world position: the drowned lowest floor's
+    /// global flood, or a puddle on the rock floors above it (water finds its way
+    /// down — floor 7 pools, floor 8 drowns). 0 on dry deck. The puddle field is
+    /// the same one the kernel draws, so you splash exactly where you see water.
+    func waterDepth(at p: SIMD2<Float>) -> Float {
+        let flood = Lighting.floodLevel(level: level)
+        if flood > 0 { return flood }
+        let cx = Int(p.x), cy = Int(p.y)
+        guard map.inBounds(cx, cy), map.floor[map.idx(cx, cy)] == FlatTex.rock.rawValue else { return 0 }
+        // a full puddle stands about half as deep as the drowned floor below —
+        // ankle water, not the flood
+        return Lighting.puddle(at: p + waterOff) * Lighting.floodLevel(level: level + 1) * 0.5
+    }
+
+    /// Ceiling-drip points for the deep rock floors, seated where the shared
+    /// puddle field actually pools — every plink lands on water the renderer
+    /// draws. `phase` is repurposed as the countdown to that site's next drip.
+    private func buildDripSites() {
+        var candidates: [SIMD2<Float>] = []
+        for y in 0..<map.h { for x in 0..<map.w {
+            let i = map.idx(x, y)
+            guard map.wall[i] == 0, !map.hazard[i], map.doors[i] == nil,
+                  map.floor[i] == FlatTex.rock.rawValue else { continue }
+            let c = SIMD2(Float(x) + 0.5, Float(y) + 0.5)
+            if Lighting.puddle(at: c + waterOff) > 0.55 { candidates.append(c) }   // well inside a pool
+        }}
+        // spread them out: greedy min-distance pick so the plinks come from all
+        // over the level, not one clustered corner
+        let minGap: Float = 6, cap = 16
+        while dripSites.count < cap && !candidates.isEmpty {
+            let c = candidates.remove(at: rng.i(0, candidates.count - 1))
+            if dripSites.allSatisfy({ vlen($0.pos - c) >= minGap }) {
+                dripSites.append(SteamVent(pos: c, dir: .zero, phase: rng.f(0.5, 8)))
+            }
+        }
+    }
+
+    /// The deep floors drip: an intermittent plink from each site, panned to
+    /// where it sits and louder the closer — the cavern keeps reminding you the
+    /// rock above is wet. A fleck of spray marks the nearby ones.
+    private func emitWaterDrips(dt: Float, audio: AudioEngine) {
+        guard !dripSites.isEmpty else { return }
+        let reach: Float = 16
+        for i in dripSites.indices {
+            dripSites[i].phase -= dt
+            if dripSites[i].phase > 0 { continue }
+            dripSites[i].phase = rng.f(2, 9)                     // its next plink
+            let d = dripSites[i].pos - player.pos
+            let dist = vlen(d)
+            guard dist < reach else { continue }
+            // the light-falloff shape (bright core, windowed to zero at reach)
+            let dn = dist / reach
+            let vol = (1 - dn * dn) / (1 + 5 * dn * dn)
+            // pan by where it sits across the camera plane (right = (-sin, cos))
+            let right = SIMD2(-sin(player.dir), cos(player.dir))
+            let pan = dist > 0.001 ? (d.x * right.x + d.y * right.y) / dist : 0
+            audio.drip(volume: vol, pan: pan * 0.8)
+            if dist < 10 {                                       // visible plink: a fleck of spray off the pool
+                particles.append(Particle(pos: dripSites[i].pos + SIMD2(rng.f(-0.1, 0.1), rng.f(-0.1, 0.1)),
+                                          vel: .zero, life: 0.25, maxLife: 0.25,
+                                          color: packRGBA(190, 210, 224), size: 3,
+                                          height: 0.03, rise: 0.3, maxAlpha: 0.5))
             }
         }
     }

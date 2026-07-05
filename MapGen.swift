@@ -51,8 +51,10 @@ enum MapGen {
         case 5...6:   // deep workings — stone starts to intrude
             return Theme(walls: [.ironPlate, .stoneSteel, .pipework],
                          floor: .concrete, ceil: .ceilDark, hazardFloor: .nukage)
-        default:      // the depths — rock dominant, infrastructure failing
-            return Theme(walls: [.stone, .stoneSteel, .ironPlate],
+        default:      // the depths — blasted rock; the last steel is strut-work
+                      // bolted to it (more cavern than building — panelled walls
+                      // don't belong seven storeys down)
+            return Theme(walls: [.stone, .stone, .stoneSteel],
                          floor: .rock, ceil: .ceilStone, hazardFloor: .blood)
         }
     }
@@ -171,6 +173,7 @@ enum MapGen {
             map.wall[i] = WallTex.elevatorSealed.rawValue
             map.doors[i] = DoorState()
             map.entryCell = i
+            steelBoxCar(map, cell: i)
             map.playerStart = SIMD2<Float>(Float(wx) + 0.5, Float(wy) + 0.5)
             map.playerDir = atan2(Float(site.front.1 - wy), Float(site.front.0 - wx))
         }
@@ -340,6 +343,7 @@ enum MapGen {
         if let site = elevatorSite(map, room: room) {
             map.wall[site.cell] = WallTex.exitSwitch.rawValue
             map.doors[site.cell] = DoorState()
+            steelBoxCar(map, cell: site.cell)
             return site.cell
         }
         // fallback: any wall adjacent to an open cell in the room
@@ -381,6 +385,24 @@ enum MapGen {
             return (wi, f)
         }
         return nil
+    }
+
+    /// A lift car is a MACHINE bolted into the shaft, never a continuation of
+    /// the surrounding geology: line ALL EIGHT cells around the cab with the
+    /// dedicated liftWall steel (the SDF rounds corners, so even the diagonal
+    /// cells show as slivers inside the box) and give the cab a metal deck +
+    /// tech ceiling — on every floor, whatever the theme. (Where a box cell's
+    /// far face shows in a rock corridor, the steel reads as the shaft casing.)
+    private static func steelBoxCar(_ map: GameMap, cell: Int) {
+        let wx = cell % map.w, wy = cell / map.w
+        for dy in -1...1 { for dx in -1...1 {
+            if dx == 0 && dy == 0 { continue }
+            guard map.inBounds(wx + dx, wy + dy) else { continue }
+            let bi = map.idx(wx + dx, wy + dy)
+            if map.wall[bi] != 0 && map.doors[bi] == nil { map.wall[bi] = WallTex.liftWall.rawValue }
+        }}
+        map.floor[cell] = FlatTex.metalFloor.rawValue
+        map.ceil[cell] = FlatTex.ceilTech.rawValue
     }
 
     /// True within one cell (Chebyshev) of either elevator car. NOTHING may carve

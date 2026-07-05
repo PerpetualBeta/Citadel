@@ -43,7 +43,8 @@ Ogrebane — *Monster Sound Effects 2* (<https://opengameart.org/content/monster
 | locked | locked door / denied | Kenney Interface Sounds | error_004 |
 | player_pain (×11, random) | marine hurt by an alien | HaelDB Male Grunt/Yelling | assorted male yells |
 | player_death | marine death cry | HaelDB Male Grunt/Yelling | yell10 |
-| wade, wade1 (L/R, alternating) | wading splash — flooded floors 7 & 8 | rubberduck 40 CC0 water splash/slime SFX | splash_12 / splash_14 |
+| wade, wade1 (L/R, alternating) | wading splash — the flooded floor 8 + floor-7 puddles | rubberduck 40 CC0 water splash/slime SFX | splash_12 / splash_14 |
+| drip, drip1–drip5 (random) | ceiling water plinking into the deep floors' pools (panned per site) | generated in-house — `swift generate_drips.swift` (public domain by construction; swap for curated CC0 under the same names) | — |
 | elevator_move | freight elevator descent — low winch hum (loops, stops with the car) | Kenney Sci-Fi Sounds | spaceEngineLow_000 |
 | elevator_door, elevator_shut | elevator leaves part / seal | Kenney Sci-Fi Sounds | doorOpen_002 / doorClose_002 |
 | bed_drone | ambient bed: room tone (always on) | SRG774 Dark Sci-Fi Audio Pack | sector |

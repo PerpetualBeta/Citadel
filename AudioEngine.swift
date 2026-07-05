@@ -38,6 +38,7 @@ final class AudioEngine {
         case queenSnarl            // QUEEN ONLY: her signature snarl pool (sight/LOS), random variant
         case droneDeath, queenDeath
         case explosion, doorOpen, locked, pickup, secret, exit, playerPain, playerDeath, wade
+        case drip                  // ceiling water onto the deep floors' pools (panned per-site, see drip(volume:pan:))
         case musicTitle, bedDrone, bedPulse, bedTension, bedSwarm
         case elevatorMove, elevatorDoor, elevatorShut
 
@@ -59,6 +60,7 @@ final class AudioEngine {
             case .playerPain: return "player_pain"
             case .playerDeath: return "player_death"
             case .wade: return "wade"
+            case .drip: return "drip"
             case .musicTitle: return "music_title"
             case .bedDrone: return "bed_drone"
             case .bedPulse: return "bed_pulse"
@@ -73,11 +75,18 @@ final class AudioEngine {
         var bus: Int {
             switch self {
             case .musicTitle: return 0
-            case .bedDrone, .bedPulse, .bedTension, .bedSwarm: return 2
+            case .bedDrone, .bedPulse, .bedTension, .bedSwarm, .drip: return 2
             default: return 1
             }
         }
-        var loop: Bool { bus != 1 }
+        // the looping stems (title theme + reactive bed layers); drips are
+        // ambient-bus ONE-SHOTS, so loop is spelled out rather than bus-derived
+        var loop: Bool {
+            switch self {
+            case .musicTitle, .bedDrone, .bedPulse, .bedTension, .bedSwarm: return true
+            default: return false
+            }
+        }
         // per-sound trim so one sample doesn't dwarf the rest (1 = unity).
         var gain: Float {
             switch self {
@@ -88,6 +97,7 @@ final class AudioEngine {
             case .elevatorMove: return 0.45
             case .elevatorDoor, .elevatorShut: return 0.85
             case .wade: return 0.5
+            case .drip: return 0.55
             default: return 0.8
             }
         }
@@ -125,6 +135,19 @@ final class AudioEngine {
     private let distantNode = AVAudioPlayerNode()
     private let distantEQ = AVAudioUnitEQ(numberOfBands: 1)
     private let distantReverb = AVAudioUnitReverb()
+    // water-drip chain — a small voice pool so each plink can be PANNED to its
+    // site and overlapping drips don't cut each other off, each through its own
+    // varispeed (random per-plink pitch: no two drips land alike), all sharing
+    // one wet-chamber reverb: node → varispeed → dripMix (pan) → reverb → ambient.
+    private let dripNodes = (0..<3).map { _ in AVAudioPlayerNode() }
+    private let dripVaris = (0..<3).map { _ in AVAudioUnitVarispeed() }
+    private let dripMix = AVAudioMixerNode()
+    private let dripReverb = AVAudioUnitReverb()
+    private var dripNext = 0
+    // wade chain — one voice per foot through a varispeed, so every splash gets
+    // its own random pitch + level: a gait through water, not a looped sample.
+    private let wadeNodes = (0..<2).map { _ in AVAudioPlayerNode() }
+    private let wadeVaris = (0..<2).map { _ in AVAudioUnitVarispeed() }
     private var bank: [Sound: [AVAudioPCMBuffer]] = [:]       // loaded samples (empty ⇒ fall back)
 
     // ── three gain buses (sliders write these) ────────────────────────────────
@@ -187,6 +210,24 @@ final class AudioEngine {
         engine.connect(distantNode, to: distantEQ, format: canonical)
         engine.connect(distantEQ, to: distantReverb, format: canonical)
         engine.connect(distantReverb, to: sfxMix, format: canonical)
+        // drip chain: the plinks echo off wet stone — a room-scale wash, drier
+        // and tighter than the distant-vox hall so nearby drips still snap
+        dripReverb.loadFactoryPreset(.largeRoom)
+        dripReverb.wetDryMix = 46
+        engine.attach(dripMix); engine.attach(dripReverb)
+        engine.connect(dripMix, to: dripReverb, format: canonical)
+        engine.connect(dripReverb, to: ambMix, format: canonical)
+        for (n, v) in zip(dripNodes, dripVaris) {
+            engine.attach(n); engine.attach(v)
+            engine.connect(n, to: v, format: canonical)
+            engine.connect(v, to: dripMix, format: canonical)
+        }
+        // wade chain: a voice per foot, pitch-varied per splash
+        for (n, v) in zip(wadeNodes, wadeVaris) {
+            engine.attach(n); engine.attach(v)
+            engine.connect(n, to: v, format: canonical)
+            engine.connect(v, to: sfxMix, format: canonical)
+        }
         for s in Sound.allCases where s.loop {
             let n = AVAudioPlayerNode(); loopNodes[s] = n
             engine.attach(n); engine.connect(n, to: s.bus == 0 ? musicMix : ambMix, format: canonical)
@@ -201,7 +242,7 @@ final class AudioEngine {
             try? engine.start()
         }
         applyGains()
-        if engine.isRunning { for n in sfxPool { n.play() }; queenSnarlNode.play(); distantNode.play() }   // idle, ready to schedule
+        if engine.isRunning { for n in sfxPool { n.play() }; queenSnarlNode.play(); distantNode.play(); for n in dripNodes + wadeNodes { n.play() } }   // idle, ready to schedule
     }
 
     private func applyGains() {
@@ -314,17 +355,39 @@ final class AudioEngine {
         }
     }
 
-    /// A wade/splash as the player steps through the flooded lower floors — louder
-    /// the deeper the standing water. Plays a curated sample if one's bundled, else a
-    /// synth splash (filtered noise) as a stopgap until a CC0 sample is hand-picked.
+    /// A wade/splash as the player steps through standing water — louder the
+    /// deeper. Plays a curated sample if one's bundled, else a synth splash
+    /// (filtered noise) as a stopgap until a CC0 sample is hand-picked.
     func wade(_ depth: Float, foot: Int) {
         let v = 0.5 + 0.5 * min(1, max(0, depth))
         // alternate L/R: foot 0 → wade.*, foot 1 → wade1.* — two slightly different
-        // splashes so the gait reads as real footfalls, not one sample on repeat.
+        // splashes so the gait reads as real footfalls — and jitter each step's
+        // pitch and level so no two footfalls land identically.
         if engine.isRunning, let bufs = bank[.wade], !bufs.isEmpty {
-            playOneShot([bufs[foot % bufs.count]], gain: Sound.wade.gain * v)
+            let f = foot % wadeNodes.count
+            wadeVaris[f].rate = Float.random(in: 0.86...1.16)
+            wadeNodes[f].volume = Sound.wade.gain * v * Float.random(in: 0.8...1.05)
+            wadeNodes[f].scheduleBuffer(bufs[foot % bufs.count], at: nil, options: .interrupts, completionHandler: nil)
+            if !wadeNodes[f].isPlaying { wadeNodes[f].play() }
         } else {
             synthWade(v, foot: foot)
+        }
+    }
+    /// A single ceiling drip into a pool, `pan` −1 (hard left) … +1 (hard right),
+    /// `volume` 0…1 from the caller's distance falloff — the deep floors' water
+    /// ambience (World.emitWaterDrips). Sample if bundled (drip*.wav), else the
+    /// synth plink.
+    func drip(volume: Float, pan: Float) {
+        let v = Sound.drip.gain * max(0, min(1, volume))
+        if engine.isRunning, let bufs = bank[.drip], let buf = bufs.randomElement() {
+            let i = dripNext; dripNext = (dripNext + 1) % dripNodes.count
+            dripVaris[i].rate = Float.random(in: 0.85...1.3)   // every plink lands at its own pitch
+            dripNodes[i].volume = v
+            dripNodes[i].pan = max(-1, min(1, pan))
+            dripNodes[i].scheduleBuffer(buf, at: nil, options: .interrupts, completionHandler: nil)
+            if !dripNodes[i].isPlaying { dripNodes[i].play() }
+        } else {
+            synthDrip(v)
         }
     }
     func enemyShot(_ k: MonsterKind) { synthEnemyShot(k) }   // vestigial — no caste fires
@@ -691,5 +754,14 @@ final class AudioEngine {
         let lp: Float = foot == 0 ? 0.30 : 0.40                                          // L/R read slightly different
         add(AudioEngine.noise, 1, 1, 0.16, 0.11 * v, attack: 0.006, lp: lp)             // the heavy plosh
         add(AudioEngine.noise, 1, 1, 0.08, 0.07 * v, attack: 0.001, lp: 0.55 + Float(foot) * 0.1)  // top splash
+    }
+
+    /// Synth plink stopgap for a missing drip sample: the bubble-resonance chirp
+    /// of a real water drip — a rising sine that dies fast over a soft low tap —
+    /// on the ambient bus, sent wet into the synth's echo for the cavern.
+    private func synthDrip(_ v: Float) {
+        let f0 = Float.random(in: 750...1500)
+        add(AudioEngine.sine, f0, f0 * 1.6, 0.09, 0.30 * v, attack: 0.002, bus: 2, send: 0.5)   // the rising plink
+        add(AudioEngine.sine, 240, 170, 0.05, 0.12 * v, attack: 0.001, bus: 2, send: 0.3)       // the low tap under it
     }
 }

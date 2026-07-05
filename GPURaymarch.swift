@@ -27,7 +27,7 @@ enum GPURaymarch {
     #include <metal_stdlib>
     using namespace metal;
 
-    struct Uniforms { float4 ro, fwd, right, up, params, grid, extra; };  // extra.x = decalCount
+    struct Uniforms { float4 ro, fwd, right, up, params, grid, extra, env; };  // extra.x = decalCount · env.xy = water-table offset (puddle field)
     struct GPULight { float4 posR; float4 colI; };   // posR=(x,y,z,1/r²)  colI=(r,g,b,intensity)
     struct GShape   { float4 a, b, col; };  // a.xyz,a.w=r1 ; b.xyz,b.w=r2(<0 → sphere) ; col.rgb,col.w=k
     struct GMonster { float4 a, b, c; };    // a=(x,z,yaw,scale) b=(shapeStart,shapeCount,boundR,boundCY) c=(minY,…)
@@ -216,6 +216,24 @@ enum GPURaymarch {
         return s;
     }
 
+    // ── standing water (the deep rock floors) ── floor 7 doesn't flood, it POOLS.
+    //   Value noise on the INTEGER hash so the CPU samples the identical field
+    //   (Lighting.puddle — kept in lockstep, the same trick as fixtureBusted):
+    //   the puddles the kernel draws are exactly the puddles the game splashes
+    //   and drips in. Callers add the level's water-table offset (U.env.xy).
+    static inline float ihash01(int x, int y) { return float(ihash(x, y) & 0xFFFFu) / 65535.0; }
+    static inline float inoise2(float2 q) {
+        float2 i = floor(q), f = fract(q);
+        f = f * f * (3.0 - 2.0 * f);
+        int2 c = int2(i);
+        float a = ihash01(c.x, c.y), b = ihash01(c.x + 1, c.y);
+        float cc = ihash01(c.x, c.y + 1), d = ihash01(c.x + 1, c.y + 1);
+        return mix(mix(a, b, f.x), mix(cc, d, f.x), f.y);
+    }
+    // a broad octave shapes the pools, a finer one frays their edges
+    static inline float puddleField(float2 xz) { return 0.65 * inoise2(xz * 0.55) + 0.35 * inoise2(xz * 1.9 + 31.0); }
+    static inline float puddleMask(float f) { return smoothstep(0.50, 0.60, f); }
+
     // ── PBR material params + micro-relief (the "walls & materials" model) ──────
     // Per-surface roughness/metalness, mirroring BeautyProof's material(): grimy
     // iron is a dirty half-metal, brushed steel / pipes are cleaner metal, glass
@@ -231,6 +249,7 @@ enum GPURaymarch {
             case 10u: return float2(0.50, 0.20);   // computer banks — screens
             case 12u: case 13u: case 14u: case 15u: case 17u: case 18u: return float2(0.50, 0.50);  // blast doors — painted steel
             case 16u: return float2(0.50, 0.45);   // exit switch panel
+            case 19u: return float2(0.38, 0.60);   // lift-car lining — machined steel box
             default:  return float2(0.58, 0.50);   // iron plate / steel panel / lit panel / hazard — grimy iron
         }
     }
@@ -313,7 +332,9 @@ enum GPURaymarch {
             int2 c = clamp(int2(floor(p.xz)), int2(0), dim - 1);
             uint id = ceilId.read(uint2(c)).r;
             alb = flatArr.sample(ts, p.xz, id).rgb;
-            if (isLampCell(c)) {                              // the wet floor must mirror the bright lamps
+            // the wet floor must mirror the bright lamps — thinned on stone
+            // ceilings exactly as the main ceiling pass thins them
+            if (isLampCell(c) && (id != 6u || (ihash(c.x, c.y) % 3u) == 0u)) {
                 float2 ctr = float2(c) + 0.5;
                 float mm = max(abs(p.x - ctr.x), abs(p.z - ctr.y));
                 if (mm < LAMP_HALF) {
@@ -585,6 +606,8 @@ enum GPURaymarch {
                         }
                     }
                     float dirt = 1.0 - screenGlass;             // powered glass stays clean (matches the desk terminals)
+                    if (id == 8u || id == 9u) dirt *= 0.3;      // battle soot belongs to burned steel — bare rock takes far less
+                    if (id == 19u) dirt = 0.0;                  // a lift car keeps its machined finish — it's a steel box, not a battlefield
                     float low = clamp(1.0 - p.y * 1.3, 0.0, 1.0);
                     float scorch = smoothstep(0.42, 0.78, fbm2(float2(along * 1.3, p.y * 1.4))) * (0.45 + 0.55 * low);
                     alb *= 1.0 - 0.82 * scorch * dirt;                         // sooty patches, heavier low
@@ -595,7 +618,37 @@ enum GPURaymarch {
                     // material + micro-relief — a grimy-iron sheen, with grain
                     // breaking up the highlight (was flat, matte, light-frozen)
                     float2 wm = wallMaterial(id); rough = wm.x; metal = wm.y;
-                    if (id != 10u && (id < 12u || id > 18u)) {
+                    if (id == 8u || id == 9u) {
+                        // ── the depths: rock face, not bulkhead ── hewn/blasted stone
+                        //   gets NO panel seams or ribs (a manufactured groove grid
+                        //   sliced across the strata and the caverns read as plant
+                        //   rooms). Instead: big strata swings in the albedo so the
+                        //   headlamp can't bleach it flat, a normal that lurches over
+                        //   blast-scale lumps, thin crack veins, and crevice shadow.
+                        float3 tU = (abs(n.x) > abs(n.z)) ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+                        float2 ruv = float2(along, p.y);
+                        alb *= 0.34 + 0.48 * fbm2(ruv * 0.7 + 3.0);                      // strata light/dark sweeps (and an overall drop — rock, not plaster)
+                        n = bumpNormal(ruv, n, tU, float3(0.0, 1.0, 0.0), 0.9, 1.8);     // blast lumps
+                        n = bumpNormal(ruv, n, tU, float3(0.0, 1.0, 0.0), 3.1, 0.5);     // fracture detail
+                        float ridge = 1.0 - abs(2.0 * fbm2(ruv * 1.9 + 17.0) - 1.0);     // ridged noise: its crest-lines read as
+                        float crack = smoothstep(0.86, 0.97, ridge);                     //   thin dark VEINS, not blotches
+                        alb *= 1.0 - 0.60 * crack;
+                        float crev = smoothstep(0.62, 0.88, fbm2(ruv * 1.4 + 17.0));
+                        alb *= 1.0 - 0.35 * crev;                                        // hollow shadow between lumps
+                        if (id == 9u) {                              // rock + struts: the bolted steelwork survives
+                            float ribLit = 1.0 - smoothstep(0.40, 0.50, abs(fract(along * 0.5) - 0.5));
+                            alb = mix(alb, alb * 1.45 + float3(0.05), ribLit * 0.5);
+                        }
+                        // ── seepage ── ground water weeps down the rock in streaks:
+                        //   dark and cool where it runs, glass-smooth where the film
+                        //   sits, so the headlamp glints off wet stone. Stronger toward
+                        //   the floor (it runs down and pools there — see puddleField).
+                        float seep = smoothstep(0.50, 0.78, fbm2(float2(along * 2.6 + 5.0, p.y * 0.25)))
+                                   * clamp(1.15 - p.y * 0.55, 0.0, 1.0)
+                                   * (id == 8u ? 1.0 : 0.55);        // bare rock weeps more than strutted
+                        alb = mix(alb, alb * float3(0.42, 0.46, 0.50), seep);            // soaked stone: darker, a shade cool
+                        rough = mix(rough, 0.12, seep);
+                    } else if (id != 10u && (id < 12u || id > 19u)) {
                         // ── structural depth ── recessed bulkhead panels + raised steel
                         //   ribs: grooves read darker (recessed), ribs as brighter steel,
                         //   and the normal follows the relief so the flat wall has DEPTH.
@@ -622,7 +675,19 @@ enum GPURaymarch {
                     alb = flatArr.sample(ts, p.xz, id).rgb;
                     emis = flatEmissive(id);
                     bool liquid = (id == 3u || id == 8u);        // nukage / blood pools — liquid at any depth
-                    float wet = max(U.extra.y, liquid ? 1.0 : 0.0);   // depths flood (extra.y); pools always wet
+                    float wet = max(U.extra.y, liquid ? 1.0 : 0.0);   // the lowest floor floods (extra.y); pools always wet
+                    if (!liquid && id == 7u && wet < 0.01) {
+                        // ── puddles ── the rock floors above the flood line: water
+                        //   finds its way down, so floor 7 doesn't drown — it pools.
+                        //   The shared CPU/GPU field says where (the game wades and
+                        //   drips in the same water), with a damp soaked-in margin
+                        //   ringing each pool.
+                        float pf = puddleField(p.xz + U.env.xy);
+                        float pool = puddleMask(pf);
+                        float damp = smoothstep(0.36, 0.50, pf) * (1.0 - pool);
+                        alb *= 1.0 - 0.22 * damp;                // wet rock rings the standing water
+                        wet = pool;
+                    }
                     reflective = wet > 0.01;                     // a dry industrial deck does NOT mirror
                     float2 fm = flatMaterial(id); rough = fm.x; metal = fm.y;
                     if (liquid) {                                // hazard pool — live rippling surface
@@ -645,13 +710,16 @@ enum GPURaymarch {
                         }
                         alb *= 0.55;
                         rough = 0.10; metal = 0.0;               // a glassy hazard-liquid surface
-                    } else if (wet > 0.01) {                     // the flooded depths — standing water over the deck
+                    } else if (wet > 0.01) {                     // standing water — the drowned floor 8, floor 7's pools
                         float2 q = p.xz;
                         n = normalize(n + float3(cos(q.x * 5.1 + time * 1.1), 0.0,
-                                                 cos(q.y * 4.7 - time * 1.3)) * (0.10 * wet));   // slow standing-water ripples
-                        alb *= mix(1.0, 0.5, wet);               // the water darkens the deck beneath it
+                                                 cos(q.y * 4.7 - time * 1.3)) * (0.14 * wet));   // slow standing-water ripples
+                        alb = mix(alb, alb * float3(0.30, 0.34, 0.42), wet);   // water darkens the bed under it, and cools it — reads liquid, not wet sand
                         rough = mix(rough, 0.08, wet); metal = 0.0;   // standing water glazes the deck glossy
                     } else {                                     // DRY industrial deck
+                        if (id == 7u) {                          // bare rock floor: strata sweeps, like the walls —
+                            alb *= 0.50 + 0.45 * fbm2(p.xz * 0.8 + 27.0);   // never a flat bleached pan under the headlamp
+                        }
                         if (id != 2u) {                          // soot + dried blood (not the open grates)
                             float fscorch = smoothstep(0.46, 0.82, fbm2(p.xz * 1.9 + 40.0));
                             alb *= 1.0 - 0.62 * fscorch;
@@ -735,9 +803,23 @@ enum GPURaymarch {
                     uint id = ceilId.read(uint2(c)).r;
                     alb = flatArr.sample(ts, p.xz, id).rgb;
                     float2 cm = flatMaterial(id); rough = cm.x; metal = cm.y;
+                    bool lamp = isLampCell(c);
+                    if (id == 6u) {
+                        // stone ceiling — the blasted roof of the working, not a hung
+                        // tech grid: strata sweeps, lumpy relief, crack veins, and only
+                        // the odd strung work-light (most lamp sockets never made it
+                        // this deep)
+                        alb *= 0.34 + 0.48 * fbm2(p.xz * 0.7 + 9.0);
+                        n = bumpNormal(p.xz, n, float3(1.0, 0.0, 0.0), float3(0.0, 0.0, 1.0), 1.1, 1.4);
+                        float ridge = 1.0 - abs(2.0 * fbm2(p.xz * 1.9 + 23.0) - 1.0);
+                        alb *= 1.0 - 0.60 * smoothstep(0.86, 0.97, ridge);
+                        float crev = smoothstep(0.62, 0.88, fbm2(p.xz * 1.6 + 23.0));
+                        alb *= 1.0 - 0.35 * crev;
+                        lamp = lamp && (ihash(c.x, c.y) % 3u) == 0u;
+                    }
                     // a lamp sits in every other open ceiling cell (the cell over a
                     // ceiling point is always open), so lamps follow the layout
-                    if (isLampCell(c)) {
+                    if (lamp) {
                         float2 ctr = float2(c) + 0.5;
                         float m = max(abs(p.x - ctr.x), abs(p.z - ctr.y));   // 0..0.5
                         if (m < LAMP_HALF) {
@@ -1069,7 +1151,8 @@ enum GPURaymarch {
         return (data, sw, sh)
     }
 
-    struct Uniforms { var ro, fwd, right, up, params, grid, extra: SIMD4<Float> }   // extra.x = decalCount
+    struct Uniforms { var ro, fwd, right, up, params, grid, extra: SIMD4<Float>
+                      var env: SIMD4<Float> = SIMD4(0, 0, 0, 0) }   // extra.x = decalCount · env.xy = water-table offset (puddle field)
     struct GPULight { var posR, colI: SIMD4<Float> }   // posR=(x,y,z,1/r²)  colI=(r,g,b,intensity)
     struct GShape { var a, b, col: SIMD4<Float> }      // a.xyz/r1 ; b.xyz/r2(<0 sphere) ; col.rgb/k
     struct GMonster { var a, b, c: SIMD4<Float> }      // a=(x,z,yaw,scale) b=(start,count,boundR,boundCY) c=(minY,…)

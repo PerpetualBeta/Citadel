@@ -26,6 +26,7 @@ enum WallTex: Int, CaseIterable {
     case none = 0
     case ironPlate, brushedSteel, steelPanel, litPanel, ribbedSteel, pipework, glass, stone, stoneSteel, computer, hazard
     case doorPanel, doorRed, doorBlue, doorYellow, exitSwitch, doorHazard, elevatorSealed
+    case liftWall            // elevator-car lining — a machined steel box (no relief/grime; see MapGen.steelBoxCar)
 }
 enum FlatTex: Int, CaseIterable {
     case concrete = 0, metalFloor, grate, nukage, ceilTech, ceilDark, ceilStone, rock, blood
@@ -386,6 +387,20 @@ final class Textures {
             // lift only came DOWN; the shaft above is closed. Distinct at a
             // glance from the descender that leaves the floor.
             elevatorLeaves(set, s, sealed: true)
+
+        case .liftWall:
+            // lift-car lining: machined brushed steel, deliberately near-
+            // featureless — a car is a STEEL BOX, not a bulkhead and not the
+            // surrounding geology. The kernel skips relief + grime on it (as it
+            // does the door slabs), so what's baked here is all it ever shows:
+            // faint horizontal brushing, a kick plate, a slim top trim shadow.
+            for y in 0..<s { for x in 0..<s {
+                let brush = (vnoise(Float(x) / 96, Float(y) / 2, 32, 71) - 0.5) * 14
+                var v = 140 + Int(brush)
+                if y >= s - s / 8 { v -= 26 }                   // kick plate along the base
+                if y < s / 24 { v -= 14 }                       // top trim shadow
+                set(x, y, rgb(v, v + 3, v + 8))
+            }}
         }
         if reliefOn { applyRelief(&px, s, reliefStrength(wall: tex)) }
         return Texture(size: s, pixels: px)
@@ -472,6 +487,7 @@ final class Textures {
         case .brushedSteel, .litPanel: return 0.7
         case .hazard: return 0.6
         case .computer: return 0.5           // just the bezels
+        case .liftWall: return 0.3           // barely-there brushing — a machined box
         case .glass: return 0.25             // just the frame / mullions
         case .none: return 0
         }

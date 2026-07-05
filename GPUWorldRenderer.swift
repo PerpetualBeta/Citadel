@@ -380,7 +380,8 @@ final class GPUWorldRenderer {
         // located damage decals (blood at kills, scorch under burned-out corpses)
         var decals = world.decals
         u.extra.x = Float(decals.count)
-        u.extra.y = Lighting.floodLevel(level: world.level)                          // floor flooding (lowest floors only)
+        u.extra.y = Lighting.floodLevel(level: world.level)                          // floor flooding (lowest floor only)
+        u.env.x = world.waterOff.x; u.env.y = world.waterOff.y                       // this level's puddle-field offset
         if decals.isEmpty { decals = [SIMD4<Float>(0, 0, 0, 0)] }                     // ≥1 elem for setBytes
         // live doors → leaf-anchored texture UVs in the kernel
         var doorsPack = GPURaymarch.packDoors(world.map)
