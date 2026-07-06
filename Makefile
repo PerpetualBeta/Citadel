@@ -56,6 +56,7 @@ SWIFT_SOURCES    := main.swift \
                     Projectile.swift \
                     World.swift \
                     HUD.swift \
+                    StaticFX.swift \
                     Codex.swift \
                     Automap.swift \
                     AudioEngine.swift \

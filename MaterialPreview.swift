@@ -125,6 +125,7 @@ enum MaterialPreview {
         case .ceilStone: return "ceilStone"
         case .rock: return "rock"
         case .blood: return "blood"
+        case .teleportPad: return "teleportPad"
         }
     }
 }

@@ -1,8 +1,10 @@
-// Citadel — front-end screens (title, briefing, enemy intel, level cleared,
-// game over / name entry, high scores, pause). Drawn into the same Canvas2D
-// with crisp Core Text, laid out for the 640×400 framebuffer.
+// Citadel — front-end screens (title, briefing, enemy intel, floor/secured
+// reports, ride + teleport interstitials, game over / name entry, high scores,
+// pause). Drawn into the same Canvas2D with crisp Core Text, laid out for the
+// logical 640×400 space.
 
 import Foundation
+import AppKit
 
 enum FrontEnd {
     static let W = RenderConfig.width
@@ -40,9 +42,14 @@ enum FrontEnd {
     // a memory-dump glyph set (system-font-safe: hex, Greek, symbols)
     private static let rainGlyphs = Array("0123456789ABCDEFΣΦΩΔΞΨ<>/=+*").map(String.init)
 
+    /// The prompt verb for "confirm", by input device: a connected pad's FIRE
+    /// button confirms menus; on the keyboard it's the return key (fire does
+    /// NOT confirm the title — saying "press fire" there sent people clicking).
+    static func confirmName(pad: Bool) -> String { pad ? "FIRE" : "[ENTER]" }
+
     /// The title is an ARC subsurface terminal. Most of it is glyph-rain; the brand
     /// lives in the corner seal and the boot-log, never explained.
-    static func title(_ c: Canvas2D, t: Float, hs: HighScores) {
+    static func title(_ c: Canvas2D, t: Float, hs: HighScores, pad: Bool = false) {
         c.fillRect(0, 0, W, H, packRGBA(8, 9, 7))          // dead phosphor screen
         terminalRain(c, t)
         crtOverlay(c)
@@ -88,10 +95,22 @@ enum FrontEnd {
 
         // ── lower console ──
         if Int(t * 1.5) % 2 == 0 {
-            c.labelCentered("> PRESS  FIRE  TO  DESCEND", uiS(252), size: uiSf(28), color: amberHi, weight: .bold, glow: packRGBA(60, 44, 0), mono: true)
+            c.labelCentered("> PRESS  \(confirmName(pad: pad))  TO  DESCEND", uiS(252), size: uiSf(28), color: amberHi, weight: .bold, glow: packRGBA(60, 44, 0), mono: true)
         }
-        c.labelCentered("[ B ]  BRIEFING        [ I ]  ENEMY INTEL", uiS(288), size: uiSf(16), color: amber, weight: .medium, shadow: false, mono: true)
-        c.labelCentered("K  Keyboard      C  Controller      \u{2318},  Settings", uiS(312), size: uiSf(13), color: amberDim, weight: .medium, shadow: false, mono: true)
+        c.labelCentered("[B]  BRIEFING        [I]  ENEMY INTEL", uiS(288), size: uiSf(16), color: amber, weight: .medium, shadow: false, mono: true)
+        // [CMD,] not [⌘,]: the ⌘ glyph falls back out of the mono font and its
+        // clashing metrics wreck the kerning — and a terminal wouldn't own it.
+        // The "]" is hand-kerned into the comma's mono cell (which is mostly
+        // whitespace on the right), or "[CMD,]" gapes before the bracket.
+        let hint1 = "[K]  Keyboard      [C]  Controller      [CMD,"
+        let hint2 = "]  Settings"
+        let hintSz = uiSf(13)
+        let hw1 = c.labelWidth(hint1, size: hintSz, weight: .medium, mono: true)
+        let hw2 = c.labelWidth(hint2, size: hintSz, weight: .medium, mono: true)
+        let kern = c.labelWidth(",", size: hintSz, weight: .medium, mono: true) * 2 / 5
+        let hx = (W - (hw1 + hw2 - kern)) / 2
+        c.label(hint1, hx, uiS(312), size: hintSz, color: amberDim, weight: .medium, shadow: false, mono: true)
+        c.label(hint2, hx + hw1 - kern, uiS(312), size: hintSz, color: amberDim, weight: .medium, shadow: false, mono: true)
 
         // ── bottom status bar: three columns under a thin rule ──
         let sbY = uiS(356)
@@ -162,42 +181,55 @@ enum FrontEnd {
     }
 
     static let briefingLines = [
-        "We held the skies over the colony cluster",
-        "for as long as we could. We did not hold",
-        "them long enough.", "",
-        "The fleet you fought at Strataris did not",
-        "withdraw. It landed. Demeter went dark,",
-        "then Tantalus, Boreas, Pandora, Vulcan,",
-        "and Vesper. The citadels are occupied.", "",
-        "You are going in on foot. Alone.",
-        "Clear each citadel, floor by floor.",
-        "Find the exit. Descend. Do not stop.", "",
-        "There is no evacuation order — only how deep you get.",
+        "We held the skies over the colony cluster for as",
+        "long as we could. We did not hold them long enough.",
+        "",
+        "The fleet you fought at Strataris did not withdraw.",
+        "It landed. Demeter went dark, then Tantalus, Boreas,",
+        "Pandora, Vulcan, and Vesper. The citadels are occupied.",
+        "",
+        "Whatever the landings carried has nested. Every floor",
+        "is crawling, and each brood keeps a Queen — kill her",
+        "and BURN her, or she rises again behind you.",
+        "",
+        "You are going in on foot. Alone. Clear each citadel,",
+        "floor by floor. Find the exit. Descend. Do not stop.",
+        "",
+        "Corporate has withdrawn its channels. There is no",
+        "evacuation order — only how deep you get.",
     ]
     static func briefing(_ c: Canvas2D, t: Float) {
         backdrop(c, t, top: packRGBA(8, 14, 20), bottom: packRGBA(12, 26, 32))
-        c.labelCentered("MISSION BRIEFING", uiS(30), size: uiSf(42), color: packRGBA(110, 200, 240), weight: .heavy, shadow: true, glow: packRGBA(10, 40, 60))
-        c.labelCentered("// incoming transmission", uiS(84), size: uiSf(18), color: packRGBA(120, 200, 150), weight: .medium)
-        var y = uiS(124)
-        for line in briefingLines { c.labelCentered(line, y, size: uiSf(20), color: ink, weight: .medium); y += uiS(22) }
-        if Int(t * 1.5) % 2 == 0 { c.labelCentered("Good hunting, marine.    [ ESC ]", H - uiS(32), size: uiSf(20), color: amber, weight: .semibold) }
+        c.labelCentered("MISSION BRIEFING", uiS(26), size: uiSf(40), color: packRGBA(110, 200, 240), weight: .heavy, shadow: true, glow: packRGBA(10, 40, 60))
+        c.labelCentered("// incoming transmission", uiS(76), size: uiSf(17), color: packRGBA(120, 200, 150), weight: .medium)
+        var y = uiS(106)
+        for line in briefingLines { c.labelCentered(line, y, size: uiSf(16), color: ink, weight: .medium); y += uiS(16) }
+        if Int(t * 1.5) % 2 == 0 { c.labelCentered("Good hunting, marine.    [ESC]", H - uiS(24), size: uiSf(17), color: amber, weight: .semibold) }
     }
 
     static func intel(_ c: Canvas2D, t: Float) {
         backdrop(c, t, top: packRGBA(14, 8, 18), bottom: packRGBA(26, 10, 26))
-        c.labelCentered("ENEMY INTEL", uiS(30), size: uiSf(42), color: packRGBA(220, 120, 220), weight: .heavy, shadow: true, glow: packRGBA(50, 10, 50))
+        c.labelCentered("ENEMY INTEL", uiS(26), size: uiSf(40), color: packRGBA(220, 120, 220), weight: .heavy, shadow: true, glow: packRGBA(50, 10, 50))
         let kinds = MonsterKind.allCases
-        let kind = kinds[Int(t / 2.6) % kinds.count]
+        let kind = kinds[Int(t / 6.0) % kinds.count]           // linger — this is a dossier, not a slideshow
         let ms = Sprites.shared.monster(kind)
-        let spr = ms.walk[Int(t * 4) % 2][Int(t * 1.5) % 8]   // slowly rotates through the 8 views
+        let spr = ms.walk[Int(t * 3) % 2][Int(t / 1.1) % 8]    // a stately turntable, not a jerky spin
         let k = Float(RenderConfig.num) / Float(RenderConfig.den)
-        c.blitBitmapF(spr.pixels, spr.w, spr.h, (W - Int(Float(spr.w) * k)) / 2, uiS(86), scale: k)
+        c.blitBitmapF(spr.pixels, spr.w, spr.h, (W - Int(Float(spr.w) * k)) / 2, uiS(78), scale: k)
         var dotX = (W - kinds.count * uiS(14)) / 2
-        for i in kinds.indices { c.fillRect(dotX, uiS(268), uiS(9), uiS(5), i == kinds.firstIndex(of: kind) ? amber : packRGBA(80, 80, 92)); dotX += uiS(14) }
-        c.labelCentered(kind.displayName, uiS(282), size: uiSf(34), color: amber, weight: .heavy, glow: packRGBA(50, 36, 0))
-        c.labelCentered("THREAT \(kind.def.maxHealth) HP        \(kind.def.points) PTS", uiS(322), size: uiSf(18), color: packRGBA(220, 120, 120), weight: .semibold)
-        c.labelCentered(kind.codexText.capitalizedSentence, uiS(346), size: uiSf(18), color: ink, weight: .medium)
-        c.labelCentered("◀  ESC  ▶", H - uiS(20), size: uiSf(18), color: dim, weight: .medium)
+        for i in kinds.indices { c.fillRect(dotX, uiS(256), uiS(9), uiS(5), i == kinds.firstIndex(of: kind) ? amber : packRGBA(80, 80, 92)); dotX += uiS(14) }
+        c.labelCentered(kind.displayName, uiS(268), size: uiSf(28), color: amber, weight: .heavy, glow: packRGBA(50, 36, 0))
+        c.labelCentered("THREAT \(kind.def.maxHealth) HP        \(kind.def.points) PTS", uiS(302), size: uiSf(15), color: packRGBA(220, 120, 120), weight: .semibold)
+        // wrap the dossier line to the page — one long label used to run off both edges
+        var lines: [String] = [""]
+        for word in kind.codexText.capitalizedSentence.split(separator: " ") {
+            let cand = lines[lines.count - 1].isEmpty ? String(word) : lines[lines.count - 1] + " " + word
+            if c.labelWidth(cand, size: uiSf(15), weight: .medium) > uiS(580) { lines.append(String(word)) }
+            else { lines[lines.count - 1] = cand }
+        }
+        var ty = uiS(322)
+        for line in lines { c.labelCentered(line, ty, size: uiSf(15), color: ink, weight: .medium); ty += uiS(16) }
+        c.labelCentered("◀  [ESC]  ▶", H - uiS(20), size: uiSf(15), color: dim, weight: .medium)
     }
 
     /// The floor report shown INSIDE the elevator car (doors parted, world live
@@ -220,25 +252,60 @@ enum FrontEnd {
         if Int(t * 2) % 2 == 0 { c.labelCentered("PRESS  FIRE  TO  DESCEND", y, size: uiSf(22), color: amber, weight: .bold) }
     }
 
-    static func levelComplete(_ c: Canvas2D, world: World, t: Float) {
-        backdrop(c, t, top: packRGBA(6, 16, 10), bottom: packRGBA(10, 30, 16))
-        c.labelCentered("CITADEL FLOOR CLEARED", uiS(74), size: uiSf(42), color: packRGBA(120, 230, 150), weight: .heavy, shadow: true, glow: packRGBA(10, 50, 24))
-        c.labelCentered("\(world.colonyName) · FLOOR \(Progression.floorInBuilding(world.level))", uiS(126), size: uiSf(22), color: ink, weight: .semibold)
-        statRow(c, "KILLS", "\(world.killCount) / \(world.monsterTotal)", uiS(184))
-        if world.secretTotal > 0 { statRow(c, "SECRETS", "\(world.secretsFound) / \(world.secretTotal)", uiS(216)) }
-        statRow(c, "SCORE", "\(world.score)", world.secretTotal > 0 ? uiS(248) : uiS(216), color: amber)
-        if Int(t * 2) % 2 == 0 { c.labelCentered("PRESS  FIRE  TO  DESCEND", uiS(308), size: uiSf(28), color: amber, weight: .bold) }
+    /// The citadel-secured report shown ON the teleporter pad (world live behind
+    /// it): same diegetic panel language as the descend report, but cold — the
+    /// transit machinery is ARC's, not the colony's. FIRE commits the jump.
+    static func securedReport(_ c: Canvas2D, world: World, t: Float) {
+        let pw = uiS(430), ph = world.secretTotal > 0 ? uiS(240) : uiS(208)
+        let x0 = (W - pw) / 2, y0 = uiS(58)
+        c.fillRectBlend(x0, y0, pw, ph, packRGBA(4, 8, 12), 0.78)
+        for i in 0..<2 {                                            // cold hairline frame
+            c.fillRect(x0, y0 + (ph - 1) * i, pw, 1, packRGBA(70, 140, 170))
+            c.fillRect(x0 + (pw - 1) * i, y0, 1, ph, packRGBA(70, 140, 170))
+        }
+        c.labelCentered("CITADEL SECURED", y0 + uiS(16), size: uiSf(30), color: packRGBA(150, 210, 245), weight: .heavy, shadow: true, glow: packRGBA(14, 34, 52))
+        c.labelCentered("\(world.colonyName) retaken · destination \(Progression.planetName(world.level + 1))", y0 + uiS(54), size: uiSf(17), color: ink, weight: .semibold)
+        var y = y0 + uiS(88)
+        statRow(c, "KILLS", "\(world.killCount) / \(world.monsterTotal)", y); y += uiS(30)
+        if world.secretTotal > 0 { statRow(c, "SECRETS", "\(world.secretsFound) / \(world.secretTotal)", y); y += uiS(30) }
+        statRow(c, "SCORE", "\(world.score)", y, color: amber); y += uiS(38)
+        if Int(t * 2) % 2 == 0 { c.labelCentered("PRESS  FIRE  TO  JUMP", y, size: uiSf(22), color: packRGBA(150, 210, 245), weight: .bold) }
     }
 
-    // Citadel secured → the teleport jump to the next planet (shown between buildings).
-    static func teleport(_ c: Canvas2D, world: World, t: Float) {
-        backdrop(c, t, top: packRGBA(8, 10, 28), bottom: packRGBA(14, 16, 46))   // cold blue — a jump, not a descent
-        c.labelCentered("CITADEL SECURED", uiS(60), size: uiSf(44), color: packRGBA(150, 200, 255), weight: .heavy, shadow: true, glow: packRGBA(18, 30, 72))
-        c.labelCentered("\(world.colonyName) has fallen. The teleporter spins up.", uiS(116), size: uiSf(20), color: ink, weight: .medium)
-        c.labelCentered("TELEPORTING TO", uiS(172), size: uiSf(20), color: dim, weight: .semibold)
-        c.labelCentered(Progression.planetName(world.level + 1), uiS(202), size: uiSf(54), color: amber, weight: .heavy, shadow: true, glow: packRGBA(60, 48, 0))
-        statRow(c, "SCORE", "\(world.score)", uiS(286), color: amber)
-        if Int(t * 2) % 2 == 0 { c.labelCentered("PRESS  FIRE  TO  JUMP", uiS(328), size: uiSf(28), color: amber, weight: .bold) }
+    /// The descent readout over the title-ride lift car: destination + a
+    /// blinking transit cursor. This is the LOADING screen — it stays up
+    /// exactly as long as generation takes. Deliberately nothing else: the
+    /// car itself (swaying lamp, shaft lights sweeping past) sells the drop,
+    /// same as every between-floor ride.
+    static func rideOverlay(_ c: Canvas2D, level: Int, t: Float) {
+        let planet = Progression.planetName(level)
+        let floor = Progression.floorInBuilding(level)
+        c.fillRectBlend(0, uiS(24), W, uiS(56), packRGBA(0, 0, 0), 0.35)
+        c.labelCentered("ARC TRANSIT // DESCENDING", uiS(32), size: uiSf(13), color: coldDim, weight: .semibold, shadow: false, mono: true)
+        let cursor = Int(t * 2) % 2 == 0 ? "\u{2588}" : " "
+        c.labelCentered("\(planet) · FLOOR \(floor) \(cursor)", uiS(50), size: uiSf(20), color: cold, weight: .bold, shadow: false, mono: true)
+    }
+
+    /// The story card burned through the teleport static: the citadel is down,
+    /// where the beam is taking you, the running score. The text jitters and
+    /// drops rows like a weak carrier riding broadband noise.
+    static func teleportCard(_ c: Canvas2D, world: World, t: Float) {
+        func jx(_ k: Float) -> Int { Int(sinf(t * 37 + k) * 1.7 + sinf(t * 61 + k * 2.3)) }
+        let x0 = W / 2
+        c.fillRectBlend(0, uiS(96), W, uiS(180), packRGBA(0, 0, 0), 0.5)
+        c.fillRectBlend(0, uiS(96), W, 1, packRGBA(120, 180, 210), 0.4)
+        c.fillRectBlend(0, uiS(276) - 1, W, 1, packRGBA(120, 180, 210), 0.4)
+        // each row occasionally drops out for a frame — carrier slipping
+        func row(_ s: String, _ y: Int, _ size: CGFloat, _ col: UInt32, _ w: NSFont.Weight, _ k: Float, glow: UInt32? = nil) {
+            if Int((t + k) * 9) % 13 == 0 { return }
+            let tw = c.labelWidth(s, size: size, weight: w, mono: true)
+            c.label(s, x0 - tw / 2 + jx(k), y, size: size, color: col, weight: w, shadow: false, glow: glow, mono: true)
+        }
+        row("CITADEL SECURED", uiS(108), uiSf(30), packRGBA(150, 210, 245), .heavy, 0.7, glow: packRGBA(14, 34, 52))
+        row("\(world.colonyName) RETAKEN", uiS(148), uiSf(15), ink, .medium, 1.9)
+        row("TELEPORTING TO", uiS(178), uiSf(14), dim, .semibold, 3.1)
+        row(Progression.planetName(world.level + 1), uiS(196), uiSf(44), amber, .heavy, 4.3, glow: packRGBA(60, 48, 0))
+        row("SCORE \(world.score)", uiS(252), uiSf(16), amber, .bold, 5.6)
     }
 
     private static func statRow(_ c: Canvas2D, _ k: String, _ v: String, _ y: Int, color: UInt32 = 0xFFEEEEEE) {
@@ -246,7 +313,7 @@ enum FrontEnd {
         c.labelRight(v, W / 2 + uiS(160), y, size: uiSf(22), color: color, weight: .bold)
     }
 
-    static func gameOver(_ c: Canvas2D, world: World, input: InputState, qualifies: Bool, t: Float) {
+    static func gameOver(_ c: Canvas2D, world: World, input: InputState, qualifies: Bool, t: Float, pad: Bool = false) {
         backdrop(c, t, top: packRGBA(22, 4, 4), bottom: packRGBA(44, 8, 8))
         c.labelCentered("YOU DIED", uiS(64), size: uiSf(88), color: red, weight: .heavy, shadow: true, glow: redGlow)
         c.labelCentered("The \(world.colonyName) citadel holds.", uiS(168), size: uiSf(22), color: packRGBA(210, 160, 160), weight: .medium)
@@ -257,13 +324,13 @@ enum FrontEnd {
             let name = input.nameBuffer.isEmpty ? " " : input.nameBuffer
             let cursor = Int(t * 2) % 2 == 0 ? "_" : " "
             c.drawUnicodeCentered(name + cursor, uiS(310), fontSize: uiSf(40), 1, 1, 0.65)
-            c.labelCentered("[ RETURN ]", uiS(362), size: uiSf(18), color: dim, weight: .medium)
+            c.labelCentered("[RETURN]", uiS(362), size: uiSf(18), color: dim, weight: .medium)
         } else if Int(t * 2) % 2 == 0 {
-            c.labelCentered("PRESS  ENTER", uiS(300), size: uiSf(28), color: amber, weight: .bold)
+            c.labelCentered("PRESS  \(confirmName(pad: pad))", uiS(300), size: uiSf(28), color: amber, weight: .bold)
         }
     }
 
-    static func highScores(_ c: Canvas2D, hs: HighScores, t: Float, highlight: Int = -1) {
+    static func highScores(_ c: Canvas2D, hs: HighScores, t: Float, highlight: Int = -1, pad: Bool = false) {
         backdrop(c, t, top: packRGBA(10, 10, 22), bottom: packRGBA(16, 16, 36))
         c.labelCentered("HALL OF THE FALLEN", uiS(30), size: uiSf(42), color: packRGBA(200, 204, 244), weight: .heavy, shadow: true, glow: packRGBA(12, 12, 50))
         var y = uiS(90)
@@ -276,13 +343,17 @@ enum FrontEnd {
             c.labelRight("\(e.score)", W - uiS(72), y, size: uiSf(21), color: col, weight: .bold)
             y += uiS(27)
         }
-        if Int(t * 2) % 2 == 0 { c.labelCentered("PRESS  ENTER", H - uiS(32), size: uiSf(24), color: amber, weight: .bold) }
+        if Int(t * 2) % 2 == 0 { c.labelCentered("PRESS  \(confirmName(pad: pad))", H - uiS(32), size: uiSf(24), color: amber, weight: .bold) }
     }
 
     static func paused(_ c: Canvas2D) {
-        c.fillRectBlend(0, 0, W, H, packRGBA(0, 0, 0), 0.6)
+        // frosted glass: blur the frozen frame, then a light dark wash — the
+        // world stays readable behind the card (pause renders ONCE, so the
+        // CPU blur costs nothing per frame)
+        c.boxBlur(radius: uiS(5), passes: 3)
+        c.fillRectBlend(0, 0, W, H, packRGBA(6, 8, 12), 0.38)
         c.labelCentered("PAUSED", H / 2 - uiS(38), size: uiSf(66), color: amber, weight: .heavy, shadow: true)
-        c.labelCentered("P  Resume          ESC  Abandon Run", H / 2 + uiS(36), size: uiSf(22), color: ink, weight: .medium)
+        c.labelCentered("[P] Resume          [ESC] Abandon Run", H / 2 + uiS(36), size: uiSf(22), color: ink, weight: .medium)
     }
 
     private static func short(_ s: String) -> String { s.count > 16 ? String(s.prefix(16)) : s }

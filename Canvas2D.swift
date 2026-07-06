@@ -7,9 +7,9 @@
 // each wall column's perpendicular distance so billboarded sprites occlude
 // correctly behind geometry.
 //
-// Internal resolution is 320×200 — Doom's native mode — for the period-correct
-// chunky pixels. The 3-D view occupies the top `viewHeight` rows; the status
-// bar owns the bottom `statusBarHeight`.
+// Internal resolution is a scaled 640×400 — Doom's proportions — for the
+// period-correct chunky pixels. The 3-D view fills the whole framebuffer; the
+// HUD is a visor projection composited over it (no status bar strip).
 
 import Foundation
 import AppKit
@@ -17,18 +17,24 @@ import AppKit
 enum RenderConfig {
     // The UI is authored in a logical 640×400 space (2× Doom's base). The actual
     // framebuffer is that scaled by num/den — ONE knob for the whole game. The
-    // 8:5 aspect and 2:1 viewport are preserved at any scale, so FOV/projection
-    // are unchanged; you just get more pixels (smoother light, finer detail).
+    // 8:5 aspect is preserved at any scale, so FOV/projection are unchanged;
+    // you just get more pixels (smoother light, finer detail).
     //   3/2 → 960×600 · 2/1 → 1280×800 · 1/1 → 640×400
     static let num = 2, den = 1
-    static let baseWidth = 640, baseHeight = 400, baseStatusBar = 80
-    static let width = baseWidth * num / den                  // 960
-    static let height = baseHeight * num / den                // 600
-    static let statusBarHeight = baseStatusBar * num / den    // 120
-    static var viewHeight: Int { height - statusBarHeight }   // 480 — the 3-D viewport
-    static var horizon: Int { viewHeight / 2 }                // 240
-    /// Camera-plane half-width. 0.66 ≈ a 66° horizontal FOV at the 2:1 viewport.
+    static let baseWidth = 640, baseHeight = 400
+    static let width = baseWidth * num / den                  // 1280
+    static let height = baseHeight * num / den                // 800
+    /// The 3-D viewport is the FULL framebuffer — the marine sees the world
+    /// through her visor, with the HUD projected onto the lens, not a panel.
+    static var viewHeight: Int { height }                     // 800
+    static var horizon: Int { viewHeight / 2 }                // 400
+    /// Camera-plane half-width. 0.66 ≈ a 66° horizontal FOV.
     static let cameraPlane: Float = 0.66
+    /// Vertical projection scale in rows: the FOV/proportions were calibrated on
+    /// the original 2:1 viewport (viewH == width/2), so the row count one unit of
+    /// vertical ray slope spans stays pinned to width/2. The now-taller viewport
+    /// EXTENDS the vertical field of view rather than stretching the world.
+    static var projHeight: Int { width / 2 }                  // 640
 }
 
 /// Scale a logical-640×400 coordinate or size to the framebuffer (the UI layout
@@ -159,6 +165,43 @@ final class Canvas2D {
         hLine(x, x + w - 1, y + h - 1, color)
         vLine(x, y, y + h - 1, color)
         vLine(x + w - 1, y, y + h - 1, color)
+    }
+
+    /// In-place separable box blur (a few passes ≈ gaussian) — the pause
+    /// screen's frosted glass. Exact prefix-sum windows (edge-clamped), so no
+    /// darkening at the borders. One-time effects only: it walks the whole
+    /// framebuffer, which is far too hot for per-frame use.
+    func boxBlur(radius: Int, passes: Int = 3) {
+        guard radius > 0, passes > 0 else { return }
+        let tmp = UnsafeMutablePointer<UInt32>.allocate(capacity: count)
+        defer { tmp.deallocate() }
+        let maxLen = max(width, height) + 1
+        var pr = [Int](repeating: 0, count: maxLen)
+        var pg = [Int](repeating: 0, count: maxLen)
+        var pb = [Int](repeating: 0, count: maxLen)
+        func pass(_ src: UnsafeMutablePointer<UInt32>, _ dst: UnsafeMutablePointer<UInt32>,
+                  lines: Int, len: Int, lineStride: Int, elemStride: Int) {
+            for l in 0..<lines {
+                let base = l * lineStride
+                for i in 0..<len {
+                    let c = src[base + i * elemStride]
+                    pr[i + 1] = pr[i] + Int(c & 0xFF)
+                    pg[i + 1] = pg[i] + Int((c >> 8) & 0xFF)
+                    pb[i + 1] = pb[i] + Int((c >> 16) & 0xFF)
+                }
+                for i in 0..<len {
+                    let lo = max(0, i - radius), hi = min(len - 1, i + radius)
+                    let n = hi - lo + 1
+                    dst[base + i * elemStride] = packRGBA((pr[hi + 1] - pr[lo]) / n,
+                                                          (pg[hi + 1] - pg[lo]) / n,
+                                                          (pb[hi + 1] - pb[lo]) / n)
+                }
+            }
+        }
+        for _ in 0..<passes {
+            pass(framebuffer, tmp, lines: height, len: width, lineStride: width, elemStride: 1)   // horizontal
+            pass(tmp, framebuffer, lines: width, len: height, lineStride: 1, elemStride: width)   // vertical
+        }
     }
 
     // ── Sprites / bitmaps ─────────────────────────────────────────────────

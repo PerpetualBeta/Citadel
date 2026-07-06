@@ -29,7 +29,7 @@ enum WallTex: Int, CaseIterable {
     case liftWall            // elevator-car lining — a machined steel box (no relief/grime; see MapGen.steelBoxCar)
 }
 enum FlatTex: Int, CaseIterable {
-    case concrete = 0, metalFloor, grate, nukage, ceilTech, ceilDark, ceilStone, rock, blood
+    case concrete = 0, metalFloor, grate, nukage, ceilTech, ceilDark, ceilStone, rock, blood, teleportPad
 }
 
 final class Textures {
@@ -162,7 +162,7 @@ final class Textures {
             }}
 
         case .pipework:
-            // a bank of vertical pipes with flanges and a valve wheel
+            // a bank of vertical pipes with flanges, stamped with the owner's mark
             for i in 0..<px.count { px[i] = rgb(38, 40, 48) }                                  // dark recess behind
             let gap = s / 4, pipeW = 44
             for p in 0..<4 {
@@ -176,14 +176,11 @@ final class Textures {
                     if y % 64 < 6 { o -= 30 } else if y % 64 == 6 { o += 24 }                   // flange bands
                     set(x, y, rgb(Int(Float(tone + o) * sh), Int(Float(tone + 4 + o) * sh), Int(Float(tone + 14 + o) * sh)))
                 }}
-                if p == 1 {                                                                    // a valve wheel
-                    let vy = s / 2, rr = 28
-                    for a in stride(from: Float(0), to: Float(6.2832), by: 0.03) {
-                        set(cxp + Int(cos(a) * Float(rr)), vy + Int(sin(a) * Float(rr)), rgb(156, 124, 60))
-                    }
-                    for r in -rr...rr { set(cxp + r, vy, rgb(156, 124, 60)); set(cxp, vy + r, rgb(156, 124, 60)) }
-                }
             }
+            // the ARC seal stencilled across the bank — the corporation marks its
+            // plant (the old circle-and-cross doodle read as nothing; this is the
+            // same seal the title screen and visor carry, sprayed in stencil gold)
+            stampArcSeal(&px, s, cx: s / 2, cy: s / 2, r: 34, color: rgb(156, 124, 60))
 
         case .glass:
             // reinforced observation glass set in a steel mullion frame
@@ -492,6 +489,40 @@ final class Textures {
         case .none: return 0
         }
     }
+    /// The ARC corporate seal as a painted stencil — broken outer ring, inner
+    /// dome, "ARC" beneath: the same mark FrontEnd.arcSeal draws for the title
+    /// and visor, baked here into wall pixels wherever the corporation's plant
+    /// runs. Semi-transparent, so it reads as sprayed over the metal.
+    private func stampArcSeal(_ px: inout [UInt32], _ s: Int, cx: Int, cy: Int, r: Int, color: UInt32) {
+        func put(_ x: Int, _ y: Int, _ a: Float) {
+            guard x >= 0, x < s, y >= 0, y < s else { return }
+            px[y * s + x] = mixRGBA(px[y * s + x], color, a)
+        }
+        let R = Float(r), top: Float = 4.712389            // gap at the top of the ring
+        let steps = r * 10
+        for k in 0..<steps {
+            let ang = Float(k) / Float(steps) * 6.2831853
+            var d = abs(ang - top); if d > 3.14159 { d = 6.2831853 - d }
+            if d < 0.5 { continue }
+            for w in 0..<2 {
+                put(cx + Int(cosf(ang) * (R - Float(w))), cy + Int(sinf(ang) * (R - Float(w))), 0.8)
+            }
+        }
+        let ir = R * 0.52                                  // inner dome (upper arc)
+        for k in 0...steps {
+            let ang = 3.14159 + Float(k) / Float(steps) * 3.14159
+            for w in 0..<2 {
+                put(cx + Int(cosf(ang) * (ir - Float(w))), cy + Int(sinf(ang) * (ir - Float(w)) - R * 0.04), 0.8)
+            }
+        }
+        let scale = 2                                      // "ARC", the game's own pixel font
+        px.withUnsafeMutableBufferPointer { buf in
+            Font.draw("ARC", into: buf.baseAddress!, w: s, h: s,
+                      x: cx - Font.width("ARC", scale: scale) / 2, y: cy + Int(R * 0.06),
+                      scale: scale, color: color, shadow: nil, alpha: 0.85)
+        }
+    }
+
     private func reliefStrength(flat tex: FlatTex) -> Float {
         switch tex {
         case .rock: return 1.4
@@ -501,6 +532,7 @@ final class Textures {
         case .ceilTech: return 0.6
         case .grate: return 0.5
         case .ceilDark: return 0.4
+        case .teleportPad: return 0.35       // machined plate — the rings do the talking
         case .nukage, .blood: return 0       // liquids — they shimmer in the raycaster
         }
     }
@@ -598,6 +630,26 @@ final class Textures {
                 var r = 96 + Int(t * 84), g = 18 + Int(t * 24), b = 20 + Int(t * 18)
                 if clot > 0.7 { r -= 36; g -= 8 }
                 set(x, y, rgb(r, g, b))
+            case .teleportPad:
+                // the planet-jump pad: dark machined plate under concentric
+                // emitter rings that glow teleport-cold, a bright focus disc at
+                // centre. One cell = one tile, so the pattern is authored to the
+                // full tile: rings at fixed radii from the tile centre.
+                let fx = Float(x) - Float(s) / 2 + 0.5, fy = Float(y) - Float(s) / 2 + 0.5
+                let rr = (fx * fx + fy * fy).squareRoot() / (Float(s) / 2)   // 0 centre … 1 tile edge
+                var o = Int((fbm(Float(x) / 22, Float(y) / 22, 16, 51) - 0.5) * 12)
+                var rc = 34 + o, gc = 38 + o, bc = 44 + o                    // base plate
+                let ring = min(abs(rr - 0.82), min(abs(rr - 0.58), abs(rr - 0.34)))
+                if ring < 0.035 {                                            // emitter rings
+                    let core = 1 - ring / 0.035
+                    rc = 60 + Int(core * 90); gc = 130 + Int(core * 95); bc = 160 + Int(core * 95)
+                }
+                if rr < 0.12 {                                               // the focus disc
+                    let core = 1 - rr / 0.12
+                    rc = 90 + Int(core * 70); gc = 170 + Int(core * 60); bc = 200 + Int(core * 55)
+                }
+                if rr > 0.94 { o -= 26; rc = 34 + o; gc = 38 + o; bc = 44 + o } // seated rim groove
+                set(x, y, rgb(rc, gc, bc))
             }
         }}
         if reliefOn { applyRelief(&px, s, reliefStrength(flat: tex)) }

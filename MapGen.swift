@@ -163,24 +163,34 @@ enum MapGen {
         map.playerDir = rng.f(0, 2 * .pi)
         let startCell = map.idx(start.cx, start.cy)
 
-        // ── ARRIVAL elevator ── the marine rode DOWN to get here, so he starts
-        // inside a car on the start room's edge, facing out, its doors parting
-        // (World opens them on spawn). Same rules as the exit car: open front,
-        // solid back. If no side qualifies the level just starts in the room.
+        // ── ARRIVAL ── the marine rode DOWN to get here, so he starts inside a
+        // car on the start room's edge, facing out, its doors parting (World
+        // opens them on spawn). Same rules as the exit car: open front, solid
+        // back. EXCEPT the first floor of a later citadel: he MATERIALISED
+        // there — an open teleporter-receiver alcove, no car, no doors.
+        // If no side qualifies the level just starts in the room.
         if let site = elevatorSite(map, room: start) {
             let i = site.cell
             let wx = i % map.w, wy = i / map.w
-            map.wall[i] = WallTex.elevatorSealed.rawValue
-            map.doors[i] = DoorState()
+            if Progression.floorInBuilding(level) == 1 && level > 1 {
+                teleporterPad(map, cell: i)
+            } else {
+                map.wall[i] = WallTex.elevatorSealed.rawValue
+                map.doors[i] = DoorState()
+                steelBoxCar(map, cell: i)
+            }
             map.entryCell = i
-            steelBoxCar(map, cell: i)
             map.playerStart = SIMD2<Float>(Float(wx) + 0.5, Float(wy) + 0.5)
             map.playerDir = atan2(Float(site.front.1 - wy), Float(site.front.0 - wx))
         }
 
-        // ── exit switch in the last room ──
+        // ── exit in the last room: the colony elevator — or, on the citadel's
+        //    LAST floor, the planet-jump TELEPORTER (there is nothing deeper
+        //    to ride to) ──
         let exitRoom = rooms[rooms.count - 1]
-        let exitCell = placeExitSwitch(map, room: exitRoom)
+        let exitCell = Progression.isLastFloor(level)
+            ? placeTeleporter(map, room: exitRoom)
+            : placeExitSwitch(map, room: exitRoom)
         map.exitCell = exitCell
 
         // ── doors ──
@@ -258,9 +268,16 @@ enum MapGen {
         // The elevator cars are LIT interiors: the bake can't reach inside a door
         // cell (and the kernel's ceiling-lamp grid skips non-open cells), so stamp
         // a warm cabin level directly — the dynamic cabin lamp rides on top.
+        // Teleporter pads get a COLD standby stamp instead: the transit machinery
+        // is powered, and its light is alien to the colony's warm phosphor.
         for c in [map.exitCell, map.entryCell] where c >= 0 {
-            map.lightColor[c] = SIMD3(0.95, 0.88, 0.72)
-            map.light[c] = 0.85
+            if map.floor[c] == FlatTex.teleportPad.rawValue {
+                map.lightColor[c] = SIMD3(0.72, 0.92, 1.0)
+                map.light[c] = 0.9
+            } else {
+                map.lightColor[c] = SIMD3(0.95, 0.88, 0.72)
+                map.light[c] = 0.85
+            }
         }
 
         // ── spawns ──
@@ -350,6 +367,31 @@ enum MapGen {
         let i = map.idx(room.x, room.y - 1)
         if map.inBounds(room.x, room.y - 1) { map.wall[i] = WallTex.exitSwitch.rawValue; return i }
         return map.idx(room.x, room.y)
+    }
+
+    /// The planet-jump TELEPORTER: sited like an elevator (solid back + jambs,
+    /// open front) but the cell itself is an OPEN pad you walk onto — no door,
+    /// no car. Cased in the same lift steel so it reads as installed transit
+    /// machinery, with its own emissive-ringed pad flat underfoot.
+    private static func placeTeleporter(_ map: GameMap, room: Room) -> Int {
+        if let site = elevatorSite(map, room: room) {
+            teleporterPad(map, cell: site.cell)
+            return site.cell
+        }
+        // fallback: the legacy switch wall — USE engages the jump directly
+        let i = map.idx(room.x, room.y - 1)
+        if map.inBounds(room.x, room.y - 1) { map.wall[i] = WallTex.exitSwitch.rawValue; return i }
+        return map.idx(room.x, room.y)
+    }
+
+    /// Convert a sited cell into an open teleporter pad: steel casing all round
+    /// (the same shaft-liner treatment as a lift car), pad flat, tech ceiling.
+    private static func teleporterPad(_ map: GameMap, cell: Int) {
+        map.wall[cell] = 0
+        map.doors[cell] = nil
+        steelBoxCar(map, cell: cell)
+        map.floor[cell] = FlatTex.teleportPad.rawValue
+        map.ceil[cell] = FlatTex.ceilTech.rawValue
     }
 
     /// Scan a room's border for a cell that can host an ELEVATOR. The car must
@@ -455,6 +497,20 @@ enum MapGen {
             // no hole): never beside another door, never touching an elevator car
             if !doorClear(map, doorCell) { continue }
             if nearElevator(map, dx, dy) || nearElevator(map, dx + 1, dy) { continue }
+            // the closet must be SEALED on every side but its hidden door —
+            // DIAGONALS included: the SDF rounds wall corners, so an open cell
+            // kissing a corner reads as a see-through slit, and a closet carved
+            // beside a corridor has no back wall at all. Doors count as leaks
+            // (one could slide open straight into the closet).
+            var sealed = true
+            for oy in -1...1 { for ox in -1...1 where !(ox == 0 && oy == 0) {
+                let nx = dx + 1 + ox, ny = dy + oy
+                guard map.inBounds(nx, ny) else { sealed = false; continue }
+                let ni = map.idx(nx, ny)
+                if ni == doorCell { continue }
+                if map.wall[ni] == 0 || map.doors[ni] != nil { sealed = false }
+            } }
+            if !sealed { continue }
             // doorCell stays SOLID with its existing wall texture (hidden); only
             // the closet behind is hollowed. The secret DoorState is added by the
             // caller, so USE reveals it and it slides up like the wall it mimics.
@@ -505,18 +561,22 @@ enum MapGen {
             let fa = (door.0 + perp.0, door.1 + perp.1), fb = (door.0 - perp.0, door.1 - perp.1)
             guard map.inBounds(fa.0, fa.1), map.wall[map.idx(fa.0, fa.1)] != 0,
                   map.inBounds(fb.0, fb.1), map.wall[map.idx(fb.0, fb.1)] != 0 else { continue }
-            // the chamber must be SEALED — its only opening is the door, so it can't leak
-            // into an adjacent corridor / room (which strands the drums out in the open)
+            // the chamber must be SEALED — its only opening is the door, so it can't
+            // leak into an adjacent corridor / room. Checked over the FULL eight-cell
+            // neighbourhood: the SDF rounds wall corners, so a cell open DIAGONALLY
+            // off a chamber corner pinches that corner into a see-through slit. And
+            // doors count as leaks — a corridor door against the chamber slides open
+            // into it.
             let chamberSet = Set(chamber.map { map.idx($0.0, $0.1) })
             var sealed = true
             seal: for (cx, cy) in chamber {
-                for (ox, oy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                for oy in -1...1 { for ox in -1...1 where !(ox == 0 && oy == 0) {
                     let nx = cx + ox, ny = cy + oy
                     guard map.inBounds(nx, ny) else { sealed = false; break seal }
                     let ni = map.idx(nx, ny)
                     if ni == dCell || chamberSet.contains(ni) { continue }
-                    if map.wall[ni] == 0 { sealed = false; break seal }          // leaks into open space
-                }
+                    if map.wall[ni] == 0 || map.doors[ni] != nil { sealed = false; break seal }
+                } }
             }
             if !sealed || !doorClear(map, dCell) { continue }
             map.floor[dCell] = theme.floor.rawValue; map.ceil[dCell] = theme.ceil.rawValue; map.light[dCell] = 0.6
@@ -644,8 +704,25 @@ enum MapGen {
             if g < queenGloom { queenGloom = g; queenRoomIdx = ri }
         }
 
-        // keys
-        for (color, cell) in keyCells { items.append(ItemSpawn(kind: color.item, pos: note(center(cell)))) }
+        // keys — the one pickup solvability hangs off, so a key is NEVER dropped;
+        // but the lock pass rolls key cells independently, and on a two-lock
+        // floor both cards could land stacked on one cell. If the chosen cell is
+        // occupied, nudge within the SAME room (any cell there is still on the
+        // near side of its lock, which is all solvability needs).
+        for (color, cell) in keyCells {
+            var p = center(cell)
+            if placed.contains(where: { vlen($0 - p) < 0.9 }) {
+                let cx = cell % map.w, cy = cell / map.w
+                if let r = rooms.first(where: { cx >= $0.x && cx < $0.x + $0.w && cy >= $0.y && cy < $0.y + $0.h }) {
+                    for _ in 0..<24 {
+                        guard let c2 = randCell(in: r) else { break }
+                        let q = center(c2)
+                        if !placed.contains(where: { vlen($0 - q) < 0.9 }) { p = q; break }
+                    }
+                }
+            }
+            items.append(ItemSpawn(kind: color.item, pos: note(p)))
+        }
         // secret loot
         if let s = secretLootCell { items.append(ItemSpawn(kind: rng.chance(0.5) ? .megaArmor : .weaponRocket, pos: note(center(s)))) }
 
@@ -937,6 +1014,35 @@ enum MapGen {
             }
         } }
         map.pipe = ext
+        // No DIAGONAL-ONLY adjacency may survive in the mask: the kernel's
+        // bilinear upsample holds ~0.5 along such a kiss's whole diagonal
+        // instead of ramping, and the pipe-terminus geometry (bend + flange
+        // collars) smears along that plateau into floating phantom hardware
+        // (the 2026-07-06 "what is this?" lozenge). Clear the weaker member
+        // (fewer orthogonal routed neighbours) until diagonally clean.
+        var kissGuard = 0
+        var kissed = true
+        while kissed && kissGuard < 8 {
+            kissed = false; kissGuard += 1
+            for y in 0..<(map.h - 1) { for x in 0..<(map.w - 1) {
+                for (dx, dy) in [(1, 1), (1, -1)] {
+                    let ny = y + dy
+                    guard ny >= 0, ny < map.h else { continue }
+                    let a = map.idx(x, y), b = map.idx(x + dx, ny)
+                    guard map.pipe[a] >= 0.5, map.pipe[b] >= 0.5 else { continue }
+                    guard map.pipe[map.idx(x + dx, y)] < 0.5, map.pipe[map.idx(x, ny)] < 0.5 else { continue }
+                    func orthoRouted(_ cx: Int, _ cy: Int) -> Int {
+                        var n = 0
+                        for (ox, oy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] where map.inBounds(cx + ox, cy + oy) {
+                            if map.pipe[map.idx(cx + ox, cy + oy)] >= 0.5 { n += 1 }
+                        }
+                        return n
+                    }
+                    map.pipe[orthoRouted(x, y) <= orthoRouted(x + dx, ny) ? a : b] = 0
+                    kissed = true
+                }
+            } }
+        }
 
         return (monsters, items, drums, sockets, props)
     }

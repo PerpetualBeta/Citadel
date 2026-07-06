@@ -121,11 +121,14 @@ enum Captures {
                  to: dir.appendingPathComponent("12-door.png"))
         print("  wrote 12-door.png")
 
-        // intel + briefing + level cleared + high scores
+        // intel + briefing + the in-car floor report + high scores
         let intel = Canvas2D(); FrontEnd.intel(intel, t: 5.0); save(intel, "intel")
         let brief = Canvas2D(); FrontEnd.briefing(brief, t: 0.5); save(brief, "briefing")
-        world.levelComplete = true
-        let cleared = Canvas2D(); FrontEnd.levelComplete(cleared, world: world, t: 1.0); save(cleared, "cleared")
+        let cleared = Canvas2D()
+        draw3D(world, into: cleared)
+        HUD().draw(world, into: cleared)
+        FrontEnd.descendReport(cleared, world: world, t: 1.0)   // the diegetic panel shown inside the exit car
+        save(cleared, "cleared")
         let scores = Canvas2D(); FrontEnd.highScores(scores, hs: hs, t: 0.5); save(scores, "highscores")
 
         // weapon contact sheet — every viewmodel at once (grid sized to the count,

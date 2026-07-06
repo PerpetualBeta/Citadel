@@ -193,7 +193,8 @@ struct SpriteCompositor {
                             dynLight: (Float, Float, Float) = (0, 0, 0), groundFade: Bool = false,
                             depthBuf: UnsafePointer<Float>? = nil) {
         let W = viewW
-        let lineFull = Float(viewH) / transformY
+        // vertical scale pinned to the 2:1-calibrated projection (matches the kernel)
+        let lineFull = Float(RenderConfig.projHeight) / transformY
         let screenX = Int(Float(W) / 2 * (1 + transformX / transformY))
         let spriteH = Int(lineFull * billboardH)
         if spriteH < 1 { return }
@@ -259,7 +260,7 @@ struct SpriteCompositor {
         let tY = invDet * (-planeY * rel.x + planeX * rel.y)
         if tY <= 0.15 { return }
         let W = viewW
-        let lineFull = Float(viewH) / tY
+        let lineFull = Float(RenderConfig.projHeight) / tY
         let screenX = Int(Float(W) / 2 * (1 + tX / tY))
         let screenY = horizon + Int(lineFull * 0.5) - Int(lineFull * pa.height)
         if screenX < 0 || screenX >= W || tY >= c.zbuffer[screenX] { return }

@@ -102,6 +102,173 @@ enum SmokeTest {
         }
         check(boxViolations == 0, "elevator boxes stay sealed across a 40-seed sweep (\(boxViolations) violated)")
 
+        // carved side-chambers (secret closets + fuel stores) must be SEALED
+        // boxes: every pocket cell's full 8-neighbourhood is solid apart from
+        // its own door. An open orthogonal is a missing back wall; an open
+        // DIAGONAL is a see-through corner slit (the SDF rounds wall corners).
+        var pocketLeaks = 0, closetsSeen = 0, storesSeen = 0
+        for sd in UInt64(1)...30 {
+            for lv in [2, 5, 7] {
+                let gp = MapGen.generate(level: lv, colonyIndex: Int(sd % 6), seed: sd &* 9241 &+ UInt64(lv))
+                let mp = gp.map
+                for (di, d) in mp.doors where d.secret || mp.wall[di] == WallTex.doorHazard.rawValue {
+                    if d.secret { closetsSeen += 1 } else { storesSeen += 1 }
+                    // the pocket = the door's SMALL open side (flood ≤ 6 cells; the
+                    // room side floods big and is discarded)
+                    let dx0 = di % mp.w, dy0 = di / mp.w
+                    var regions: [Set<Int>] = []
+                    for (ox, oy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                        guard mp.inBounds(dx0 + ox, dy0 + oy), mp.wall[mp.idx(dx0 + ox, dy0 + oy)] == 0 else { continue }
+                        var seen: Set<Int> = [mp.idx(dx0 + ox, dy0 + oy)]
+                        var q = Array(seen), qi = 0, capped = false
+                        while qi < q.count {
+                            if seen.count > 6 { capped = true; break }
+                            let c = q[qi]; qi += 1
+                            let cx = c % mp.w, cy = c / mp.w
+                            for (ax, ay) in [(1, 0), (-1, 0), (0, 1), (0, -1)] where mp.inBounds(cx + ax, cy + ay) {
+                                let mi = mp.idx(cx + ax, cy + ay)
+                                if mi == di || seen.contains(mi) || mp.wall[mi] != 0 { continue }
+                                seen.insert(mi); q.append(mi)
+                            }
+                        }
+                        if !capped { regions.append(seen) }
+                    }
+                    guard let pocket = regions.min(by: { $0.count < $1.count }) else { continue }
+                    for c in pocket {
+                        let cx = c % mp.w, cy = c / mp.w
+                        for oy in -1...1 { for ox in -1...1 where !(ox == 0 && oy == 0) {
+                            guard mp.inBounds(cx + ox, cy + oy) else { pocketLeaks += 1; continue }
+                            let ni = mp.idx(cx + ox, cy + oy)
+                            if ni == di || pocket.contains(ni) { continue }
+                            if mp.wall[ni] == 0 || mp.doors[ni] != nil { pocketLeaks += 1 }
+                        } }
+                    }
+                }
+            }
+        }
+        check(pocketLeaks == 0, "carved pockets are sealed across a 90-map sweep (\(pocketLeaks) leaks)")
+        check(closetsSeen > 0 && storesSeen > 0,
+              "the stricter seals still place chambers (\(closetsSeen) closets, \(storesSeen) stores)")
+
+        // no two pickups may spawn STACKED (interpenetrating SDF props read as
+        // one broken object) — the keycards were the blind spot: rolled
+        // independently, two locks could put both cards on one cell
+        var stackedItems = 0
+        for sd in UInt64(1)...15 {
+            for lv in [4, 6] {
+                let gi = MapGen.generate(level: lv, colonyIndex: Int(sd % 6), seed: sd &* 6367 &+ UInt64(lv))
+                for i in 0..<gi.items.count {
+                    for j in (i + 1)..<gi.items.count where vlen(gi.items[i].pos - gi.items[j].pos) < 0.85 {
+                        stackedItems += 1
+                    }
+                }
+            }
+        }
+        check(stackedItems == 0, "no stacked pickups across a 30-map sweep (\(stackedItems) pairs)")
+
+        // the pipe-routing mask must be DIAGONALLY CLEAN: a diagonal-only
+        // adjacency makes the kernel's bilinear upsample plateau at mid-values,
+        // and the pipe-terminus geometry smears along it as floating hardware
+        var pipeKisses = 0
+        for sd in UInt64(1)...20 {
+            let gk = MapGen.generate(level: Int(sd % 8) + 1, colonyIndex: Int(sd % 6), seed: sd &* 2917 &+ 5)
+            let mk = gk.map
+            for y in 0..<(mk.h - 1) { for x in 0..<(mk.w - 1) {
+                for (dx, dy) in [(1, 1), (1, -1)] {
+                    let ny = y + dy
+                    guard ny >= 0, ny < mk.h else { continue }
+                    if mk.pipe[mk.idx(x, y)] >= 0.5, mk.pipe[mk.idx(x + dx, ny)] >= 0.5,
+                       mk.pipe[mk.idx(x + dx, y)] < 0.5, mk.pipe[mk.idx(x, ny)] < 0.5 { pipeKisses += 1 }
+                }
+            } }
+        }
+        check(pipeKisses == 0, "pipe routing is diagonally clean across a 20-map sweep (\(pipeKisses) kisses)")
+
+        // every fuel drum must be REFUELLABLE — a standable point inside its
+        // trigger ring (a drum boxed in by dorm-bed colliders is fuel the
+        // player can see and never have; World relocates those at load)
+        var dryDrums = 0, drumsChecked = 0
+        for sd in UInt64(1)...12 {
+            for lv in [3, 5] {
+                let wd = World(level: lv, colonyIndex: Int(sd % 6), seed: sd &* 5077 &+ UInt64(lv))
+                for d in wd.drums {
+                    drumsChecked += 1
+                    if !wd.drumReachable(d.pos) { dryDrums += 1 }
+                }
+            }
+        }
+        check(dryDrums == 0, "all \(drumsChecked) drums across a 24-map sweep are reachable (\(dryDrums) boxed in)")
+
+        // the citadel's LAST floor exits by TELEPORTER — an open pad (no door),
+        // wearing the pad flat — and the first floor of the NEXT citadel receives
+        // by pad too: the marine materialised there, so no arrival car either
+        let g8 = MapGen.generate(level: 8, colonyIndex: 0, seed: 8080)
+        let m8 = g8.map
+        check(m8.exitCell >= 0 && m8.wall[m8.exitCell] == 0 && m8.doors[m8.exitCell] == nil,
+              "L8 exit is an open teleporter pad (no door)")
+        check(m8.floor[m8.exitCell] == FlatTex.teleportPad.rawValue, "L8 pad wears the teleport flat")
+        check(m8.entryCell >= 0 && m8.doors[m8.entryCell] != nil, "L8 arrival is still a lift car")
+        let g9 = MapGen.generate(level: 9, colonyIndex: 1, seed: 9090)
+        let m9 = g9.map
+        check(m9.entryCell >= 0 && m9.wall[m9.entryCell] == 0 && m9.doors[m9.entryCell] == nil,
+              "L9 arrival is an open receiver pad (teleported in)")
+        check(m9.floor[m9.entryCell] == FlatTex.teleportPad.rawValue, "L9 receiver wears the teleport flat")
+        check(m9.exitCell >= 0 && m9.doors[m9.exitCell] != nil, "L9 exit is an elevator again")
+
+        // the title-descent ride: the hand-built shaft world is a lit, sealed
+        // car with its leaves shut — what the player watches while floor 1 builds
+        let ride = World.liftRideShaft()
+        check(ride.map.doors[ride.map.exitCell] != nil && ride.elevatorPhase == .descending,
+              "lift-ride shaft world assembles (shut leaves, lamp keyed)")
+        // the visor redesign: the 3-D view owns the whole framebuffer
+        check(RenderConfig.viewHeight == RenderConfig.height, "the 3-D view fills the visor (no status bar)")
+
+        // the teleport flow end-to-end: a defeated Queen + a body on the pad arms
+        // the report; a FRESH fire press charges; full charge completes the level
+        let tAudio = AudioEngine()
+        let tInput = InputState()
+        let w8t = World(level: 8, colonyIndex: 0, seed: 8080)
+        for i in w8t.monsters.indices where w8t.monsters[i].kind == .queen {
+            w8t.monsters[i].state = .dead
+            w8t.monsters[i].burn = 1
+        }
+        let px = w8t.map.exitCell % w8t.map.w, py = w8t.map.exitCell / w8t.map.w
+        w8t.player.pos = SIMD2(Float(px) + 0.5, Float(py) + 0.5)
+        tInput.kb.fire = true                               // held from before boarding —
+        w8t.update(dt: 1.0 / 60, input: tInput, audio: tAudio)
+        check(w8t.teleportPhase == .await, "standing the pad arms the jump report")
+        w8t.update(dt: 1.0 / 60, input: tInput, audio: tAudio)
+        check(w8t.teleportPhase == .await, "…and a held trigger does NOT jump")
+        tInput.kb.fire = false
+        w8t.update(dt: 1.0 / 60, input: tInput, audio: tAudio)
+        tInput.kb.fire = true                               // the fresh press commits
+        w8t.update(dt: 1.0 / 60, input: tInput, audio: tAudio)
+        check(w8t.teleportPhase == .charging, "a fresh fire press engages the teleport")
+        tInput.kb.fire = false
+        for _ in 0..<Int(World.teleportChargeTime * 60) + 30 {
+            w8t.update(dt: 1.0 / 60, input: tInput, audio: tAudio)
+        }
+        check(w8t.teleportT >= 1 && w8t.levelComplete, "full charge completes the citadel")
+
+        // a drained recharge socket latches DEPLETED (panel goes red) and must
+        // NOT dispense the self-recharge trickle to a camper — it re-arms only
+        // once a tenth of the reserve has been rebuilt (~12 s at the regen rate)
+        let wS = World(level: 2, colonyIndex: 0, seed: 777)
+        if let si = wS.sockets.indices.first {
+            let sIn = InputState()
+            wS.player.pos = wS.sockets[si].pos
+            wS.player.ammo[AmmoType.cells.rawValue] = 0
+            wS.sockets[si].charge = 5                              // nearly dry
+            for _ in 0..<30 { wS.update(dt: 1.0 / 60, input: sIn, audio: tAudio) }
+            check(wS.sockets[si].depleted, "a drained socket latches DEPLETED")
+            let cellsAfterDrain = wS.player.ammo[AmmoType.cells.rawValue]
+            for _ in 0..<120 { wS.update(dt: 1.0 / 60, input: sIn, audio: tAudio) }
+            check(wS.player.ammo[AmmoType.cells.rawValue] == cellsAfterDrain,
+                  "a depleted socket doesn't dispense its trickle to a camper")
+        } else {
+            check(false, "level 2 placed no recharge socket to test")
+        }
+
         // 2. game loop: run a world for a few seconds of simulated play
         let audio = AudioEngine()
 

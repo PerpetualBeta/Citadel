@@ -66,6 +66,8 @@ struct Socket {
     var maxCharge: Int = 1       // full reserve (drives the wall panel's capacity readout)
     var regenAcc: Float = 0      // fractional self-recharge accumulator (powered infrastructure tops itself back up)
     var pulse: Float = 0         // glow pulse accumulator (renderer reads it)
+    var depleted = false         // ran dry: the panel goes RED and won't dispense until it
+                                 // has rebuilt a tenth of its reserve (~12 s at the regen rate)
 }
 
 final class World {
@@ -84,7 +86,11 @@ final class World {
     var combatHeat: Float = 0      // 0…1 recent weapon-fire / damage; feeds the reactive audio bed, decays each frame
 
     var killCount = 0
-    let monsterTotal: Int
+    /// Every alien this floor has EVER held — the initial population plus each
+    /// drone the Queen births (breedQueen bumps it). killCount == monsterTotal
+    /// therefore means every alien that ever existed here is dead: with the
+    /// Queen burned (no more spawning), the HUD counter is a true clear-meter.
+    private(set) var monsterTotal: Int
     var secretsFound = 0
     let secretTotal: Int
 
@@ -96,11 +102,30 @@ final class World {
     // drops with a rumble and a judder, THEN the level completes.
     enum ElevatorPhase { case idle, boarding, awaitFire, closing, descending }
     var elevatorPhase: ElevatorPhase = .idle
-    private var prevElevFire = false   // FIRE edge-latch for the descend prompt
+    private var prevElevFire = false   // FIRE edge-latch for the descend/jump prompts
     private var entryOpenSounded = false, entryShutSounded = false
     private var elevatorT: Float = 0
-    private let elevatorRideTime: Float = 2.6
+    /// Nominal ride length. The ride doubles as the LOADING screen — the next
+    /// floor generates on a background queue while the car drops — so a held
+    /// ride (holdRide) extends past this until the floor below is ready.
+    static let rideTime: Float = 2.6
+    var holdRide = false              // renderer: true while the next floor is still generating
+    private var rideRumbleT: Float = 0 // re-arms the winch rumble on an extended ride
     var rideShake: Float = 0          // 0…1 envelope, read by the renderer's camera
+
+    // ── the teleporter ── the LAST floor of a citadel has no deeper floor to
+    // ride to: its exit is a pad. Step on (Queen dead + burned), FIRE commits,
+    // the charge ramps teleportT 0→1 — the renderer dissolves the visor feed to
+    // static against it — and at full charge the level completes.
+    enum TeleportPhase { case idle, await, charging }
+    var teleportPhase: TeleportPhase = .idle
+    var teleportT: Float = 0                     // 0…1 charge = static coverage
+    static let teleportChargeTime: Float = 2.2
+    let isTeleportFloor: Bool                    // exits by pad, not lift
+    let arrivalByTeleport: Bool                  // floor 1 of a later citadel — you materialised here
+    private var padHintCD: Float = 0
+    /// The receiver pad's dying glow after a teleport arrival (renderer light).
+    var arrivalGlow: Float { arrivalByTeleport ? max(0, 1 - elapsed / 6) : 0 }
 
     private var rng: Rng
     private var hazardTimer: Float = 0
@@ -176,9 +201,54 @@ final class World {
     private var stepDist: Float = 0     // ground covered since the last footfall (drives the splash cadence)
     private var stepFoot = 0            // alternates L/R
 
+    /// A tiny hand-built world that is NOTHING but a lift car in its shaft —
+    /// what the player rides down (renderer-driven, never update()d) while the
+    /// real level generates on a background queue. Same steel box, same closed
+    /// leaves, same cabin lamp as a real car, so the cut into the arrival car
+    /// of the generated floor is seamless.
+    static func liftRideShaft() -> World {
+        let m = GameMap(w: 5, h: 5)
+        for i in 0..<(m.w * m.h) { m.wall[i] = WallTex.liftWall.rawValue }
+        let car = m.idx(2, 2), landing = m.idx(2, 1)
+        m.wall[car] = WallTex.elevatorSealed.rawValue
+        m.doors[car] = DoorState()                     // shut — the leaves you stare at
+        m.floor[car] = FlatTex.metalFloor.rawValue
+        m.ceil[car] = FlatTex.ceilTech.rawValue
+        m.light[car] = 0.85
+        m.lightColor[car] = SIMD3(0.95, 0.88, 0.72)    // the warm cabin stamp every car gets
+        m.wall[landing] = 0                            // dark landing beyond the closed leaves
+        m.floor[landing] = FlatTex.metalFloor.rawValue
+        m.ceil[landing] = FlatTex.ceilDark.rawValue
+        m.light[landing] = 0.05
+        m.lightColor[landing] = SIMD3(0.05, 0.05, 0.06)
+        m.exitCell = car                               // the swaying cabin lamp keys off this
+        m.playerStart = SIMD2(2.5, 2.5)
+        m.playerDir = atan2(Float(landing / m.w - car / m.w), Float(landing % m.w - car % m.w))
+        let w = World(rideShaft: m)
+        w.elevatorPhase = .descending                  // shaft lights sweep, lamp sways
+        return w
+    }
+
+    private init(rideShaft map: GameMap) {
+        self.level = 0
+        self.colonyIndex = 0
+        self.map = map
+        self.colonyName = ""
+        self.secretTotal = 0
+        self.monsterTotal = 0
+        self.rng = Rng(seed: 1)
+        self.waterOff = .zero
+        self.isTeleportFloor = false
+        self.arrivalByTeleport = false
+        self.player = Player(at: map.playerStart, dir: map.playerDir)
+        self.lastPlayerPos = map.playerStart
+    }
+
     init(level: Int, colonyIndex: Int, seed: UInt64) {
         self.level = level
         self.colonyIndex = colonyIndex
+        self.isTeleportFloor = Progression.isLastFloor(level)
+        self.arrivalByTeleport = Progression.floorInBuilding(level) == 1 && level > 1
         let gen = MapGen.generate(level: level, colonyIndex: colonyIndex, seed: seed)
         self.map = gen.map
         self.colonyName = gen.colonyName
@@ -211,6 +281,14 @@ final class World {
             propColliders.append(PropBox(c: center, hw: hw, hd: hd, boundR: (hw * hw + hd * hd).squareRoot(), tangent: tangent, inward: inward))
         }
         self.monsterTotal = monsters.count
+        // Every drum must be REFUELLABLE: the pump triggers within
+        // drumRefuelRange of the drum's rim, and the player's own bulk keeps
+        // her ~0.68 from its centre — so a standable point must exist inside
+        // that ring. MapGen can't check this (the furniture's oriented solid
+        // boxes are built HERE), so a drum boxed in by dorm beds would sit
+        // tantalisingly out of reach. Validate against the live colliders and
+        // relocate any failure to the nearest clear floor.
+        relocateUnreachableDrums()
         buildSteamVents()
         buildSparkSites()
         buildDebris()
@@ -247,31 +325,38 @@ final class World {
             return
         }
 
-        handleWeaponSwitch(input: input)
-        turn(dt: dt, input: input)
-        let posBefore = player.pos
-        move(dt: dt, input: input)
-        // a footfall each STRIDE of ground covered (not a fixed bob cadence), so the
-        // splash rate tracks the actual pace — quicker when you run, in any direction.
-        // Stride lengthens a little with speed so a sprint reads urgent, not frantic.
-        let moved = vlen(player.pos - posBefore)
-        let stride: Float = max(0.62, 0.52 + 0.06 * (moved / max(dt, 1e-4)))
-        stepDist += moved
-        if stepDist >= stride {
-            let water = waterDepth(at: player.pos)                // the flooded floor 8, or a floor-7 puddle underfoot
-            while stepDist >= stride {                            // splash only where water actually stands
-                stepDist -= stride
-                stepFoot ^= 1
-                if water > 0.02 { audio.wade(water, foot: stepFoot) }   // alternate left/right, louder the deeper the water
+        // committed to the teleport beam: the field holds her — no walking off a
+        // half-charged pad, no rummaging in the kit. (The swarm can still bite.)
+        let lockedInBeam = teleportPhase == .charging
+        if lockedInBeam {
+            player.bob = max(0, player.bob - dt * 4)
+        } else {
+            handleWeaponSwitch(input: input)
+            turn(dt: dt, input: input)
+            let posBefore = player.pos
+            move(dt: dt, input: input)
+            // a footfall each STRIDE of ground covered (not a fixed bob cadence), so the
+            // splash rate tracks the actual pace — quicker when you run, in any direction.
+            // Stride lengthens a little with speed so a sprint reads urgent, not frantic.
+            let moved = vlen(player.pos - posBefore)
+            let stride: Float = max(0.62, 0.52 + 0.06 * (moved / max(dt, 1e-4)))
+            stepDist += moved
+            if stepDist >= stride {
+                let water = waterDepth(at: player.pos)                // the flooded floor 8, or a floor-7 puddle underfoot
+                while stepDist >= stride {                            // splash only where water actually stands
+                    stepDist -= stride
+                    stepFoot ^= 1
+                    if water > 0.02 { audio.wade(water, foot: stepFoot) }   // alternate left/right, louder the deeper the water
+                }
             }
+            handleUse(input: input, audio: audio)
+            handleMineDeploy(input: input, audio: audio)
         }
         // smoothed player velocity for monster lead-aim (clamped to a sane top speed)
         var pv = (player.pos - lastPlayerPos) / max(dt, 1e-4)
         if vlen(pv) > 6 { pv = pv / vlen(pv) * 6 }
         playerVel = playerVel * 0.6 + pv * 0.4
         lastPlayerPos = player.pos
-        handleUse(input: input, audio: audio)
-        handleMineDeploy(input: input, audio: audio)
         handleFire(dt: dt, input: input, audio: audio)
 
         // player timers
@@ -312,6 +397,7 @@ final class World {
         }
         map.update(dt: dt, occupied: occupied)
         updateElevator(dt: dt, input: input, audio: audio)
+        updateTeleporter(dt: dt, input: input, audio: audio)
 
         updateMonsters(dt: dt, audio: audio)
         droneProwl(dt: dt, audio: audio)
@@ -444,6 +530,16 @@ final class World {
             guard map.inBounds(cx, cy) else { continue }
             let i = map.idx(cx, cy)
             if i == map.exitCell {
+                if isTeleportFloor && map.wall[i] == 0 {
+                    // the pad has no controls to press — it reads the body on it
+                    if !queenDefeated {
+                        message("THE QUEEN STILL LIVES — SHE MUST DIE, THEN BURN")
+                        audio.locked()
+                    } else {
+                        message("STAND ON THE PAD — FIRE TO JUMP")
+                    }
+                    return
+                }
                 beginElevator(audio: audio); return
             }
             if map.doors[i] != nil {
@@ -504,6 +600,12 @@ final class World {
             audio.locked()
             return
         }
+        if isTeleportFloor {
+            // legacy fallback only (a map whose pad found no site keeps a switch
+            // wall): USE engages the jump directly. Pad maps never route here.
+            if teleportPhase == .idle { engageTeleport(audio: audio) }
+            return
+        }
         guard map.doors[map.exitCell] != nil else { completeLevel(audio: audio); return }
         guard elevatorPhase == .idle else { return }
         map.doors[map.exitCell]!.opening = true
@@ -550,26 +652,81 @@ final class World {
             } else if d.open <= 0.02 {
                 elevatorPhase = .descending
                 elevatorT = 0
+                rideRumbleT = World.rideTime - 0.2
                 message("DESCENDING…")
                 audio.elevatorMove(true)
                 // the winch takes up + the car drops: a long low rumble under a
                 // sub-bass fall — synthesised, so no asset is needed for a one-off
-                audio.trigger(wave: AudioEngine.noise, f0: 1, dur: elevatorRideTime, amp: 0.30, attack: 0.25)
-                audio.trigger(wave: AudioEngine.sine, f0: 52, f1: 30, dur: elevatorRideTime, amp: 0.42, attack: 0.15)
+                audio.trigger(wave: AudioEngine.noise, f0: 1, dur: World.rideTime, amp: 0.30, attack: 0.25)
+                audio.trigger(wave: AudioEngine.sine, f0: 52, f1: 30, dur: World.rideTime, amp: 0.42, attack: 0.15)
             }
         case .descending:
             elevatorT += dt
+            // The ride is also the LOADING screen: while the next floor is still
+            // generating (holdRide), the car keeps dropping — clamp just before
+            // the ease-out so the judder holds, and re-arm the rumble under it.
+            if holdRide {
+                elevatorT = min(elevatorT, World.rideTime - 0.5)
+                rideRumbleT -= dt
+                if rideRumbleT <= 0 {
+                    rideRumbleT = 2.2
+                    audio.trigger(wave: AudioEngine.noise, f0: 1, dur: 2.4, amp: 0.20, attack: 0.5)
+                    audio.trigger(wave: AudioEngine.sine, f0: 44, f1: 36, dur: 2.4, amp: 0.26, attack: 0.4)
+                }
+            }
             // ramp the judder in, hold, ease out just before arrival
             let up = min(1, elevatorT * 2.5)
-            let down = min(1, max(0, (elevatorRideTime - elevatorT) / 0.5))
+            let down = min(1, max(0, (World.rideTime - elevatorT) / 0.5))
             rideShake = up * down
-            if elevatorT >= elevatorRideTime {
+            if elevatorT >= World.rideTime {
                 rideShake = 0
                 elevatorPhase = .idle
                 audio.elevatorMove(false)                     // the winch stops WITH the car
                 completeLevel(audio: audio)
             }
         }
+    }
+
+    /// The teleporter pad state machine (last floor of a citadel): step onto the
+    /// pad (Queen gate applies) → the SECURED report overlays the view until a
+    /// FRESH fire press commits → the charge ramps and the renderer dissolves
+    /// the feed to static → full charge completes the level mid-static.
+    private func updateTeleporter(dt: Float, input: InputState, audio: AudioEngine) {
+        guard isTeleportFloor, !levelComplete, map.exitCell >= 0, map.wall[map.exitCell] == 0 else { return }
+        padHintCD = max(0, padHintCD - dt)
+        let onPad = map.idx(Int(player.pos.x), Int(player.pos.y)) == map.exitCell
+        let fireEdge = input.fire && !prevElevFire
+        prevElevFire = input.fire
+        switch teleportPhase {
+        case .idle:
+            if onPad {
+                if !queenDefeated {
+                    if padHintCD <= 0 {
+                        padHintCD = 3
+                        message("THE QUEEN STILL LIVES — SHE MUST DIE, THEN BURN")
+                        audio.locked()
+                    }
+                } else {
+                    teleportPhase = .await
+                    prevElevFire = true                  // require a FRESH press — a held trigger doesn't jump
+                }
+            }
+        case .await:
+            if !onPad { teleportPhase = .idle }          // stepped off — report hides
+            else if fireEdge { engageTeleport(audio: audio) }
+        case .charging:
+            teleportT = min(1, teleportT + dt / World.teleportChargeTime)
+            if teleportT >= 1 { completeLevel(audio: audio) }
+        }
+    }
+
+    private func engageTeleport(audio: AudioEngine) {
+        guard teleportPhase != .charging else { return }
+        teleportPhase = .charging
+        message("TELEPORT ENGAGED")
+        // spin-up: a rising carrier over a noise swell — the static takes over from it
+        audio.trigger(wave: AudioEngine.sine, f0: 140, f1: 1300, dur: World.teleportChargeTime, amp: 0.26, attack: 0.5)
+        audio.trigger(wave: AudioEngine.noise, f0: 1, dur: World.teleportChargeTime, amp: 0.16, attack: 1.0)
     }
 
     private func completeLevel(audio: AudioEngine) {
@@ -618,9 +775,11 @@ final class World {
     }
 
     private func handleFire(dt: Float, input: InputState, audio: AudioEngine) {
-        // Committed to the elevator: FIRE belongs to the descend prompt, not the
-        // trigger — the marine doesn't discharge plasma inside the car.
+        // Committed to the elevator (or standing on a live pad): FIRE belongs to
+        // the descend/jump prompt, not the trigger — the marine doesn't discharge
+        // plasma inside the car or the beam.
         let riding = elevatorPhase == .awaitFire || elevatorPhase == .closing || elevatorPhase == .descending
+            || teleportPhase == .await || teleportPhase == .charging
         // The flamethrower roars as one continuous loop while the trigger's held and
         // there's fuel — drive it here every frame (edge-detected) so it tracks the
         // trigger, rather than stuttering as randomly-retriggered one-shots.
@@ -925,6 +1084,7 @@ final class World {
                 var d = Monster(kind: .alien, pos: p)
                 d.awake = true; d.state = .chase; d.hasSeen = q.hasSeen; d.lastSeen = q.lastSeen
                 monsters.append(d)
+                monsterTotal += 1               // the HUD clear-meter counts births too
                 spawnParticles(at: p, n: 10, color: packRGBA(150, 90, 60), spread: 2, life: 0.4)
                 // No toast — a birth shouldn't announce itself across the level. The
                 // wet birth-cry only carries if you're in the same room as her (she's
@@ -1402,6 +1562,44 @@ final class World {
 
     /// Stand at a drum (with room in the tank, fuel in the drum) → it pumps fuel
     /// into the flamethrower, draining the drum. A drained drum still ruptures.
+    /// True if a player-sized body can stand somewhere inside the drum's
+    /// refuel ring (between her minimum approach and the pump's trigger reach).
+    func drumReachable(_ pos: SIMD2<Float>) -> Bool {
+        for k in 0..<16 {
+            let a = Float(k) / 16 * 2 * .pi
+            for r: Float in [0.72, 0.90] {
+                let p = pos + SIMD2(cos(a), sin(a)) * r
+                if canStand(p.x, p.y) { return true }
+            }
+        }
+        return false
+    }
+
+    private func relocateUnreachableDrums() {
+        for i in drums.indices where !drumReachable(drums[i].pos) {
+            let home = drums[i].pos
+            var best: SIMD2<Float>?
+            var bestD = Float.greatestFiniteMagnitude
+            let cx0 = Int(home.x), cy0 = Int(home.y)
+            for dy in -5...5 { for dx in -5...5 where !(dx == 0 && dy == 0) {
+                let cx = cx0 + dx, cy = cy0 + dy
+                guard map.inBounds(cx, cy) else { continue }
+                let ci = map.idx(cx, cy)
+                guard map.wall[ci] == 0, map.doors[ci] == nil, !map.hazard[ci] else { continue }
+                let c = SIMD2<Float>(Float(cx) + 0.5, Float(cy) + 0.5)
+                // the drum's own footprint must clear walls, furniture and other drums
+                let rr: Float = 0.47
+                var clear = true
+                for ox in [-rr, rr] { for oy in [-rr, rr] where map.blocksMovement(Int((c.x + ox).rounded(.down)), Int((c.y + oy).rounded(.down))) { clear = false } }
+                if !clear || blockedBySolidProp(c.x, c.y, rr) { continue }
+                guard drumReachable(c) else { continue }
+                let d = vlen(c - home)
+                if d < bestD { bestD = d; best = c }
+            } }
+            if let b = best { drums[i].pos = b }
+        }
+    }
+
     private func refuelAtDrums(dt: Float, audio: AudioEngine) {
         var didRefuel = false
         let fi = AmmoType.fuel.rawValue, cap = AmmoType.fuel.capacity
@@ -1429,6 +1627,7 @@ final class World {
     /// run out against a plasma-only Queen.
     private func rechargeAtSockets(dt: Float, audio: AudioEngine) {
         var didCharge = false
+        var standingAtDry = false
         let ci = AmmoType.cells.rawValue, cap = AmmoType.cells.capacity
         for i in sockets.indices {
             sockets[i].pulse += dt
@@ -1442,6 +1641,18 @@ final class World {
                     sockets[i].regenAcc -= Float(add)
                 }
             }
+            // a drained panel goes RED and holds — camping it doesn't sip the
+            // trickle as it lands (that spammed the charging message + sound
+            // every second). It re-arms once a TENTH of the reserve has been
+            // rebuilt: ~12 s at the regen rate, a dose worth plugging into.
+            if sockets[i].depleted {
+                if sockets[i].charge >= max(1, sockets[i].maxCharge / 10) {
+                    sockets[i].depleted = false
+                } else {
+                    if vlen(sockets[i].pos - player.pos) < socketRange && player.ammo[ci] < cap { standingAtDry = true }
+                    continue
+                }
+            }
             if didCharge || sockets[i].charge <= 0 || player.ammo[ci] >= cap { continue }
             if vlen(sockets[i].pos - player.pos) < socketRange {
                 let take = min(max(1, Int(socketRechargeRate * dt)), min(cap - player.ammo[ci], sockets[i].charge))
@@ -1449,11 +1660,16 @@ final class World {
                     player.ammo[ci] += take; sockets[i].charge -= take
                     player.pickupFlash = max(player.pickupFlash, 0.18)
                     didCharge = true
+                    if sockets[i].charge <= 0 {
+                        sockets[i].depleted = true
+                        message("SOCKET DRAINED — RECHARGING")
+                        audio.locked()
+                    }
                 }
             }
         }
         if didCharge && !recharging { message("RECHARGING PLASMA CELLS"); audio.pickup() }
-        recharging = didCharge
+        recharging = didCharge || standingAtDry     // standing at a dry panel isn't a fresh plug-in
     }
 
     private func projColor(_ k: ProjectileKind) -> UInt32 {
@@ -1542,7 +1758,7 @@ final class World {
         case .mineCrate:
             if player.mines >= player.maxMines { return false }
             player.mines = min(player.maxMines, player.mines + 3)
-            if !minesHintGiven { minesHintGiven = true; message("PRESS  G  TO  DEPLOY  A  MINE") }
+            if !minesHintGiven { minesHintGiven = true; message("PRESS [G] TO DEPLOY A MINE") }
             return true
         case .weaponRocket: player.giveWeapon(.rocket); player.giveAmmo(.rockets, 5); switchTo(.rocket); return true
         case .keyRed: player.keys.insert(.red); return true

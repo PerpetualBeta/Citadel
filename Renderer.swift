@@ -11,7 +11,7 @@ import Cocoa
 import MetalKit
 import QuartzCore
 
-enum GameState { case title, briefing, intel, playing, paused, automap, levelComplete, teleport, gameOver, highScores }
+enum GameState { case title, briefing, intel, riding, playing, paused, automap, teleport, gameOver, highScores }
 
 final class Renderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
@@ -38,6 +38,28 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var level = 1
     private var colonyIndex = 0
     private var carry: Player?
+
+    // ── background level generation ── every floor is built on a background
+    // queue while the player is inside a transition the fiction owns: the lift
+    // ride (title descent + floor-to-floor) or the teleport static (planet
+    // jumps). The transitions HOLD until the world lands here, so the game
+    // never stalls a frame on MapGen.
+    private var pendingWorld: World?
+    private var pendingLevel = 0          // absolute floor being built (0 = none)
+    private var genEpoch = 0              // stale-build guard: bumped on abandon/restart
+    // the title-descent ride (a hand-built shaft world, renderer-driven)
+    private var rideWorld: World?
+    private var rideT: Float = 0
+    private var rideRumbleT: Float = 0
+    // teleport arrival: static burning off the new floor's first view
+    private var arrivalStatic: Float = 0
+    private var staticAudioT: Float = 0
+    // The raymarch kernel's FIRST dispatch pays the driver's deferred back-end
+    // compile (~3 s measured; mapgen itself is ~1 ms) — the real source of the
+    // old fire-press stall. It's paid at launch, off the main thread, on a
+    // throwaway shaft world while the title is up; this flag gates gameplay
+    // rendering so nothing races that warm-up dispatch.
+    private var gpuWarm = false
 
     private var lastTime = CACurrentMediaTime()
     private var screenT: Float = 0
@@ -82,6 +104,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         buildTexture()
         gpuWorldRenderer = GPUWorldRenderer(device: device)
         gpuWorldRenderer?.prewarm()      // build the level-independent GPU resources now (title is up), not on the first fire-press
+        warmKernel()                     // …and pay the kernel's first-dispatch compile now too
         audio.startMusic(.title)
     }
 
@@ -127,10 +150,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         case .title: tickTitle(dt)
         case .briefing: tickInfo(dt, FrontEnd.briefing)
         case .intel: tickInfo(dt, FrontEnd.intel)
+        case .riding: tickRiding(dt)
         case .playing: tickPlaying(dt)
         case .paused: tickPaused(dt)
         case .automap: tickAutomap(dt)
-        case .levelComplete: tickLevelComplete(dt)
         case .teleport: tickTeleport(dt)
         case .gameOver: tickGameOver(dt)
         case .highScores: tickHighScores(dt)
@@ -151,7 +174,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // ── states ─────────────────────────────────────────────────────────────
 
     private func tickTitle(_ dt: Float) {
-        FrontEnd.title(canvas, t: screenT, hs: highScores)
+        FrontEnd.title(canvas, t: screenT, hs: highScores, pad: gamepad.connected)
         if rising(input.restart, pConfirm) { startGame() }
         else if rising(input.briefing, pBrief) { state = .briefing; screenT = 0 }
         else if rising(input.intel, pIntel) { state = .intel; screenT = 0 }
@@ -164,6 +187,14 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     private func tickPlaying(_ dt: Float) {
         guard let world = world else { state = .title; return }
+        // The moment an exit commits (car dropping / pad charging), the next
+        // floor starts building on the background queue; the transition holds
+        // until it lands (holdRide keeps the car dropping past its nominal ride).
+        if world.elevatorPhase == .descending || world.teleportPhase == .charging {
+            let next = world.level + 1
+            beginWorldBuild(level: next, seed: baseSeed &+ UInt64(next) &* 1000)
+        }
+        world.holdRide = pendingWorld == nil
         world.update(dt: dt, input: input, audio: audio)
         let cue = world.audioCue()       // drive the reactive ambient bed from live danger
         audio.setTension(threat: cue.threat, queen: cue.queen, health: cue.health, combat: cue.combat)
@@ -171,6 +202,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         hud.draw(world, into: canvas)
         if world.elevatorPhase == .awaitFire {
             FrontEnd.descendReport(canvas, world: world, t: world.elapsed)
+        } else if world.teleportPhase == .await {
+            FrontEnd.securedReport(canvas, world: world, t: world.elapsed)
+        }
+        // the teleport charge dissolves the whole visor feed — HUD and all —
+        // to static; an arrival burns the static back off the new view
+        if world.teleportT > 0 {
+            StaticFX.overlay(canvas, coverage: world.teleportT, t: world.elapsed)
+        }
+        if arrivalStatic > 0 {
+            arrivalStatic = max(0, arrivalStatic - dt / 0.8)
+            StaticFX.overlay(canvas, coverage: arrivalStatic, t: world.elapsed)
         }
 
         if FeatureFlags.screenshotKey && rising(input.screenshot, pShot) { saveScreenshot() }
@@ -185,13 +227,45 @@ final class Renderer: NSObject, MTKViewDelegate {
             // (World.awaitFire), and the ride has been ridden — so an ordinary
             // floor flows straight into the next level: the arrival car's doors
             // part as it fades in. Only the last floor of a citadel keeps its
-            // interstitial (the planet-to-planet teleport is a story beat).
+            // interstitial: the feed is FULL STATIC now, and .teleport holds it
+            // there (story card over the noise) until the next planet is ready.
             if Progression.isLastFloor(world.level) {
-                state = .teleport; screenT = 0; audio.stopMusic()
+                state = .teleport; screenT = 0; staticAudioT = 0
+                audio.stopMusic()
             } else {
                 audio.stopMusic()
                 nextLevel()
             }
+        }
+    }
+
+    /// The title descent: "PRESS FIRE TO DESCEND" is taken literally — the run
+    /// starts inside the car, riding down into the citadel while floor 1 builds
+    /// on the background queue. The ride holds until the world is ready, then
+    /// the cut lands inside the (identical) arrival car with the doors parting.
+    private func tickRiding(_ dt: Float) {
+        guard let ride = rideWorld else { state = .title; return }
+        rideT += dt
+        if pendingWorld == nil { rideT = min(rideT, World.rideTime - 0.5) }   // hold just before the ease-out
+        ride.elapsed += dt
+        let up = min(1, rideT * 2.5)
+        let down = min(1, max(0, (World.rideTime - rideT) / 0.5))
+        ride.rideShake = up * down
+        // keep the winch + sub-bass alive for however long generation takes
+        rideRumbleT -= dt
+        if rideRumbleT <= 0 {
+            rideRumbleT = 2.2
+            audio.trigger(wave: AudioEngine.noise, f0: 1, dur: 2.4, amp: 0.22, attack: 0.4)
+            audio.trigger(wave: AudioEngine.sine, f0: 48, f1: 34, dur: 2.4, amp: 0.30, attack: 0.3)
+        }
+        renderWorld(ride)
+        FrontEnd.rideOverlay(canvas, level: level, t: ride.elapsed)
+        if rideT >= World.rideTime, let w = pendingWorld {
+            rideWorld = nil
+            installWorld(w)
+        } else if rising(input.esc, pEsc) {
+            rideWorld = nil
+            abandonRun()
         }
     }
 
@@ -218,22 +292,30 @@ final class Renderer: NSObject, MTKViewDelegate {
         if rising(input.map, pMap) || rising(input.esc, pEsc) { state = .playing }
     }
 
-    private func tickLevelComplete(_ dt: Float) {
-        guard let world = world else { state = .title; return }
-        FrontEnd.levelComplete(canvas, world: world, t: screenT)
-        if rising(input.restart, pConfirm) && screenT > 0.4 { nextLevel() }
-    }
-
-    // Citadel secured — the planet-to-planet teleport shown between buildings.
+    // Citadel secured — the planet jump. The feed dissolved to static during the
+    // pad charge; this state HOLDS pure static (the story card glitching through
+    // it) while the next planet's first floor builds, then installs the world and
+    // lets the static burn off the new view (arrivalStatic in tickPlaying).
     private func tickTeleport(_ dt: Float) {
         guard let world = world else { state = .title; return }
-        FrontEnd.teleport(canvas, world: world, t: screenT)
-        if rising(input.restart, pConfirm) && screenT > 0.4 { nextLevel() }
+        StaticFX.fill(canvas, t: screenT)
+        FrontEnd.teleportCard(canvas, world: world, t: screenT)
+        staticAudioT -= dt
+        if staticAudioT <= 0 {
+            staticAudioT = 0.42
+            audio.trigger(wave: AudioEngine.noise, f0: 1, dur: 0.5, amp: 0.20, attack: 0.06)
+        }
+        let minHold: Float = 2.6                       // the story beat needs to land
+        if screenT >= minHold, let w = pendingWorld {
+            arrivalStatic = 1
+            audio.trigger(wave: AudioEngine.sine, f0: 1200, f1: 130, dur: 0.9, amp: 0.22, attack: 0.01)
+            installWorld(w)
+        }
     }
 
     private func tickGameOver(_ dt: Float) {
         guard let world = world else { state = .title; return }
-        FrontEnd.gameOver(canvas, world: world, input: input, qualifies: qualifies, t: screenT)
+        FrontEnd.gameOver(canvas, world: world, input: input, qualifies: qualifies, t: screenT, pad: gamepad.connected)
         if qualifies && input.nameEntryActive {
             if input.nameCommitted { recordScore(world); state = .highScores; screenT = 0 }
         } else if rising(input.restart, pConfirm) && screenT > 0.4 {
@@ -242,7 +324,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     private func tickHighScores(_ dt: Float) {
-        FrontEnd.highScores(canvas, hs: highScores, t: screenT, highlight: lastRank)
+        FrontEnd.highScores(canvas, hs: highScores, t: screenT, highlight: lastRank, pad: gamepad.connected)
         if rising(input.restart, pConfirm) && screenT > 0.4 {
             lastRank = -1; state = .title; screenT = 0; audio.startMusic(.title)
         }
@@ -253,24 +335,69 @@ final class Renderer: NSObject, MTKViewDelegate {
     private func startGame() {
         baseSeed = FeatureFlags.fixedSeed > 0 ? FeatureFlags.fixedSeed : UInt64.random(in: 1...UInt64.max)
         level = max(1, FeatureFlags.startLevel); colonyIndex = Progression.planetIndex(level); carry = nil
-        world = World(level: level, colonyIndex: colonyIndex, seed: baseSeed &+ UInt64(level))
+        world = nil                               // a fresh run carries nothing over
+        beginWorldBuild(level: level, seed: baseSeed &+ UInt64(level))
+        // the descent IS the loading screen: ride the car down while the floor builds
+        rideWorld = World.liftRideShaft()
+        rideT = 0; rideRumbleT = 0; arrivalStatic = 0
+        state = .riding; screenT = 0
+        audio.stopMusic()
+        audio.elevatorMove(true)
+    }
+
+    /// One SERIAL generation queue: MapGen keeps single-threaded scratch state,
+    /// so an abandoned build must fully drain before the next run's kicks off.
+    private static let genQueue = DispatchQueue(label: "cc.jorviksoftware.Citadel.worldgen", qos: .userInitiated)
+
+    /// Generate a floor on the background queue; the result lands in
+    /// pendingWorld on the main thread. Idempotent per floor — safe to call
+    /// every frame while a transition runs. The ride/static screens hold until
+    /// it arrives; a bumped genEpoch orphans stale builds (abandon/restart).
+    private func beginWorldBuild(level: Int, seed: UInt64) {
+        guard pendingLevel != level else { return }
+        pendingLevel = level
+        pendingWorld = nil
+        genEpoch += 1
+        let epoch = genEpoch
+        let colony = Progression.planetIndex(level)
+        Renderer.genQueue.async { [weak self] in
+            let w = World(level: level, colonyIndex: colony, seed: seed)
+            DispatchQueue.main.async {
+                guard let self, self.genEpoch == epoch else { return }
+                self.pendingWorld = w
+            }
+        }
+    }
+
+    /// Swap the built floor in as the live world (carrying the marine over from
+    /// the outgoing one) and drop straight into play — the arrival car's doors
+    /// part / the receiver pad's glow dies down as the first frames land.
+    private func installWorld(_ w: World) {
+        if let old = world {                       // floor-to-floor: the run carries over
+            carry = old.player
+            w.score = old.score
+        }
+        world = w
+        level = w.level; colonyIndex = w.colonyIndex
+        applyCarry()
+        pendingWorld = nil; pendingLevel = 0
         input.resetControls()
         deathTimer = 0
         state = .playing
+        audio.elevatorMove(false)
         audio.startMusic(.level, depth: level)
     }
 
     private func nextLevel() {
-        carry = world?.player
-        let carriedScore = world?.score ?? 0      // the run total persists across floors
-        level += 1; colonyIndex = Progression.planetIndex(level)   // planet changes only at building boundaries
-        world = World(level: level, colonyIndex: colonyIndex, seed: baseSeed &+ UInt64(level) &* 1000)
-        applyCarry()
-        world?.score = carriedScore
-        input.resetControls()
-        deathTimer = 0
-        state = .playing
-        audio.startMusic(.level, depth: level)
+        if let w = pendingWorld, w.level == level + 1 {
+            installWorld(w)
+            return
+        }
+        // fallback: generate synchronously (the ride holds until the build lands,
+        // so this only runs if a transition was somehow skipped)
+        let next = level + 1
+        installWorld(World(level: next, colonyIndex: Progression.planetIndex(next),
+                           seed: baseSeed &+ UInt64(next) &* 1000))
     }
 
     private func applyCarry() {
@@ -284,6 +411,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     private func abandonRun() {
+        genEpoch += 1                    // orphan any in-flight background build
+        pendingWorld = nil; pendingLevel = 0
+        rideWorld = nil
+        arrivalStatic = 0
+        audio.elevatorMove(false)
         world = nil
         carry = nil
         state = .title; screenT = 0
@@ -292,6 +424,8 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     private func enterGameOver() {
         guard let world = world else { state = .title; return }
+        genEpoch += 1                    // orphan any in-flight background build
+        pendingWorld = nil; pendingLevel = 0
         state = .gameOver; screenT = 0
         qualifies = highScores.qualifies(world.score)
         if qualifies {
@@ -354,7 +488,23 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // ── world 3-D view: the GPU SDF renderer ───────────────────────────────────
     private func renderWorld(_ world: World) {
+        guard gpuWarm else {                                // kernel still compiling (launch)
+            canvas.fillRect(0, 0, RenderConfig.width, RenderConfig.height, packRGBA(4, 4, 6))
+            return
+        }
         gpuWorldRenderer?.render(world, into: canvas)
+    }
+
+    /// One throwaway dispatch on a scratch shaft world, off the main thread,
+    /// while the title screen is up. Until it completes, renderWorld paints
+    /// dark — in practice the compile finishes long before a fire press.
+    private func warmKernel() {
+        guard let gpu = gpuWorldRenderer else { gpuWarm = true; return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let scratch = Canvas2D()
+            gpu.render(World.liftRideShaft(), into: scratch)
+            DispatchQueue.main.async { self?.gpuWarm = true }
+        }
     }
 
     private func saveScreenshot() {

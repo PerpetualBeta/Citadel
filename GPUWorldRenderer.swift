@@ -274,6 +274,24 @@ final class GPUWorldRenderer {
         if world.map.entryCell >= 0, (world.map.doors[world.map.entryCell]?.open ?? 0) > 0.01 {
             out.append(cabin(world.map.entryCell, descending: false))
         }
+        // teleporter pads carry their own COLD light, hugging the deck (a lamp at
+        // eye height washes the chamber to white): the exit pad breathes on
+        // standby, lifts under a boarder, and flares as the charge ramps; the
+        // arrival receiver glows as the marine materialises, then dies down.
+        func padLight(_ cell: Int, _ inten: Float, _ reach: Float) -> GPURaymarch.GPULight {
+            let cx = Float(cell % world.map.w) + 0.5, cz = Float(cell / world.map.w) + 0.5
+            return GPURaymarch.GPULight(posR: SIMD4(cx, 0.18, cz, 1 / (reach * reach)),
+                                        colI: SIMD4(0.55, 0.85, 1.0, inten))
+        }
+        if world.isTeleportFloor, world.map.exitCell >= 0, world.map.wall[world.map.exitCell] == 0 {
+            let charge: Float = world.teleportPhase == .charging ? world.teleportT
+                              : (world.teleportPhase == .await ? 0.12 : 0)
+            let breathe = 0.16 + 0.04 * sinf(world.elapsed * 2.2)
+            out.append(padLight(world.map.exitCell, breathe + 1.2 * charge, 2.0 + 1.6 * charge))
+        }
+        if world.arrivalGlow > 0.01, world.map.entryCell >= 0 {
+            out.append(padLight(world.map.entryCell, 0.10 + 0.45 * world.arrivalGlow, 2.2))
+        }
         // detonations flash the room — a fierce warm light decaying over 0.3s
         for b in world.blasts {
             let f = max(0, b.t / 0.3)

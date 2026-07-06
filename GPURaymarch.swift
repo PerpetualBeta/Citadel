@@ -43,18 +43,74 @@ enum GPURaymarch {
         return min(wallDist(dt, s, p.xz, mapWH), min(p.y, ceilH - p.y));
     }
     // ── baked wall infrastructure: routed pipework ──
-    // A pipe at perpendicular offset `off` from the nearest wall, at height `ph`, is
-    // just length(float2(dW - off, y - ph)) - r — dW being the perpendicular distance
-    // to the wall means one expression runs the pipe along the wall with NO per-
-    // instance cost. The baked routing mask `enable` (from map.pipe, carried in the
-    // distance-field's .g channel) gates it: where it falls to 0 the offset ramps the
-    // pipe BACK INTO the wall (a drilled-hole termination), so a pipe never crosses a
-    // door / mouth / runs through a prop, and only appears on routed walls. Folded
-    // into sceneSDF (march + normals) but kept OUT of AO/shadow gridSDF for speed.
+    // A pipe at perpendicular offset from the nearest wall, at height `ph`, is
+    // just length(float2(dW - off, y - ph)) - r — dW being the perpendicular
+    // distance to the wall means one expression runs the pipe along the wall
+    // with NO per-instance cost. The baked routing mask `enable` (from map.pipe,
+    // carried in the distance-field's .g channel) gates it, and each route end
+    // is a RIGHT-ANGLED join: the run holds its offset, then a short elbow stub
+    // turns 90° and goes straight into the wall — plumbing, not a taper. The
+    // mask's bilinear ramp (0→1 over ~a cell) doubles as the along-the-wall
+    // coordinate that places the elbow. Occasional fittings — a cutoff valve
+    // (collar + stem + handwheel below) or a pressure gauge (stub + dial above)
+    // — sit mid-run, keyed to position along the pipe. Folded into sceneSDF
+    // (march + normals); fitting work early-outs unless the ray is on the pipe.
+    static inline float pipeHash(float x) { return fract(sin(x * 127.1) * 43758.5453); }
     static inline float wallPipes(float3 p, float dW, float ceilH, float enable) {
         if (enable < 0.02) return 1e9;                       // unrouted: no pipe (buried; nothing to march)
-        float off = mix(-0.06, 0.10, enable);                // ramps proud → buried as the route ends
-        return length(float2(dW - off, p.y - (ceilH - 0.28))) - 0.038;   // slim, close to the wall
+        float ph = ceilH - 0.28;
+        float dy = p.y - ph;
+        // Terminations are plumbed like the real thing: the run holds its
+        // offset, sweeps through a QUARTER-BEND (a torus arc) and enters the
+        // wall square-on, with a bolted flange collar at the wall face and
+        // another where the bend meets the straight — a flanged 90° main.
+        // `u` ≈ distance along the wall from the terminus, reconstructed from
+        // the routing mask's ramp (0.9× keeps it conservative for the march).
+        // The elbow plane sits at 0.62, NOT the ramp's midpoint: a wall SHARED
+        // with a piped room bleeds mask into the unpiped side's face, and that
+        // bleed tops out at exactly 0.5 — at 0.55 the flange band clipped it
+        // and extruded a phantom trough along the innocent room's wall.
+        float u = (enable - 0.62) * 0.9;
+        float2 q = float2(u - 0.10, dW);
+        float d;
+        if (q.x > 0.0) d = length(float2(dW - 0.10, dy)) - 0.038;             // the straight run
+        else           d = length(float2(length(q) - 0.10, dy)) - 0.038;      // the quarter-bend into the wall
+        float wallFlange = max(length(float2(u, dy)) - 0.062, dW - 0.028);    // bolted collar at the wall
+        float runFlange  = max(length(float2(dW - 0.10, dy)) - 0.058, fabs(u - 0.115) - 0.015);
+        d = min(d, min(wallFlange, runFlange));
+        if (d > 0.35 || enable < 0.9) return d;              // fittings live mid-run, near the pipe
+        // Fittings are rationed by 9-unit SECTION — one per section at most,
+        // roughly half the sections bare — and a gauge is pinned to its
+        // section's middle bay, so two gauges can never share a stretch of
+        // pipe (nobody instruments one line twice). Valves may take any bay.
+        float along = p.x + p.z;                             // along the pipe (yaw-robust)
+        float sec = floor(along / 9.0);
+        float h = pipeHash(sec);
+        if (h > 0.55) return d;                              // a bare section
+        bool isGauge = h >= 0.30;
+        float bay = floor(along / 3.0) - sec * 3.0;          // 0 | 1 | 2 within the section
+        float want = isGauge ? 1.0 : floor(pipeHash(sec + 31.0) * 2.9999);
+        if (bay != want) return d;
+        float a = (fract(along / 3.0) - 0.5) * 3.0;          // local coord, 0 at the fitting
+        if (!isGauge) {
+            // CUTOFF VALVE: a fat body collar on the pipe with the handwheel
+            // bolted FLAT to its outward face, facing the player. The wheel and
+            // hub live in constant-distance shells off the wall, where the
+            // (along, height) frame is true — a stem SPANNING that distance
+            // shears 45° (the along coordinate is x+z), which is what made the
+            // first outward stopcock read as a smeared sliver.
+            float collar = max(length(float2(dW - 0.10, dy)) - 0.052, fabs(a) - 0.030);
+            float hub = max(length(float2(a, dy)) - 0.017, fabs(dW - 0.152) - 0.016);
+            float2 wq = float2(length(float2(a, dy)) - 0.040, dW - 0.168);
+            float wheel = length(wq) - 0.010;
+            d = min(d, min(collar, min(hub, wheel)));
+        } else {
+            // PRESSURE GAUGE: a stub up from the pipe + a dial facing the room
+            float stub = max(length(float2(a, dW - 0.10)) - 0.014, abs(dy - 0.045) - 0.045);
+            float dial = max(length(float2(a, dy - 0.105)) - 0.038, abs(dW - 0.10) - 0.016);
+            d = min(d, min(stub, dial));
+        }
+        return d;
     }
 
     // IQ round-cone (ported from CreatureLab) — the creature shape primitive
@@ -399,7 +455,9 @@ enum GPURaymarch {
         int nMon = int(U.grid.z);
 
         float cameraX = 2.0 * (float(gid.x) + 0.5) / screenW - 1.0;
-        float vcomp = (horizon - (float(gid.y) + 0.5)) / viewH;
+        // vertical slope is pinned to the 2:1-calibrated row count (width/2), so a
+        // taller viewport widens the vertical FOV instead of stretching the world
+        float vcomp = (horizon - (float(gid.y) + 0.5)) / (0.5 * screenW);
         float3 rd = normalize(U.fwd.xyz + U.right.xyz * cameraX + U.up.xyz * vcomp);
         float3 ro = U.ro.xyz;
         float time = U.ro.w;
@@ -523,15 +581,63 @@ enum GPURaymarch {
                 float dF = p.y, dC = ceilH - p.y;
                 float dP = wallPipes(p, dW, ceilH, peP);
                 int2 dim = int2(mapWH);
-                if (dP <= dW && dP <= dF && dP <= dC) {          // ── BAKED WALL PIPE ── galvanised steel + rust
+                if (dP <= dW && dP <= dF && dP <= dC) {          // ── BAKED WALL PIPE ── aged copper
                     float along = p.x + p.z;                     // runs along the pipe (yaw-robust) for the grain
                     float rr = fbm2(float2(along * 3.0, p.y * 6.0));
-                    float3 steel = float3(0.54, 0.56, 0.60);     // galvanised — clearly lighter than the iron wall so it reads
-                    alb = mix(steel, float3(0.34, 0.17, 0.08), smoothstep(0.5, 0.9, rr) * 0.6);   // rust eating the galvanise
+                    float3 copper = float3(0.62, 0.36, 0.26);    // drawn copper — warm against the iron walls
+                    alb = mix(copper, float3(0.28, 0.15, 0.10), smoothstep(0.5, 0.9, rr) * 0.7);   // tarnish eating the shine
                     float drip = smoothstep(0.62, 0.95, fbm2(float2(along * 5.0, p.y * 0.8)));
-                    alb = mix(alb, float3(0.22, 0.10, 0.05), drip * 0.4 * clamp(1.0 - dC * 2.2, 0.0, 1.0));   // rust weeping below
-                    rough = clamp(0.42 + 0.40 * rr, 0.35, 0.85);  // a little sheen to catch the lamps
-                    metal = 0.45;
+                    alb = mix(alb, float3(0.16, 0.30, 0.24), drip * 0.35 * clamp(1.0 - dC * 2.2, 0.0, 1.0));   // verdigris weeping below
+                    rough = clamp(0.30 + 0.40 * rr, 0.28, 0.75);  // polished where handled, dull where tarnished
+                    metal = 0.85;                                 // copper is properly metallic
+                    // the fittings paint themselves by zone: proud of the run
+                    // (toward the room) only a valve's stem + handwheel exist —
+                    // safety-red enamel; above it only a gauge — pale dial face,
+                    // dark rim + centre pin
+                    float fy = p.y - (ceilH - 0.28);
+                    // The valve's handwheel + hub wear safety-red enamel. The
+                    // paint zone must re-derive the VALVE SITE (same section/bay
+                    // hash as the geometry): the pipe's own face lies closer to
+                    // the wheel-boss centre than the wheel rim does, so a purely
+                    // geometric ellipse painted every mid-run pipe red.
+                    float alongP = p.x + p.z;
+                    float secP = floor(alongP / 9.0);
+                    float hP = pipeHash(secP);
+                    float bayP = floor(alongP / 3.0) - secP * 3.0;
+                    float aP = (fract(alongP / 3.0) - 0.5) * 3.0;
+                    bool valveSite = hP < 0.30
+                        && bayP == floor(pipeHash(secP + 31.0) * 2.9999)
+                        && fabs(aP) < 0.07;
+                    float uP = (peP - 0.62) * 0.9;
+                    if (valveSite && uP > 0.2 && length(float2(dW - 0.168, fy)) < 0.056) {
+                        alb = mix(float3(0.60, 0.09, 0.06), float3(0.36, 0.05, 0.04), smoothstep(0.4, 0.9, rr));
+                        rough = 0.5; metal = 0.2;
+                    } else if (fy > 0.075) {
+                        // the gauge's DIAL: bezel ring, tick marks arcing over
+                        // the top, a red needle at a per-gauge angle, centre pin
+                        // — without these the face read as a blank lollipop
+                        float fa = (fract(along / 3.0) - 0.5) * 3.0;
+                        float face = smoothstep(0.55, 0.85, length(n.xz));       // flat dial face vs rim
+                        alb = mix(float3(0.24, 0.22, 0.19), float3(0.82, 0.80, 0.72), face);
+                        if (face > 0.5) {
+                            float2 dv = float2(fa, fy - 0.105);
+                            float rd = length(dv);
+                            if (rd > 0.028) alb = float3(0.20, 0.19, 0.17);                    // bezel
+                            else {
+                                float angg = atan2(dv.y, dv.x);
+                                if (rd > 0.021 && angg > 0.35 && angg < 2.79
+                                    && fract((angg - 0.35) / 0.4886) < 0.16) {                 // ticks
+                                    alb = float3(0.22, 0.21, 0.19);
+                                }
+                                float na = mix(0.5, 2.6, pipeHash(floor(along / 3.0) + 17.0)); // needle angle
+                                float2 nd = float2(cos(na), sin(na));
+                                float sN = dot(dv, nd), qN = fabs(dv.x * nd.y - dv.y * nd.x);
+                                if (sN > -0.006 && sN < 0.024 && qN < 0.0035) alb = float3(0.62, 0.10, 0.08);
+                            }
+                            if (rd < 0.006) alb = float3(0.10, 0.10, 0.11);                    // centre pin
+                        }
+                        rough = 0.35; metal = 0.15;
+                    }
                 } else if (dW <= dF && dW <= dC) {               // wall — id of the SOLID cell
                     int2 c = clamp(int2(floor(p.xz - n.xz * 0.5)), int2(0), dim - 1);
                     uint id = wallId.read(uint2(c)).r;
@@ -582,7 +688,13 @@ enum GPURaymarch {
                         }
                     }
                     if (!doorHit) {
-                    alb = wallArr.sample(ts, float2(along, 1.0 - p.y), id).rgb;
+                    // texture u follows the face's RIGHT-HAND tangent, not the raw
+                    // world axis — the raw axis runs backwards on two of the four
+                    // wall orientations, mirroring anything written in the texture
+                    // (the ARC seal read "ЯRA" on those faces). Noise never told.
+                    float alongTex = (abs(n.x) > abs(n.z)) ? ((n.x > 0.0) ? -p.z : p.z)
+                                                           : ((n.z > 0.0) ? p.x : -p.x);
+                    alb = wallArr.sample(ts, float2(alongTex, 1.0 - p.y), id).rgb;
                     emis = wallEmissive(id);
                     // ── battle scarring ── only the EMBEDDED light (the bright
                     //   strip / screen) emits, fails and flickers — not the whole
@@ -1542,9 +1654,11 @@ enum GPURaymarch {
     // Authored back-to-wall (−Z) with the readout facing +Z into the room; packSockets
     // mounts it on the wall via yaw + the flush-to-wall shift, at its authored height
     // (NOT floored). The lit segments are over-bright so the kernel self-glows them.
-    static func socketShapes(chargeFrac: Float) -> [GShape] {
+    static func socketShapes(chargeFrac: Float, depleted: Bool = false) -> [GShape] {
         let housing = SIMD3<Float>(0.17, 0.19, 0.23), face = SIMD3<Float>(0.07, 0.08, 0.10)
         let lit = SIMD3<Float>(0.40, 1.45, 1.70), off = SIMD3<Float>(0.10, 0.13, 0.15)
+        // drained: every lamp on the panel turns RED until the reserve re-arms
+        let redLit = SIMD3<Float>(1.35, 0.16, 0.10), redOff = SIMD3<Float>(0.34, 0.05, 0.04)
         let frac = max(0, min(1, chargeFrac))
         let cy: Float = 0.52                                                                   // chest height
         var out: [GShape] = [
@@ -1554,11 +1668,12 @@ enum GPURaymarch {
         let segs = 4                                                                            // capacity bar
         for k in 0..<segs {
             let f = (Float(k) + 0.5) / Float(segs)
-            let col = f <= frac ? lit : off
+            let col = depleted ? (k == 0 ? redLit : redOff) : (f <= frac ? lit : off)
             out.append(iBox(SIMD3(-0.055, cy - 0.10 + Float(k) * 0.067, 0.062), SIMD3(0.05, 0.026, 0.006), 0.002, col, 0.0015))
         }
         out.append(iBox(SIMD3(0.07, cy, 0.06), SIMD3(0.04, 0.05, 0.008), 0.006, face, 0.003))   // plug-in port recess
-        out.append(iSphere(SIMD3(0.07, cy, 0.066), 0.02, SIMD3<Float>(0.22, 0.50, 0.60)))       // port (faint cyan)
+        out.append(iSphere(SIMD3(0.07, cy, 0.066), 0.02,
+                           depleted ? SIMD3<Float>(0.85, 0.14, 0.10) : SIMD3<Float>(0.22, 0.50, 0.60)))  // port lamp
         return out
     }
 
@@ -1658,7 +1773,7 @@ enum GPURaymarch {
     static func packSockets(_ sockets: [Socket], budget: Int = 64) -> ([GMonster], [GShape]) {
         var mons: [GMonster] = [], shapes: [GShape] = []
         for sk in sockets {
-            var sl = socketShapes(chargeFrac: Float(sk.charge) / Float(max(1, sk.maxCharge)))
+            var sl = socketShapes(chargeFrac: Float(sk.charge) / Float(max(1, sk.maxCharge)), depleted: sk.depleted)
             if shapes.count + sl.count > budget { break }
             flushToWall(&sl)                                   // mount the panel flush on the wall behind
             var loY: Float = 1e9, hiY: Float = -1e9
