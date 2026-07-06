@@ -37,6 +37,7 @@ final class AudioEngine {
         case hiss                  // shared alien hiss pool: drone + Queen pain (random)
         case queenSnarl            // QUEEN ONLY: her signature snarl pool (sight/LOS), random variant
         case droneDeath, queenDeath
+        case queenFall             // QUEEN ONLY: the toppled brood-mother slams the deck
         case explosion, doorOpen, locked, pickup, secret, exit, playerPain, playerDeath, wade
         case drip                  // ceiling water onto the deep floors' pools (panned per-site, see drip(volume:pan:))
         case musicTitle, bedDrone, bedPulse, bedTension, bedSwarm
@@ -51,6 +52,7 @@ final class AudioEngine {
             case .queenSnarl: return "queen_snarl"
             case .droneDeath: return "drone_death"
             case .queenDeath: return "queen_death"
+            case .queenFall: return "queen_fall"
             case .explosion: return "explosion"
             case .doorOpen: return "door_open"
             case .locked: return "locked"
@@ -90,7 +92,7 @@ final class AudioEngine {
         // per-sound trim so one sample doesn't dwarf the rest (1 = unity).
         var gain: Float {
             switch self {
-            case .explosion, .playerDeath, .rocket: return 1.0
+            case .explosion, .playerDeath, .rocket, .queenFall: return 1.0
             case .queenDeath, .queenSnarl: return 0.95
             case .plasma, .droneDeath, .exit: return 0.9
             case .flamethrower: return 0.55
@@ -393,6 +395,15 @@ final class AudioEngine {
     func enemyShot(_ k: MonsterKind) { synthEnemyShot(k) }   // vestigial — no caste fires
     func monsterPain(_ k: MonsterKind)  { play(.hiss) { self.synthMonsterPain(k) } }       // aliens hiss when hit
     func monsterDeath(_ k: MonsterKind) { play(k == .queen ? .queenDeath : .droneDeath) { self.synthMonsterDeath(k) } }
+    /// The toppled Queen SLAMS the deck — a real recorded impact; the layered
+    /// synth thump exists only as the missing-sample fallback.
+    func queenFall() {
+        play(.queenFall) {
+            self.trigger(wave: AudioEngine.sine, f0: 130, f1: 45, dur: 0.35, amp: 0.50, attack: 0.004)
+            self.trigger(wave: AudioEngine.sine, f0: 60, f1: 24, dur: 1.1, amp: 0.60, attack: 0.012)
+            self.trigger(wave: AudioEngine.noise, f0: 1, dur: 0.45, amp: 0.40, attack: 0.005, lp: 0.32)
+        }
+    }
     func monsterSight(_ k: MonsterKind) { play(.hiss) { self.synthMonsterSight(k) } }       // aliens hiss when they notice you
     func monsterAttack(_ k: MonsterKind) { play(.hiss) { self.synthMonsterSight(k) } }       // a sharp hiss as a drone lunges in to strike
     /// A drone vocalisation from the shared hiss pool. `distant` routes it through the

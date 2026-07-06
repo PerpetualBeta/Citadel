@@ -131,23 +131,28 @@ enum Captures {
         save(cleared, "cleared")
         let scores = Canvas2D(); FrontEnd.highScores(scores, hs: hs, t: 0.5); save(scores, "highscores")
 
-        // weapon contact sheet — every viewmodel at once (grid sized to the count,
-        // labels pulled from each weapon's own def so adding a weapon can't desync)
-        let wcount = WeaponKind.allCases.count
-        let wspr = WeaponKind.allCases.map { Sprites.shared.weaponFrames($0)[0] }
-        let cols = 3, rows = (wcount + cols - 1) / cols
-        let cw = (wspr.map { $0.w }.max() ?? 1) + 24          // cells sized to the actual
-        let ch = (wspr.map { $0.h }.max() ?? 1) + 28          // sprites (which scale with res)
-        let sheet = Canvas2D(width: cols * cw, height: rows * ch)
-        sheet.clear(packRGBA(24, 24, 30))
-        for (i, k) in WeaponKind.allCases.enumerated() {
-            let spr = wspr[i]
-            let gx = (i % cols) * cw, gy = (i / cols) * ch
-            sheet.strokeRect(gx + 2, gy + 2, cw - 4, ch - 4, packRGBA(60, 62, 74))
-            sheet.blitBitmap(spr.pixels, spr.w, spr.h, gx + (cw - spr.w) / 2, gy + (ch - spr.h) / 2 + 6)
-            sheet.label(k.def.name, gx + 8, gy + 6, size: 15, color: packRGBA(236, 202, 96), weight: .bold)
+        // weapon contact sheet — the three SDF viewmodels rendered IN-WORLD:
+        // each weapon held (idle) in the same scene, full frame, so the sheet
+        // documents the real first-person look — lighting, materials and all
+        world.player.fireAnim = 0; world.player.muzzle = 0
+        world.player.giveWeapon(.flamethrower); world.player.giveWeapon(.rocket)
+        for k in 0..<24 {                        // face the clearest sightline again
+            let ang = world.player.dir + Float(k) * (.pi * 2 / 24)
+            if clearAhead(ang, 3.2) { world.player.dir = ang; break }
         }
-        writePNG(sheet.framebuffer, w: cols * cw, h: rows * ch, scale: 1, to: dir.appendingPathComponent("07-weapons.png"))
+        let wW = RenderConfig.width, wH = RenderConfig.height
+        let wsheet = Canvas2D(width: WeaponKind.allCases.count * wW, height: wH)
+        for (i, k) in WeaponKind.allCases.enumerated() {
+            world.player.current = k
+            let frame = Canvas2D()
+            draw3D(world, into: frame)
+            for y in 0..<wH {
+                memcpy(wsheet.framebuffer + (y * wsheet.width + i * wW), frame.framebuffer + y * wW,
+                       wW * MemoryLayout<UInt32>.stride)
+            }
+            wsheet.label(k.def.name, i * wW + 24, 20, size: 28, color: packRGBA(236, 202, 96), weight: .bold)
+        }
+        writePNG(wsheet.framebuffer, w: wsheet.width, h: wsheet.height, scale: 1, to: dir.appendingPathComponent("07-weapons.png"))
         print("  wrote 07-weapons.png")
 
         // item contact sheet

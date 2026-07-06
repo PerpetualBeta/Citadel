@@ -36,7 +36,8 @@ Ogrebane — *Monster Sound Effects 2* (<https://opengameart.org/content/monster
 | hiss (×9, random — drone sight + drone/Queen pain) | alien hiss | rubberduck 80 CC0 creature SFX | spit_01/02, breath, alien_01–06 |
 | queen_snarl1–9 (×9, random — pitched DOWN & varied per-utterance in-engine) | Queen snarl — broodmother roar (plays only with line of sight) | rubberduck 80 CC0 creature SFX | roar_02/03, monster_01/03/04/06/07, troll_01/02 |
 | drone_death (×13, random) | drone death — raspy gasp | Ogrebane Monster SFX 2 | monster-1, 5–11, 13–17 |
-| queen_death (×3, random) | Queen death — frightful squeal | rubberduck 80 CC0 creature SFX #2 | alien_07/08/09 |
+| queen_death, queen_death1 (×2, random) | Queen death — the long wail of a dying giant beast (two slices of one recording) | bevibeldesign — *Dragon Death* (<https://freesound.org/s/366096/>, CC0) | Dragon Death |
+| queen_fall | Queen impact — the toppled brood-mother slams the deck | DasWaff — *Giant step* (<https://freesound.org/s/721601/>, CC0) | Giant step |
 | pickup, pickup1 | item / ammo pickup | Kenney Interface Sounds | confirmation_001/002 |
 | secret | secret found | Kenney Interface Sounds | glass_001 |
 | exit | level exit reached | Kenney Interface Sounds | bong_001 |

@@ -292,12 +292,13 @@ final class GPUWorldRenderer {
         if world.arrivalGlow > 0.01, world.map.entryCell >= 0 {
             out.append(padLight(world.map.entryCell, 0.10 + 0.45 * world.arrivalGlow, 2.2))
         }
-        // detonations flash the room — a fierce warm light decaying over 0.3s
+        // impact flashes light the room — fierce, decaying, coloured per cause
+        // (warm for detonations, plasma-cyan for bolt splashes)
         for b in world.blasts {
             let f = max(0, b.t / 0.3)
             let rad: Float = 5.5
             out.append(GPURaymarch.GPULight(posR: SIMD4(b.pos.x, 0.5, b.pos.y, 1 / (rad * rad)),
-                                            colI: SIMD4(1.0, 0.62, 0.28, 2.4 * f)))
+                                            colI: SIMD4(b.col.x, b.col.y, b.col.z, 2.4 * f)))
         }
         // burning corpses cast a live orange firelight that builds and dies with
         // the pyre — the room flickers while a body burns
@@ -344,6 +345,15 @@ final class GPUWorldRenderer {
             let t = world.elapsed, s = world.rideShake
             let lat = s * 0.006 * sinf(t * 47 + 1.7)
             eye.y += s * 0.010 * sinf(t * 34)
+            eye.x += lat * -sinf(p.dir)
+            eye.z += lat * cosf(p.dir)
+        }
+        // a heavy mass hitting the deck (the Queen's topple): one hard,
+        // mostly-vertical jolt ringing down — squared so the attack is sharp
+        if world.impactShake > 0.001 {
+            let t = world.elapsed, s = world.impactShake * world.impactShake
+            eye.y += s * 0.05 * sinf(t * 31)
+            let lat = s * 0.02 * sinf(t * 23 + 0.9)
             eye.x += lat * -sinf(p.dir)
             eye.z += lat * cosf(p.dir)
         }
@@ -395,6 +405,23 @@ final class GPUWorldRenderer {
         for pm0 in pmons { var pm = pm0; pm.b.x += Float(pbase); cmons.append(pm) }
         cshapes.append(contentsOf: pshapes)
         u.grid.z = Float(cmons.count)                                                // creatures + items + debris + projectiles
+        // the held weapon (SDF viewmodel): shapes ride the same buffer but are
+        // marched as an overlay — the kernel takes their range via env.zw and
+        // the gun's world anchor + local bound via vmA/vmB. It anchors to the
+        // SHAKEN eye, so lift judder and the Queen's floor-jolt carry into
+        // the marine's hands. Lowered only when the marine is down.
+        if !world.player.dead {
+            let vm = Viewmodel.pack(player: world.player, time: world.elapsed)
+            u.env.z = Float(cshapes.count)
+            u.env.w = Float(vm.shapes.count)
+            cshapes.append(contentsOf: vm.shapes)
+            let rU = SIMD3<Float>(-sinf(p.dir), 0, cosf(p.dir))
+            let fU = SIMD3<Float>(cosf(p.dir), 0, sinf(p.dir))
+            let anchor = eye + fU * Viewmodel.anchorFwd + rU * Viewmodel.anchorRight
+                             - SIMD3<Float>(0, 1, 0) * Viewmodel.anchorDown
+            u.vmA = SIMD4(anchor.x, anchor.y, anchor.z, vm.boundR)
+            u.vmB = SIMD4(vm.boundC.x, vm.boundC.y, vm.boundC.z, 0)
+        }
         // located damage decals (blood at kills, scorch under burned-out corpses)
         var decals = world.decals
         u.extra.x = Float(decals.count)

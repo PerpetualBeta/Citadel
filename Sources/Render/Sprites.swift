@@ -113,7 +113,6 @@ final class Sprites {
     private var monsterCache: [Int: MonsterSprites] = [:]
     private var itemCache: [Int: Sprite] = [:]
     private var propCache: [Int: Sprite] = [:]
-    private var weaponCache: [Int: [Sprite]] = [:]
     private var projCache: [Int: Sprite] = [:]
     private(set) var faces: [Sprite] = []
 
@@ -124,7 +123,6 @@ final class Sprites {
         for k in MonsterKind.allCases { monsterCache[k.rawValue] = buildMonsterSet(k) }
         for k in ItemKind.allCases { itemCache[k.rawValue] = buildItem(k) }
         for k in PropKind.allCases { propCache[k.rawValue] = MeshProps.sprite(k) }
-        for k in WeaponKind.allCases { weaponCache[k.rawValue] = buildWeapon(k) }
         for k in ProjectileKind.allCases { projCache[k.rawValue] = buildProjectile(k) }
         for bracket in 0..<5 { for dir in 0..<3 { faces.append(buildFace(bracket, dir)) } }
     }
@@ -132,7 +130,6 @@ final class Sprites {
     func monster(_ k: MonsterKind) -> MonsterSprites { monsterCache[k.rawValue]! }
     func item(_ k: ItemKind) -> Sprite { itemCache[k.rawValue]! }
     func prop(_ k: PropKind) -> Sprite { propCache[k.rawValue]! }
-    func weaponFrames(_ k: WeaponKind) -> [Sprite] { weaponCache[k.rawValue]! }
     func projectile(_ k: ProjectileKind) -> Sprite { projCache[k.rawValue]! }
     func face(bracket: Int, dir: Int) -> Sprite { faces[max(0, min(4, bracket)) * 3 + max(0, min(2, dir))] }
 
@@ -142,8 +139,9 @@ final class Sprites {
     // ── Items — low-poly 3-D meshes (Mesh3D.swift) ────────────────────────────
     private func buildItem(_ k: ItemKind) -> Sprite { MeshItems.sprite(k) }
 
-    // ── First-person weapon viewmodels — low-poly 3-D meshes (Mesh3D.swift) ───
-    private func buildWeapon(_ k: WeaponKind) -> [Sprite] { MeshWeapons.frames(k) }
+    // (First-person weapons are no longer sprites — they are SDF viewmodels
+    //  raymarched in the world render: Viewmodel.swift + GPURaymarch.vmField.
+    //  MeshWeapons lives on for the floor-pickup sprite only.)
 
     // ── Projectiles ────────────────────────────────────────────────────────────
     private func buildProjectile(_ k: ProjectileKind) -> Sprite {

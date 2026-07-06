@@ -251,6 +251,7 @@ enum MapGen {
         //    through a hazard-striped door (the colony kept its volatile fuel walled
         //    off). A dead-end side room, so it never affects start→exit solvability. ──
         fuelStoreCells = carveFuelStore(map, rooms: rooms, rng: &rng, theme: th)
+        map.fuelStore = Set(fuelStoreCells.map { map.idx(Int($0.x), Int($0.y)) })
 
         // ── verify solvability (keyed BFS) ──
         if allowLocks && !lockedDoors.isEmpty {
@@ -396,9 +397,11 @@ enum MapGen {
 
     /// Scan a room's border for a cell that can host an ELEVATOR. The car must
     /// be a CLOSED BOX: an open room cell in front (the doorway), and solid,
-    /// door-free back AND side-jamb cells — a missing jamb exposes the shaft
-    /// interior (a car with a wall missing). Wall-run midpoints are preferred
-    /// (a centred door reads best); any qualifying border cell will do.
+    /// door-free back, side-jamb AND back-corner cells. The corners matter as
+    /// much as the faces: a ring open at a diagonal leaves two wall cells
+    /// touching at a single point, and the rounded SDF opens a floor-to-ceiling
+    /// slit through that point — "the back corner of the elevator is missing".
+    /// Wall-run midpoints are preferred (a centred door reads best).
     private static func elevatorSite(_ map: GameMap, room: Room) -> (cell: Int, front: (Int, Int))? {
         var sides: [((Int, Int), (Int, Int))] = []   // (wall cell, front cell)
         for x in room.x..<(room.x + room.w) {
@@ -409,22 +412,39 @@ enum MapGen {
             sides.append(((room.x - 1, y), (room.x, y)))
             sides.append(((room.x + room.w, y), (room.x + room.w - 1, y)))
         }
-        for (w, f) in sides.sorted(by: {
+        let sorted = sides.sorted(by: {
             abs($0.0.0 - room.cx) + abs($0.0.1 - room.cy) < abs($1.0.0 - room.cx) + abs($1.0.1 - room.cy)
-        }) {
-            let (wx, wy) = w, (fx, fy) = f
-            guard map.inBounds(wx, wy), map.inBounds(fx, fy) else { continue }
-            let wi = map.idx(wx, wy)
-            guard map.wall[wi] != 0, map.doors[wi] == nil,
-                  map.wall[map.idx(fx, fy)] == 0, map.doors[map.idx(fx, fy)] == nil else { continue }
-            let dx = fx - wx, dy = fy - wy
-            var boxOK = true
-            for (bx, by) in [(wx - dx, wy - dy), (wx + dy, wy + dx), (wx - dy, wy - dx)] {   // back + both jambs
-                guard map.inBounds(bx, by), map.wall[map.idx(bx, by)] != 0,
-                      map.doors[map.idx(bx, by)] == nil else { boxOK = false; break }
+        })
+        // Two passes: first demand a FLUSH face — the cells either side of the
+        // front cell open too, so the car sits in a proper room wall. A car
+        // whose approach is a 1-wide notch reads as an inexplicable wall gap
+        // with the sealed doors glimpsed down a slit. Fall back to any legal
+        // site only if the room offers no flush face at all.
+        for requireFlush in [true, false] {
+            for (w, f) in sorted {
+                let (wx, wy) = w, (fx, fy) = f
+                guard map.inBounds(wx, wy), map.inBounds(fx, fy) else { continue }
+                let wi = map.idx(wx, wy)
+                guard map.wall[wi] != 0, map.doors[wi] == nil,
+                      map.wall[map.idx(fx, fy)] == 0, map.doors[map.idx(fx, fy)] == nil else { continue }
+                let dx = fx - wx, dy = fy - wy
+                var boxOK = true
+                for (bx, by) in [(wx - dx, wy - dy), (wx + dy, wy + dx), (wx - dy, wy - dx),      // back + both jambs
+                                 (wx - dx + dy, wy - dy + dx), (wx - dx - dy, wy - dy - dx)] {    // + both back corners
+                    guard map.inBounds(bx, by), map.wall[map.idx(bx, by)] != 0,
+                          map.doors[map.idx(bx, by)] == nil else { boxOK = false; break }
+                }
+                guard boxOK, doorClear(map, wi) else { continue }
+                if requireFlush {
+                    var flush = true
+                    for s in [-1, 1] {                       // the front cell's perpendicular neighbours
+                        let px = fx + s * dy, py = fy + s * dx
+                        guard map.inBounds(px, py), map.wall[map.idx(px, py)] == 0 else { flush = false; break }
+                    }
+                    guard flush else { continue }
+                }
+                return (wi, f)
             }
-            guard boxOK, doorClear(map, wi) else { continue }
-            return (wi, f)
         }
         return nil
     }

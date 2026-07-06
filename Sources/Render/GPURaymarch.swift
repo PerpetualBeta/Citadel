@@ -27,7 +27,7 @@ enum GPURaymarch {
     #include <metal_stdlib>
     using namespace metal;
 
-    struct Uniforms { float4 ro, fwd, right, up, params, grid, extra, env; };  // extra.x = decalCount · env.xy = water-table offset (puddle field)
+    struct Uniforms { float4 ro, fwd, right, up, params, grid, extra, env, vmA, vmB; };  // extra.x = decalCount · env.xy = water-table offset (puddle field) · env.zw = viewmodel shape start/count · vmA = gun anchor.xyz + bound r · vmB = gun-local bound centre
     struct GPULight { float4 posR; float4 colI; };   // posR=(x,y,z,1/r²)  colI=(r,g,b,intensity)
     struct GShape   { float4 a, b, col; };  // a.xyz,a.w=r1 ; b.xyz,b.w=r2(<0 → sphere) ; col.rgb,col.w=k
     struct GMonster { float4 a, b, c; };    // a=(x,z,yaw,scale) b=(shapeStart,shapeCount,boundR,boundCY) c=(minY,…)
@@ -78,7 +78,20 @@ enum GPURaymarch {
         float wallFlange = max(length(float2(u, dy)) - 0.062, dW - 0.028);    // bolted collar at the wall
         float runFlange  = max(length(float2(dW - 0.10, dy)) - 0.058, fabs(u - 0.115) - 0.015);
         d = min(d, min(wallFlange, runFlange));
-        if (d > 0.35 || enable < 0.9) return d;              // fittings live mid-run, near the pipe
+        if (d > 0.35) return d;                              // fittings live near the pipe
+        // Fittings must stay clear of terminus ramps and elbows — but the gate
+        // must never SLICE one: a hard `enable < 0.9` cutoff crosses MID-WHEEL
+        // wherever a fitting bay straddles the mask's bilinear ramp (every
+        // door opening makes one), and the marcher carves the handwheel into
+        // a hard-edged croissant with garbage normals. Instead the whole
+        // fitting SINKS smoothly into the run as the ramp approaches. The band
+        // tops out at 0.90 — the SAME threshold the old hard gate used — so
+        // every bay that used to carry a full fitting still does (a 0.97 top
+        // quietly erased the thin wheel on any bay whose mask sat below it,
+        // leaving bare collars and orphaned red paint).
+        float mid = smoothstep(0.855, 0.90, enable);
+        if (mid <= 0.0) return d;
+        float sink = (1.0 - mid) * 0.08;                     // offset > any fitting radius → fully sunk
         // Fittings are rationed by 9-unit SECTION — one per section at most,
         // roughly half the sections bare — and a gauge is pinned to its
         // section's middle bay, so two gauges can never share a stretch of
@@ -103,12 +116,12 @@ enum GPURaymarch {
             float hub = max(length(float2(a, dy)) - 0.017, fabs(dW - 0.152) - 0.016);
             float2 wq = float2(length(float2(a, dy)) - 0.040, dW - 0.168);
             float wheel = length(wq) - 0.010;
-            d = min(d, min(collar, min(hub, wheel)));
+            d = min(d, min(collar, min(hub, wheel)) + sink);
         } else {
             // PRESSURE GAUGE: a stub up from the pipe + a dial facing the room
             float stub = max(length(float2(a, dW - 0.10)) - 0.014, abs(dy - 0.045) - 0.045);
             float dial = max(length(float2(a, dy - 0.105)) - 0.038, abs(dW - 0.10) - 0.016);
-            d = min(d, min(stub, dial));
+            d = min(d, min(stub, dial) + sink);
         }
         return d;
     }
@@ -175,6 +188,54 @@ enum GPURaymarch {
     }
     static inline float4 creatureField(float3 p, int nMon, constant GMonster* mons, constant GShape* shapes) {
         float mat; return creatureField(p, nMon, mons, shapes, mat);   // march/normal: material discarded
+    }
+    // ── the marine's weapon (viewmodel) ── a private field marched as an
+    // OVERLAY after the world resolves: it is deliberately NOT in sceneSDF, so
+    // world geometry can never swallow the held weapon (the classic FPS
+    // cleared-depth trick). Marched in GUN-LOCAL space (x right · y up ·
+    // z forward) so its boxes/cylinders stay gun-aligned at any view angle.
+    // Two vm-only shape encodings join the shared set:
+    //   b.w = -4 → z-axis flat-cap cylinder (a.w = R, b.x = edge round, b.y = half-length, b.z = emissive)
+    //   b.w = -5 → emissive sphere (a.w = r, b.x = emissive)
+    // and b.z carries emissive on the y-cylinder (-3) too.
+    static inline float vmShapeDist(GShape sh, float3 p, thread float& em) {
+        em = 0.0;
+        if (sh.b.w < -4.5) { em = sh.b.x; return length(p - sh.a.xyz) - sh.a.w; }
+        if (sh.b.w < -3.5) {                              // z-axis flat-cap cylinder
+            em = sh.b.z;
+            float3 q = p - sh.a.xyz;
+            float2 dcy = float2(length(q.xy) - (sh.a.w - sh.b.x), fabs(q.z) - (sh.b.y - sh.b.x));
+            return min(max(dcy.x, dcy.y), 0.0) + length(max(dcy, 0.0)) - sh.b.x;
+        }
+        if (sh.b.w < -2.5) {                              // y-axis flat-cap cylinder
+            em = sh.b.z;
+            float3 q = p - sh.a.xyz;
+            float2 dcy = float2(length(q.xz) - (sh.a.w - sh.b.x), fabs(q.y) - (sh.b.y - sh.b.x));
+            return min(max(dcy.x, dcy.y), 0.0) + length(max(dcy, 0.0)) - sh.b.x;
+        }
+        if (sh.b.w < -1.5) {                              // rounded box
+            float3 q = fabs(p - sh.a.xyz) - sh.b.xyz;
+            return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - sh.a.w;
+        }
+        if (sh.b.w < 0.0) return length(p - sh.a.xyz) - sh.a.w;   // sphere
+        return sdRoundCone(p, sh.a.xyz, sh.b.xyz, sh.a.w, sh.b.w);
+    }
+    static inline float4 vmField(float3 p, constant GShape* shapes, int start, int count, thread float& emis) {
+        float dd = 1e9; float3 col = float3(0.3, 0.3, 0.3); float em = 0.0;
+        for (int si = start; si < start + count; si++) {
+            GShape sh = shapes[si];
+            float e; float sd = vmShapeDist(sh, p, e);
+            float k = sh.col.w;
+            if (dd > 1e8) { dd = sd; col = sh.col.rgb; em = e; }
+            else {
+                float h = clamp(0.5 + 0.5 * (sd - dd) / k, 0.0, 1.0);
+                dd = mix(sd, dd, h) - k * h * (1.0 - h);
+                col = mix(sh.col.rgb, col, h);
+                em = mix(e, em, h);
+            }
+        }
+        emis = em;
+        return float4(col, dd);
     }
     // full field: grid + creatures — used by the primary march + normals
     static inline float sceneSDF(float3 p, texture2d<float> dt, sampler s, float2 mapWH, float ceilH,
@@ -294,27 +355,32 @@ enum GPURaymarch {
     // Per-surface roughness/metalness, mirroring BeautyProof's material(): grimy
     // iron is a dirty half-metal, brushed steel / pipes are cleaner metal, glass
     // is a smooth dielectric, stone & concrete are matte. (x = rough, y = metal.)
+    // Bases lean DULL: this is a working colony, not a showroom — decades of
+    // hands, boots and grit have taken the factory sheen off every panel (low
+    // roughness on broad flats read as wet plastic). Glass, screens and the
+    // creatures keep their gloss; per-pixel WEAR (at the shading sites) then
+    // breaks what sheen remains into patchy smudges.
     static inline float2 wallMaterial(uint id) {
         switch (id) {
-            case 2u:  return float2(0.36, 0.70);   // brushed steel — the good rooms
-            case 5u:  return float2(0.34, 0.65);   // ribbed conduit metal
+            case 2u:  return float2(0.48, 0.70);   // brushed steel — the good rooms
+            case 5u:  return float2(0.46, 0.65);   // ribbed conduit metal
             case 6u:  return float2(0.28, 0.80);   // pipework — smooth metal
             case 7u:  return float2(0.18, 0.25);   // reinforced glass — smooth dielectric
             case 8u:  return float2(0.92, 0.00);   // hewn rock — matte
-            case 9u:  return float2(0.66, 0.35);   // rock + steel struts
+            case 9u:  return float2(0.70, 0.35);   // rock + steel struts
             case 10u: return float2(0.50, 0.20);   // computer banks — screens
-            case 12u: case 13u: case 14u: case 15u: case 17u: case 18u: return float2(0.50, 0.50);  // blast doors — painted steel
-            case 16u: return float2(0.50, 0.45);   // exit switch panel
-            case 19u: return float2(0.38, 0.60);   // lift-car lining — machined steel box
-            default:  return float2(0.58, 0.50);   // iron plate / steel panel / lit panel / hazard — grimy iron
+            case 12u: case 13u: case 14u: case 15u: case 17u: case 18u: return float2(0.58, 0.50);  // blast doors — painted steel
+            case 16u: return float2(0.58, 0.45);   // exit switch panel
+            case 19u: return float2(0.50, 0.60);   // lift-car lining — machined steel box
+            default:  return float2(0.68, 0.50);   // iron plate / steel panel / lit panel / hazard — grimy iron
         }
     }
     // floor + ceiling flats: metal deck / grate are metal, concrete / stone matte.
     static inline float2 flatMaterial(uint id) {
         switch (id) {
-            case 1u: return float2(0.44, 0.65);    // metal deck plate
-            case 2u: return float2(0.55, 0.55);    // walkway grate
-            case 4u: return float2(0.55, 0.25);    // ceiling tech
+            case 1u: return float2(0.56, 0.65);    // metal deck plate
+            case 2u: return float2(0.63, 0.55);    // walkway grate
+            case 4u: return float2(0.62, 0.25);    // ceiling tech
             case 5u: return float2(0.82, 0.08);    // dark ceiling
             case 6u: case 7u: return float2(0.92, 0.00);   // stone / rock — matte
             default: return float2(0.82, 0.05);    // concrete — matte
@@ -472,6 +538,7 @@ enum GPURaymarch {
         }
 
         float3 col;
+        bool worldProj = false;   // the hit is a projectile orb (may pass IN FRONT of the viewmodel)
         if (hit) {
             float3 p = ro + rd * t;
             float3 n = calcNormal(p, dt, s, mapWH, ceilH, nMon, mons, shapes);
@@ -486,6 +553,7 @@ enum GPURaymarch {
                 alb = cf.rgb;
                 isItem = itemMat > 0.5 && itemMat < 1.5;         // c.z = 1 → pickup
                 isProj = itemMat > 1.5 && itemMat < 2.5;         // c.z = 2 → glowing projectile orb
+                worldProj = isProj;
                 isProp = itemMat > 2.5 && itemMat < 3.5;         // c.z = 3 → static furniture / fixture
                 isDrum = itemMat > 3.5 && itemMat < 4.5;         // c.z = 4 → fuel drum
                 isSocket = itemMat > 4.5 && itemMat < 5.5;       // c.z = 5 → recharge socket
@@ -608,8 +676,17 @@ enum GPURaymarch {
                     bool valveSite = hP < 0.30
                         && bayP == floor(pipeHash(secP + 31.0) * 2.9999)
                         && fabs(aP) < 0.07;
-                    float uP = (peP - 0.62) * 0.9;
-                    if (valveSite && uP > 0.2 && length(float2(dW - 0.168, fy)) < 0.056) {
+                    // enamel only where the surface IS the hub or the wheel —
+                    // exact SDF ownership (the same shells as the geometry),
+                    // gated by the SAME sink band as the geometry (paint where
+                    // the fitting has sunk = a red blob on a bare pipe), and
+                    // never on the run's own body (the hub band grazes the
+                    // pipe crown, which painted a red patch ON the pipe).
+                    float midP = smoothstep(0.855, 0.90, peP);
+                    float hubP = max(length(float2(aP, fy)) - 0.017, fabs(dW - 0.152) - 0.016);
+                    float wheelP = length(float2(length(float2(aP, fy)) - 0.040, dW - 0.168)) - 0.010;
+                    bool proud = length(float2(dW - 0.10, fy)) > 0.048;   // clear of the pipe body
+                    if (valveSite && midP > 0.85 && proud && min(hubP, wheelP) < 0.012) {
                         alb = mix(float3(0.60, 0.09, 0.06), float3(0.36, 0.05, 0.04), smoothstep(0.4, 0.9, rr));
                         rough = 0.5; metal = 0.2;
                     } else if (fy > 0.075) {
@@ -730,6 +807,11 @@ enum GPURaymarch {
                     // material + micro-relief — a grimy-iron sheen, with grain
                     // breaking up the highlight (was flat, matte, light-frozen)
                     float2 wm = wallMaterial(id); rough = wm.x; metal = wm.y;
+                    // worn metal is never uniformly shiny: patchy wear drives the
+                    // roughness, so what sheen remains breaks into smudges and
+                    // hand-polished spots instead of one clean plastic highlight
+                    float wear = fbm2(float2(along * 1.7 + 23.0, p.y * 2.2));
+                    rough = clamp(rough + (wear - 0.35) * 0.55, 0.15, 0.95);
                     if (id == 8u || id == 9u) {
                         // ── the depths: rock face, not bulkhead ── hewn/blasted stone
                         //   gets NO panel seams or ribs (a manufactured groove grid
@@ -802,6 +884,9 @@ enum GPURaymarch {
                     }
                     reflective = wet > 0.01;                     // a dry industrial deck does NOT mirror
                     float2 fm = flatMaterial(id); rough = fm.x; metal = fm.y;
+                    // decades of boot traffic: patchy wear dulls the deck unevenly
+                    float wearF = fbm2(p.xz * 1.9 + 41.0);
+                    rough = clamp(rough + (wearF - 0.35) * 0.5, 0.15, 0.95);
                     if (liquid) {                                // hazard pool — live rippling surface
                         // organic, non-repeating ripples: two layers of FLOWING value
                         // noise at incommensurate speeds/directions (was two crossed
@@ -915,6 +1000,7 @@ enum GPURaymarch {
                     uint id = ceilId.read(uint2(c)).r;
                     alb = flatArr.sample(ts, p.xz, id).rgb;
                     float2 cm = flatMaterial(id); rough = cm.x; metal = cm.y;
+                    rough = clamp(rough + (fbm2(p.xz * 1.6 + 67.0) - 0.35) * 0.4, 0.15, 0.95);   // patchy age
                     bool lamp = isLampCell(c);
                     if (id == 6u) {
                         // stone ceiling — the blasted roof of the working, not a hung
@@ -1097,9 +1183,113 @@ enum GPURaymarch {
         } else {
             col = float3(0.010, 0.012, 0.020);
         }
+        // ── the marine's weapon ── the viewmodel overlay: marched in gun-local
+        // space AFTER the world resolves (never swallowed by geometry), then
+        // shaded by the same rig — sector fill, ceiling-lamp pools, dynamic
+        // lights, headlamp — so the weapon sits IN the scene, not on top of it.
+        float volT = hit ? t : 28.0;
+        int vmN = int(U.env.w);
+        if (vmN > 0) {
+            int vmStart = int(U.env.z);
+            float3 rN = normalize(U.right.xyz);
+            float3 rel = ro - U.vmA.xyz;
+            float3 rol = float3(dot(rel, rN), rel.y, dot(rel, U.fwd.xyz));
+            float3 rdl = float3(dot(rd, rN), rd.y, dot(rd, U.fwd.xyz));
+            float3 oc = rol - U.vmB.xyz;                 // bound-sphere gate (local)
+            float bq = dot(oc, rdl), cc = dot(oc, oc) - U.vmA.w * U.vmA.w;
+            float disc = bq * bq - cc;
+            if (disc > 0.0) {
+                float sq = sqrt(disc);
+                float tvOut = -bq + sq;
+                float tv = max(0.01, -bq - sq);
+                bool vhit = false; float emv = 0.0;
+                for (int i = 0; i < 48 && tv < tvOut; i++) {
+                    float4 f = vmField(rol + rdl * tv, shapes, vmStart, vmN, emv);
+                    if (f.w < 0.0012) { vhit = true; break; }
+                    tv += f.w * 0.9;
+                }
+                // a projectile orb NEARER than the gun keeps the pixel: the
+                // bolt must be seen leaving the muzzle, or close-range fire
+                // has no visual at all. Everything else loses to the weapon
+                // (walls never swallow the marine's own gun).
+                if (vhit && worldProj && hit && t < tv) vhit = false;
+                if (vhit) {
+                    float3 pl = rol + rdl * tv;
+                    float eN; float2 e2 = float2(0.0015, 0.0);
+                    float3 nl = normalize(float3(
+                        vmField(pl + e2.xyy, shapes, vmStart, vmN, eN).w - vmField(pl - e2.xyy, shapes, vmStart, vmN, eN).w,
+                        vmField(pl + e2.yxy, shapes, vmStart, vmN, eN).w - vmField(pl - e2.yxy, shapes, vmStart, vmN, eN).w,
+                        vmField(pl + e2.yyx, shapes, vmStart, vmN, eN).w - vmField(pl - e2.yyx, shapes, vmStart, vmN, eN).w));
+                    float4 f = vmField(pl, shapes, vmStart, vmN, emv);
+                    float3 p = ro + rd * tv;             // world-space hit (rdl is unit: local t == world t)
+                    float3 n = normalize(rN * nl.x + float3(0.0, 1.0, 0.0) * nl.y + U.fwd.xyz * nl.z);
+                    float3 V = -rd;
+                    float3 alb = f.rgb;
+                    float rough = 0.42, metal = 0.55;    // hard-worn gunmetal — keeps its diffuse colour
+                    float3 f0 = mix(float3(0.04, 0.04, 0.04), alb, metal);
+                    float3 diffAlb = alb * (1.0 - metal * 0.7);
+                    float3 sectFill = min(lightTex.sample(s, p.xz / mapWH).rgb, float3(1.4, 1.4, 1.4));
+                    float hemiUp = 0.5 + 0.5 * n.y;
+                    float3 ambTint = mix(float3(0.82, 0.90, 1.06), float3(1.08, 0.97, 0.82), hemiUp);
+                    float3 lit = diffAlb * sectFill * ambTint * 0.52;
+                    // the marine's own headlamp grazes the weapon from the eye
+                    float ndl = max(0.0, dot(n, V));
+                    lit += (diffAlb * ndl + specBP(n, V, V, rough, f0)) * float3(0.78, 0.85, 1.00) * 0.30;
+                    // a presentation fill from the view's upper-left — the flank
+                    // the marine sees is the gun's shadow side (rooms light from
+                    // above), so every FPS keys its viewmodel or it silhouettes.
+                    // It BREATHES with the room: scaled by the sector light at
+                    // the gun, floored so the weapon never reads as pure black.
+                    float plumG = dot(sectFill, float3(0.299, 0.587, 0.114));
+                    float fillG = 0.10 + 0.55 * min(1.0, plumG);
+                    float3 Lf = normalize(-0.45 * rN + 0.80 * float3(0.0, 1.0, 0.0) - 0.40 * U.fwd.xyz);
+                    lit += (diffAlb * max(0.0, dot(n, Lf)) + specBP(n, V, Lf, rough, f0)) * float3(0.85, 0.90, 1.00) * fillG;
+                    // warm pooled downlight from the nearby ceiling lamps (3×3, as the world)
+                    {
+                        int2 dim2 = int2(mapWH);
+                        int lx0 = (int(floor(p.x)) / 2) * 2, lz0 = (int(floor(p.z)) / 2) * 2;
+                        float3 pool = float3(0.0), poolSpec = float3(0.0);
+                        for (int dz = -2; dz <= 2; dz += 2) {
+                            for (int dx = -2; dx <= 2; dx += 2) {
+                                int cx = lx0 + dx, cz = lz0 + dz;
+                                if (cx < 0 || cz < 0 || cx >= dim2.x || cz >= dim2.y) continue;
+                                if (wallId.read(uint2(uint(cx), uint(cz))).r != 0u) continue;
+                                float3 tl = float3(float(cx) + 0.5, ceilH - 0.04, float(cz) + 0.5) - p;
+                                float d2 = dot(tl, tl), dl = sqrt(d2);
+                                float3 Ld = tl / dl;
+                                float nl2 = max(0.0, dot(n, Ld));
+                                float atn = 1.0 / (1.0 + d2 * 2.6);
+                                float fdrop = fixtureFlicker(float2(float(cx), float(cz)), time);
+                                pool += LAMP_WARM * ((1.9 * nl2 + 0.5) * atn * fdrop);
+                                poolSpec += specBP(n, V, Ld, rough, f0) * LAMP_WARM * (atn * fdrop);
+                            }
+                        }
+                        lit += (diffAlb * pool + poolSpec) * 0.42;
+                    }
+                    // dynamic + emitter lights — the muzzle flash and passing plasma
+                    // bolts splash off the weapon's top surfaces
+                    int nL2 = int(U.grid.w);
+                    for (int li = 0; li < nL2; li++) {
+                        float3 tl = lights[li].posR.xyz - p;
+                        float d2 = dot(tl, tl);
+                        float fA = 1.0 - d2 * lights[li].posR.w;
+                        if (fA <= 0.0) continue;
+                        float dl = sqrt(d2);
+                        float3 Ld = tl / dl;
+                        float nl2 = max(0.0, dot(n, Ld));
+                        if (nl2 <= 0.0) continue;
+                        float3 lcol = lights[li].colI.rgb * (lights[li].colI.w * fA * fA);
+                        lit += (diffAlb * nl2 + specBP(n, V, Ld, rough, f0)) * lcol;
+                    }
+                    lit += alb * emv;                    // the energy core / pilot flame glow
+                    col = lit;
+                    volT = tv;                           // haze only between eye and weapon (≈ none)
+                }
+            }
+        }
         // volumetric in-scatter (haze + god-rays from the sector glow & lights)
         float jit = fract(sin(dot(float2(gid), float2(12.9898, 78.233))) * 43758.5453);
-        col += volumetric(ro, rd, hit ? t : 28.0, dt, s, mapWH, lightTex, int(U.grid.w), lights, jit);
+        col += volumetric(ro, rd, volT, dt, s, mapWH, lightTex, int(U.grid.w), lights, jit);
         outTex.write(float4(col, 1.0), gid);   // LINEAR HDR — the post pass tonemaps + blooms
         depthTex.write(float4(hit ? t * dot(rd, U.fwd.xyz) : 1e9, 0, 0, 0), gid);  // perp depth for sprite occlusion
     }
@@ -1264,7 +1454,9 @@ enum GPURaymarch {
     }
 
     struct Uniforms { var ro, fwd, right, up, params, grid, extra: SIMD4<Float>
-                      var env: SIMD4<Float> = SIMD4(0, 0, 0, 0) }   // extra.x = decalCount · env.xy = water-table offset (puddle field)
+                      var env: SIMD4<Float> = SIMD4(0, 0, 0, 0)     // extra.x = decalCount · env.xy = water-table offset · env.zw = viewmodel shape start/count
+                      var vmA: SIMD4<Float> = SIMD4(0, 0, 0, 0)     // viewmodel: gun anchor.xyz + local bound radius
+                      var vmB: SIMD4<Float> = SIMD4(0, 0, 0, 0) }   // viewmodel: gun-local bound centre
     struct GPULight { var posR, colI: SIMD4<Float> }   // posR=(x,y,z,1/r²)  colI=(r,g,b,intensity)
     struct GShape { var a, b, col: SIMD4<Float> }      // a.xyz/r1 ; b.xyz/r2(<0 sphere) ; col.rgb/k
     struct GMonster { var a, b, c: SIMD4<Float> }      // a=(x,z,yaw,scale) b=(start,count,boundR,boundCY) c=(minY,…)
@@ -1295,58 +1487,89 @@ enum GPURaymarch {
             return m.burn > 0 ? CreatureLab.charShapes(corpse, burn: m.burn / 0.7) : corpse
         case .dying:
             // a gibbed drone's death anim IS the burst — chunks flying apart. The
-            // rooted Queen slumps in place (sprawl low): the generic topple smeared
-            // her huge birthing sac into a balloon.
+            // Queen dies as an EVENT: her staged choreography (rear → convulse →
+            // topple → crash) lives in CreatureLab.queenDeathShapes.
+            if m.kind == .queen && !m.gibbed {
+                return CreatureLab.queenDeathShapes(cdef.build(0, 0), t: m.stateTime / World.queenDeathTime)
+            }
             return CreatureLab.deadShapes(cdef.build(0, 0), d: min(1, m.stateTime / 0.5), gib: m.gibbed, decals: false,
-                                          sprawl: m.kind == .queen ? 0.15 : 1)
+                                          sprawl: 1)
         case .attack: return cdef.build(0.25, 1)
         default:      return cdef.build(m.animTime - floorf(m.animTime), 0)
         }
     }
 
+    /// One creature = ONE physical size. The world scale and the floor plant
+    /// are normalised against the canonical LIVE pose (build(0,0)) — deriving
+    /// them from the CURRENT pose made death/char poses PUMP: a collapsing
+    /// body halves its height, so 0.92/bodyH nearly doubled the scale and
+    /// re-planted the corpse on its swollen radii. The dying Queen visibly
+    /// inflated like a balloon.
+    private static var refPoseCache: [MonsterKind: (scale: Float, loY: Float)] = [:]
+    static func refPose(_ kind: MonsterKind) -> (scale: Float, loY: Float) {
+        if let c = refPoseCache[kind] { return c }
+        let cdef = MonsterBake.cdef(kind), def = kind.def
+        let sl = cdef.build(0, 0)
+        var loY: Float = 1e9, hiY: Float = -1e9, maxR: Float = 0
+        for sh in sl {
+            let r = max(sh.r1, sh.r2)
+            loY = min(loY, min(sh.a.y, sh.b.y) - r)
+            hiY = max(hiY, max(sh.a.y, sh.b.y) + r)
+            maxR = max(maxR, r)
+        }
+        // `hw` (horizontal footprint, for the wall clamp below) counts only the
+        // BULK — shapes at least half the creature's thickest radius. Thin spikes,
+        // claws and the long swept tail can extend past the body without reading
+        // as "poking through a wall", and counting them shrank the whole creature.
+        let bulkR = maxR * 0.5
+        var hw: Float = 0
+        for sh in sl {
+            if sh.r1 >= bulkR { hw = max(hw, simd_length(SIMD2(sh.a.x, sh.a.z)) + sh.r1) }
+            if sh.r2 >= bulkR { hw = max(hw, simd_length(SIMD2(sh.b.x, sh.b.z)) + sh.r2) }
+        }
+        // Reproduce the sprite's apparent size: the bake tile spanned viewH
+        // creature-units and was billboarded billboardH walls tall, so one
+        // creature-unit = billboardH/viewH walls. (Scaling the body straight
+        // to ~0.92 of the wall ignored the sprite's transparent padding and
+        // rendered creatures far larger than they ever looked.)
+        let fit = def.billboardH / cdef.viewH
+        var scale = min(fit, 0.92 / max(0.1, hiY - loY))
+        // Keep the rendered body within the collision radius so it can't bulge
+        // through walls/doors: movement only keeps the CENTER ~radius clear, so a
+        // wide pose (extended claws, the Queen's bulk) would otherwise poke past
+        // the wall it's pressed against. Clamp world half-width (hw·scale) ≤ radius.
+        if hw > 0.001 { scale = min(scale, def.radius / hw) }
+        let entry = (scale: scale, loY: loY)
+        refPoseCache[kind] = entry
+        return entry
+    }
+
     /// Pack visible monsters into GPU buffers: scale each creature to fit the
     /// room height (feet on the floor), bound it, and flatten its shapes.
+    /// A burning corpse does NOT shrink — bodies don't deflate. charShapes
+    /// (already applied by poseShapes) slumps it into a charred mound at
+    /// full scale: extremities burn away, masses collapse and fuse.
     static func packCreatures(_ monsters: [Monster], shapeBudget: Int = 1024) -> ([GMonster], [GShape]) {
         var mons: [GMonster] = [], shapes: [GShape] = []
         for m in monsters {
             let sl = poseShapes(m)
             if sl.isEmpty || shapes.count + sl.count > shapeBudget { continue }
-            var loY: Float = 1e9, hiY: Float = -1e9, maxR: Float = 0
+            // the bounding sphere tracks the CURRENT pose (march culling)…
+            var loY: Float = 1e9, hiY: Float = -1e9
             for sh in sl {
                 let r = max(sh.r1, sh.r2)
                 loY = min(loY, min(sh.a.y, sh.b.y) - r)
                 hiY = max(hiY, max(sh.a.y, sh.b.y) + r)
-                maxR = max(maxR, r)
             }
-            let bodyH = max(0.1, hiY - loY), boundCY = (loY + hiY) / 2
-            // `hw` (horizontal footprint, for the wall clamp below) counts only the
-            // BULK — shapes at least half the creature's thickest radius. Thin spikes,
-            // claws and the long swept tail can extend past the body without reading
-            // as "poking through a wall", and counting them shrank the whole creature.
-            let bulkR = maxR * 0.5
-            var boundR: Float = 0, hw: Float = 0
+            let boundCY = (loY + hiY) / 2
+            var boundR: Float = 0
             for sh in sl {
                 boundR = max(boundR, simd_length(SIMD3(sh.a.x, sh.a.y - boundCY, sh.a.z)) + sh.r1)
                 boundR = max(boundR, simd_length(SIMD3(sh.b.x, sh.b.y - boundCY, sh.b.z)) + sh.r2)
-                if sh.r1 >= bulkR { hw = max(hw, simd_length(SIMD2(sh.a.x, sh.a.z)) + sh.r1) }
-                if sh.r2 >= bulkR { hw = max(hw, simd_length(SIMD2(sh.b.x, sh.b.z)) + sh.r2) }
             }
             boundR += 0.06
-            // Reproduce the sprite's apparent size: the bake tile spanned viewH
-            // creature-units and was billboarded billboardH walls tall, so one
-            // creature-unit = billboardH/viewH walls. (Scaling the body straight
-            // to ~0.92 of the wall ignored the sprite's transparent padding and
-            // rendered creatures far larger than they ever looked.)
-            let fit = m.def.billboardH / MonsterBake.cdef(m.kind).viewH
-            // A burning corpse does NOT shrink — bodies don't deflate. charShapes
-            // (already applied by poseShapes) slumps it into a charred mound at
-            // full scale: extremities burn away, masses collapse and fuse.
-            var scale = min(fit, 0.92 / bodyH)
-            // Keep the rendered body within the collision radius so it can't bulge
-            // through walls/doors: movement only keeps the CENTER ~radius clear, so a
-            // wide pose (extended claws, the Queen's bulk) would otherwise poke past
-            // the wall it's pressed against. Clamp world half-width (hw·scale) ≤ radius.
-            if hw > 0.001 { scale = min(scale, m.def.radius / hw) }
+            // …but the scale and floor plant come from the reference pose
+            let (scale, refLoY) = refPose(m.kind)
             let darks = 1 - max(0, min(1, (m.burn - 0.3) / 0.7)) * 0.82      // → charred near-black
             let start = shapes.count
             for sh in sl {
@@ -1358,7 +1581,7 @@ enum GPURaymarch {
             mons.append(GMonster(
                 a: SIMD4(m.pos.x, m.pos.y, m.dir + .pi / 2, scale),
                 b: SIMD4(Float(start), Float(sl.count), boundR, boundCY),
-                c: SIMD4(loY, 0, 0, 0)))
+                c: SIMD4(refLoY, 0, 0, 0)))
         }
         return (mons, shapes)
     }
@@ -1850,9 +2073,20 @@ enum GPURaymarch {
             if mons.count >= cap { break }
             let r = projRadius(pr.kind)
             let start = shapes.count
-            shapes.append(iSphere(SIMD3(0, 0, 0), r, projColor(pr.kind), 0.01))
-            mons.append(GMonster(a: SIMD4(pr.pos.x, pr.pos.y, 0, 1),
-                                 b: SIMD4(Float(start), 1, r + 0.05, 0),
+            let col = projColor(pr.kind)
+            // a bolt in flight is a STREAK, not a dot: the head orb plus a
+            // fading tail stretched over ~45 ms of its own motion. Without it
+            // a fast bolt lives three frames as a barely-visible dot, and
+            // close-range fire has no visual at all.
+            let speed = simd_length(pr.vel)
+            let len = min(0.8, speed * 0.045)
+            let yaw = atan2(pr.vel.y, pr.vel.x) + .pi / 2            // local -z = direction of flight
+            shapes.append(iSphere(SIMD3(0, 0, 0), r, col, 0.01))
+            if len > 0.05 {
+                shapes.append(iCone(SIMD3(0, 0, 0), SIMD3(0, 0, len), r * 0.85, r * 0.25, col * 0.55, 0.02))
+            }
+            mons.append(GMonster(a: SIMD4(pr.pos.x, pr.pos.y, yaw, 1),
+                                 b: SIMD4(Float(start), Float(shapes.count - start), len + r + 0.05, 0),
                                  c: SIMD4(0, eyeY, 2, 0)))           // centred at eye height; c.z = 2 (orb)
         }
         return (mons, shapes)
@@ -2159,6 +2393,20 @@ enum GPURaymarch {
             for pm0 in ppmons { var pm = pm0; pm.b.x += Float(ppbase); cmons.append(pm) }
             cshapes.append(contentsOf: ppshapes)
             u.grid.z = Float(cmons.count)
+            // the held weapon — the SDF viewmodel overlay, mid-fire, so the
+            // content shot proves the path AND the perf timing pays its cost
+            var vp = p
+            vp.current = .plasma; vp.fireAnim = 0.05; vp.muzzle = 0.04
+            let vm = Viewmodel.pack(player: vp, time: 0.6)
+            u.env.z = Float(cshapes.count)
+            u.env.w = Float(vm.shapes.count)
+            cshapes.append(contentsOf: vm.shapes)
+            let vmEye = SIMD3<Float>(p.pos.x, 0.5, p.pos.y)
+            let vmR = SIMD3<Float>(-dirY, 0, dirX), vmF = SIMD3<Float>(dirX, 0, dirY)
+            let vmAnchor = vmEye + vmF * Viewmodel.anchorFwd + vmR * Viewmodel.anchorRight
+                                 - SIMD3<Float>(0, 1, 0) * Viewmodel.anchorDown
+            u.vmA = SIMD4(vmAnchor.x, vmAnchor.y, vmAnchor.z, vm.boundR)
+            u.vmB = SIMD4(vm.boundC.x, vm.boundC.y, vm.boundC.z, 0)
             // located decals: a blood pool and a scorch mark on the floor ahead
             var decals: [SIMD4<Float>] = [
                 SIMD4(p.pos.x + fwd2.x * 2.0, p.pos.y + fwd2.y * 2.0, 0.85, -0.9),                      // blood

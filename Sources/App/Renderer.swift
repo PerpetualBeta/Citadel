@@ -300,15 +300,21 @@ final class Renderer: NSObject, MTKViewDelegate {
         guard let world = world else { state = .title; return }
         StaticFX.fill(canvas, t: screenT)
         FrontEnd.teleportCard(canvas, world: world, t: screenT)
+        // the static HISSES for the whole hold: long overlapping noise voices
+        // (each ramps in while the last is still decaying) make one continuous
+        // crackle bed — short discrete bursts read as rhythmic clicks
         staticAudioT -= dt
         if staticAudioT <= 0 {
-            staticAudioT = 0.42
-            audio.trigger(wave: AudioEngine.noise, f0: 1, dur: 0.5, amp: 0.20, attack: 0.06)
+            staticAudioT = 0.8
+            audio.trigger(wave: AudioEngine.noise, f0: 1, dur: 1.8, amp: 0.55, attack: 0.35)
         }
         let minHold: Float = 2.6                       // the story beat needs to land
         if screenT >= minHold, let w = pendingWorld {
             arrivalStatic = 1
-            audio.trigger(wave: AudioEngine.sine, f0: 1200, f1: 130, dur: 0.9, amp: 0.22, attack: 0.01)
+            // arrival: a soft materialisation whoosh + a quiet falling tone —
+            // it outlives the 0.8 s static burn-off so nothing cuts dead
+            audio.trigger(wave: AudioEngine.noise, f0: 1, dur: 1.1, amp: 0.30, attack: 0.08)
+            audio.trigger(wave: AudioEngine.sine, f0: 1200, f1: 130, dur: 0.9, amp: 0.12, attack: 0.06)
             installWorld(w)
         }
     }

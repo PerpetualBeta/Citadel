@@ -105,19 +105,11 @@ struct HUD {
     }
 
     private func drawViewmodel(_ world: World, _ c: Canvas2D) {
-        let p = world.player
-        let frames = Sprites.shared.weaponFrames(p.current)
-        let firing = p.fireAnim > 0 && frames.count > 1
-        let spr = firing ? frames[1] : frames[0]
-        let k = Float(RenderConfig.num) / Float(RenderConfig.den)     // framebuffer scale
-        let bobX = Int(sin(p.bobPhase) * 7 * p.bob * k)
-        let bobY = Int(abs(sin(p.bobPhase * 2)) * 6 * p.bob * k)
-        let lower = Int(p.switchAnim * 200 * k)
-        let sw = spr.w, sh = spr.h           // viewmodel is rendered at framebuffer scale → blit 1:1
-        let dx = (W - sw) / 2 + bobX
-        let dy = viewH - sh + bobY + lower + uiS(6)
-        if p.muzzle > 0 { c.fillRectBlend(0, viewH - uiS(90), W, uiS(90), packRGBA(255, 228, 150), 0.12) }
-        c.blitBitmapF(spr.pixels, spr.w, spr.h, dx, dy, scale: 1)
+        // The weapon is no longer a baked sprite blitted over the frame — it is
+        // an SDF viewmodel raymarched IN the world render (Viewmodel.swift +
+        // GPURaymarch.vmField), lit by the same rig as everything else. All
+        // that remains here is the muzzle flash's splash on the visor glass.
+        if world.player.muzzle > 0 { c.fillRectBlend(0, viewH - uiS(90), W, uiS(90), packRGBA(255, 228, 150), 0.10) }
     }
 
     // ── top-left: the comms/message feed ──────────────────────────────────────

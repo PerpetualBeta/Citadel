@@ -112,6 +112,13 @@ final class World {
     var holdRide = false              // renderer: true while the next floor is still generating
     private var rideRumbleT: Float = 0 // re-arms the winch rumble on an extended ride
     var rideShake: Float = 0          // 0…1 envelope, read by the renderer's camera
+    var impactShake: Float = 0        // 0…1 heavy-landing jolt (the Queen's topple), read by the renderer's camera
+
+    /// The Queen dies as a staged EVENT — rear → convulse → topple → crash;
+    /// the choreography and its phase fences live in CreatureLab, these map
+    /// her normalised timeline to seconds. Drones just crumple.
+    static let queenDeathTime: Float = 2.8
+    static let droneDeathTime: Float = 0.45
 
     // ── the teleporter ── the LAST floor of a citadel has no deeper floor to
     // ride to: its exit is a pad. Step on (Queen dead + burned), FIRE commits,
@@ -124,13 +131,14 @@ final class World {
     let isTeleportFloor: Bool                    // exits by pad, not lift
     let arrivalByTeleport: Bool                  // floor 1 of a later citadel — you materialised here
     private var padHintCD: Float = 0
+    private var teleportHissT: Float = 0   // re-arms the charge's static-crackle bed
     /// The receiver pad's dying glow after a teleport arrival (renderer light).
     var arrivalGlow: Float { arrivalByTeleport ? max(0, 1 - elapsed / 6) : 0 }
 
     private var rng: Rng
     private var hazardTimer: Float = 0
     private var monsterHazardTimer: Float = 0
-    var blasts: [(pos: SIMD2<Float>, t: Float)] = []   // explosion flashes (renderer light)
+    var blasts: [(pos: SIMD2<Float>, t: Float, col: SIMD3<Float>)] = []   // impact flashes (renderer light), coloured per cause
     private var steamTimer: Float = 0
     private var sparkTimer: Float = 0
     // ── the Queen ──
@@ -315,6 +323,7 @@ final class World {
     func update(dt: Float, input: InputState, audio: AudioEngine) {
         elapsed += dt
         combatHeat = max(0, combatHeat - dt * 0.7)        // combat tension cools over ~1.5 s
+        impactShake = max(0, impactShake - dt * 1.8)      // the landing jolt rings down over ~0.55 s
         for i in messages.indices { messages[i].time -= dt }
         messages.removeAll { $0.time <= 0 }
 
@@ -716,6 +725,14 @@ final class World {
             else if fireEdge { engageTeleport(audio: audio) }
         case .charging:
             teleportT = min(1, teleportT + dt / World.teleportChargeTime)
+            // the static's crackle GROWS with the dissolve: long overlapping
+            // noise voices, re-armed while the last still decays, louder as
+            // the feed goes — the renderer's hold state continues the same bed
+            teleportHissT -= dt
+            if teleportHissT <= 0 {
+                teleportHissT = 0.8
+                audio.trigger(wave: AudioEngine.noise, f0: 1, dur: 1.8, amp: 0.15 + 0.35 * teleportT, attack: 0.35)
+            }
             if teleportT >= 1 { completeLevel(audio: audio) }
         }
     }
@@ -723,10 +740,10 @@ final class World {
     private func engageTeleport(audio: AudioEngine) {
         guard teleportPhase != .charging else { return }
         teleportPhase = .charging
+        teleportHissT = 0
         message("TELEPORT ENGAGED")
-        // spin-up: a rising carrier over a noise swell — the static takes over from it
+        // spin-up: a rising carrier — the growing static crackle rides over it
         audio.trigger(wave: AudioEngine.sine, f0: 140, f1: 1300, dur: World.teleportChargeTime, amp: 0.26, attack: 0.5)
-        audio.trigger(wave: AudioEngine.noise, f0: 1, dur: World.teleportChargeTime, amp: 0.16, attack: 1.0)
     }
 
     private func completeLevel(audio: AudioEngine) {
@@ -832,6 +849,7 @@ final class World {
             guard lineOfSight(player.pos, monsters[i].pos) else { continue }   // fire doesn't cook through walls
             if monsters[i].alive { damageMonster(i, def.damage, audio: audio, kind: .fire) }
             else if monsters[i].state == .dead && !monsters[i].gibbed && !monsters[i].dissolving { monsters[i].burn = max(monsters[i].burn, 0.06) }   // light it up (and commits a downed Queen to ash)
+            else if monsters[i].state == .dying && monsters[i].kind == .queen { monsters[i].burn = max(monsters[i].burn, 0.06) }   // flames during her topple PRIME the pyre — it catches as she lands
         }
         // playing the flame over a drum cooks it off — torch one across the room
         for di in drums.indices where drums[di].health > 0 {
@@ -848,7 +866,9 @@ final class World {
         // each droplet flies), drooping slightly as burning fuel does. The
         // stream is clipped by the first wall, where the fuel SPLASHES into
         // licking flame instead of passing through.
-        let nozzle = player.pos + dir * 0.35
+        // the jet is born at the SDF viewmodel's nozzle — offset to the marine's
+        // right like the held gun, so the stream connects to the weapon on screen
+        let nozzle = player.pos + dir * 0.35 + SIMD2(-dir.y, dir.x) * Viewmodel.anchorRight
         var wallD = def.range
         var probe = nozzle, travelled: Float = 0
         while travelled < def.range {
@@ -867,13 +887,13 @@ final class World {
             particles.append(Particle(pos: nozzle + SIMD2(rng.f(-0.04, 0.04), rng.f(-0.04, 0.04)),
                                       vel: fdir * speed,
                                       life: life, maxLife: 0.46, color: 0,
-                                      size: rng.f(5, 10), height: 0.38 + rng.f(-0.03, 0.03),
+                                      size: rng.f(5, 10), height: 0.32 + rng.f(-0.03, 0.03),
                                       rise: rng.f(-0.22, 0.06),
                                       maxAlpha: 0.55, fire: true))
         }
         particles.append(Particle(pos: nozzle, vel: dir * rng.f(2, 4) + SIMD2(rng.f(-0.5, 0.5), rng.f(-0.5, 0.5)),
                                   life: rng.f(0.05, 0.12), maxLife: 0.12, color: packRGBA(255, 240, 190),
-                                  size: 1.5, height: 0.4, rise: 0, maxAlpha: 1, fire: true))   // nozzle ignition glint
+                                  size: 1.5, height: 0.32, rise: 0, maxAlpha: 1, fire: true))   // nozzle ignition glint
         if wallD < def.range {   // fuel splashing and climbing the wall it hits
             let hit = nozzle + dir * (wallD - 0.2)
             for _ in 0..<3 {
@@ -989,7 +1009,12 @@ final class World {
             score += m.def.points
             killCount += 1
             spawnParticles(at: m.pos, n: 14, color: packRGBA(200, 20, 20), spread: 3.2, life: 0.5)
-            addDecal(m.pos, radius: m.def.radius * 1.7 + 0.28, w: -0.85)   // blood pool at the kill site
+            if m.kind != .queen {                                          // the Queen's pool spreads when she LANDS
+                addDecal(m.pos, radius: m.def.radius * 1.7 + 0.28, w: -0.85)   // blood pool at the kill site
+            }
+            // (the Queen's death WAIL is the sampled queen_death pool — a real
+            //  recorded beast scream, long enough to ride the rear-and-convulse —
+            //  played by audio.monsterDeath below like any other kill)
             audio.monsterDeath(m.kind)
             if kind == .explosive && m.kind == .alien {
                 // OBLITERATED — the blast tears the drone apart: the death pose is
@@ -1028,7 +1053,7 @@ final class World {
                 // burns straight down to char without a second flamethrower pass
                 m.burn = max(m.burn, 0.06)
             }
-            if m.kind == .queen { m.revive = queenReviveWindow; message("THE QUEEN IS DOWN — BURN THE BODY, NOW!") }
+            if m.kind == .queen { m.revive = queenReviveWindow }   // the BURN message lands with her impact
         } else {
             if rng.chance(m.def.painChance) { m.state = .pain; m.stateTime = 0.2 }
             audio.monsterPain(m.kind)
@@ -1204,8 +1229,28 @@ final class World {
                 monsters[i] = m; continue
             }
             if m.state == .dying {
+                let prev = m.stateTime
                 m.stateTime += dt
-                if m.stateTime > 0.45 { m.state = .dead }
+                if m.kind == .queen {
+                    // the moment the toppling brood-mother CRASHES to the deck:
+                    // the floor jumps, dust sheets out, the pool spreads under her
+                    let impact = World.queenDeathTime * CreatureLab.queenImpactT
+                    if prev < impact && m.stateTime >= impact {
+                        impactShake = 1
+                        audio.queenFall()                // a real recorded slam, not a synth pop
+                        addDecal(m.pos, radius: m.def.radius * 1.7 + 0.28, w: -0.85)
+                        for _ in 0..<26 {                    // dust billowing off the deck
+                            let a = rng.f(0, 6.2832), r = rng.f(0.5, m.def.radius * 1.6)
+                            particles.append(Particle(pos: m.pos + SIMD2(cos(a) * r, sin(a) * r),
+                                                      vel: SIMD2(cos(a) * rng.f(0.3, 0.9), sin(a) * rng.f(0.3, 0.9)),
+                                                      life: rng.f(0.6, 1.1), maxLife: 1.1, color: packRGBA(96, 88, 78),
+                                                      size: rng.f(9, 16), height: rng.f(0.05, 0.3), rise: rng.f(0.4, 0.9),
+                                                      maxAlpha: 0.45))
+                        }
+                        message("THE QUEEN IS DOWN — BURN THE BODY, NOW!")
+                    }
+                }
+                if m.stateTime > (m.kind == .queen ? World.queenDeathTime : World.droneDeathTime) { m.state = .dead }
                 monsters[i] = m; continue
             }
             let toP = player.pos - m.pos
@@ -1443,7 +1488,17 @@ final class World {
             }
             if detonate || p.life <= 0 {
                 if p.kind.splash > 0 { explode(at: p.pos, radius: p.kind.splash, damage: p.damage, fromPlayer: p.fromPlayer, audio: audio) }
-                else { spawnParticles(at: p.pos, n: 5, color: projColor(p.kind), spread: 2, life: 0.25) }
+                else {
+                    // the bolt's death is its PAYOFF: a fat flash of its own
+                    // colour + a brief light splashed on whatever it struck.
+                    // At close range the bolt itself lives two frames — the
+                    // impact bloom is what the eye actually reads.
+                    spawnParticles(at: p.pos, n: 14, color: projColor(p.kind), spread: 3.5, life: 0.3)
+                    particles.append(Particle(pos: p.pos, vel: .zero, life: 0.14, maxLife: 0.14,
+                                              color: projColor(p.kind), size: 26, height: 0.5,
+                                              rise: 0, maxAlpha: 0.9, fire: true))
+                    blasts.append((p.pos, 0.16, p.kind == .plasma ? SIMD3(0.35, 0.85, 1.15) : SIMD3(1.0, 0.7, 0.3)))
+                }
                 projectiles.remove(at: i)
             } else {
                 projectiles[i] = p; i += 1
@@ -1455,7 +1510,7 @@ final class World {
         spawnParticles(at: pos, n: 24, color: packRGBA(255, 150, 60), spread: 4.5, life: 0.5)
         // a real DETONATION: a fireball that blooms and rises, a smoke plume that
         // outlives it, and a flash of light thrown across the room (gatherDynLights)
-        blasts.append((pos, 0.3))
+        blasts.append((pos, 0.3, SIMD3(1.0, 0.62, 0.28)))
         for _ in 0..<14 {
             let a = rng.f(0, 6.2832), sp = rng.f(0.8, 3.0)
             particles.append(Particle(pos: pos + SIMD2(rng.f(-0.25, 0.25), rng.f(-0.25, 0.25)),
@@ -1563,20 +1618,34 @@ final class World {
     /// Stand at a drum (with room in the tank, fuel in the drum) → it pumps fuel
     /// into the flamethrower, draining the drum. A drained drum still ruptures.
     /// True if a player-sized body can stand somewhere inside the drum's
-    /// refuel ring (between her minimum approach and the pump's trigger reach).
+    /// refuel ring AND walk to that spot: the ring point alone is not enough —
+    /// furniture can enclose a standable pocket no path reaches (a drum boxed
+    /// in by bunks read as "inaccessible fuel" in playtest), so the whole
+    /// approach LANE out to open floor must be standable too.
     func drumReachable(_ pos: SIMD2<Float>) -> Bool {
         for k in 0..<16 {
             let a = Float(k) / 16 * 2 * .pi
-            for r: Float in [0.72, 0.90] {
-                let p = pos + SIMD2(cos(a), sin(a)) * r
-                if canStand(p.x, p.y) { return true }
+            let dir = SIMD2<Float>(cos(a), sin(a))
+            ring: for r: Float in [0.72, 0.90] {
+                var step = r
+                while step <= r + 0.71 {
+                    let p = pos + dir * step
+                    if !canStand(p.x, p.y) { continue ring }
+                    step += 0.35
+                }
+                return true
             }
         }
         return false
     }
 
     private func relocateUnreachableDrums() {
-        for i in drums.indices where !drumReachable(drums[i].pos) {
+        // Fuel-STORE drums are exempt: the chamber is an intentional stack —
+        // you pump what you can reach from the doorway and shoot the rest.
+        // Relocating them one by one emptied whole stores into nearby rooms.
+        for i in drums.indices
+        where !map.fuelStore.contains(map.idx(Int(drums[i].pos.x), Int(drums[i].pos.y)))
+              && !drumReachable(drums[i].pos) {
             let home = drums[i].pos
             var best: SIMD2<Float>?
             var bestD = Float.greatestFiniteMagnitude

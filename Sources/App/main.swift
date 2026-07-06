@@ -38,7 +38,7 @@ if ProcessInfo.processInfo.environment["CITADEL_TIMING"] != nil {
     var w1: World!
     timed("World(level:1) generation (the hidden build)") { w1 = World(level: 1, colonyIndex: 0, seed: 12345) }
     timed("first real-world frame (SDF field + textures)") { _ = gpu.render(w1, into: c) }
-    timed("Sprites.shared bake (first access)") { _ = Sprites.shared.weaponFrames(.plasma) }
+    timed("Sprites.shared bake (first access)") { _ = Sprites.shared.item(.medkit) }
     timed("first HUD draw") { HUD().draw(w1, into: c) }
     exit(0)
 }

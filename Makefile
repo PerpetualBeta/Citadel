@@ -28,54 +28,63 @@ BUILD_SYSTEM     := swiftc
 # frame clock; AVFoundation for the code synth; GameController for gamepads.
 SWIFT_FRAMEWORKS := Cocoa Metal MetalKit QuartzCore AVFoundation GameController
 
-SWIFT_SOURCES    := main.swift \
-                    AppDelegate.swift \
-                    GameView.swift \
-                    Renderer.swift \
-                    Canvas2D.swift \
-                    Pixel.swift \
-                    Font.swift \
-                    TextImage.swift \
-                    Rng.swift \
-                    Textures.swift \
-                    Sprites.swift \
-                    Mesh3D.swift \
-                    MonsterBake.swift \
-                    GameMap.swift \
-                    Progression.swift \
-                    MapGen.swift \
-                    Lighting.swift \
-                    WorldLight.swift \
-                    SpriteCompositor.swift \
-                    GPUWorldRenderer.swift \
-                    Player.swift \
-                    Weapon.swift \
-                    Monster.swift \
-                    Item.swift \
-                    Prop.swift \
-                    Projectile.swift \
-                    World.swift \
-                    HUD.swift \
-                    StaticFX.swift \
-                    Codex.swift \
-                    Automap.swift \
-                    AudioEngine.swift \
-                    InputState.swift \
-                    Gamepad.swift \
-                    GameSettings.swift \
-                    FeatureFlags.swift \
-                    HighScores.swift \
-                    KeyboardSheet.swift \
-                    ControllerSheet.swift \
-                    OptionsSheet.swift \
-                    SmokeTest.swift \
-                    Captures.swift \
-                    RoomShots.swift \
-                    ArtPreview.swift \
-                    CreatureLab.swift \
-                    MaterialPreview.swift \
-                    BeautyProof.swift \
-                    GPURaymarch.swift
+# Sources are grouped by seam under Sources/ (swiftc compiles them as one
+# flat module, so the folders are pure organisation):
+#   App      — process entry, window/view, frame loop, input, settings
+#   Game     — simulation: world, mapgen, actors, weapons, progression
+#   Render   — the GPU SDF raymarcher + canvas/texture/sprite machinery
+#   UI       — visor HUD, front-end screens, automap, type
+#   Audio    — the sample-bank engine (+ synth fallbacks)
+#   Harness  — headless test/capture/proof tools (smoke, shots, labs)
+SWIFT_SOURCES    := Sources/App/main.swift \
+                    Sources/App/AppDelegate.swift \
+                    Sources/App/GameView.swift \
+                    Sources/App/Renderer.swift \
+                    Sources/App/InputState.swift \
+                    Sources/App/Gamepad.swift \
+                    Sources/App/GameSettings.swift \
+                    Sources/App/FeatureFlags.swift \
+                    Sources/App/KeyboardSheet.swift \
+                    Sources/App/ControllerSheet.swift \
+                    Sources/App/OptionsSheet.swift \
+                    Sources/Game/World.swift \
+                    Sources/Game/MapGen.swift \
+                    Sources/Game/GameMap.swift \
+                    Sources/Game/Progression.swift \
+                    Sources/Game/Player.swift \
+                    Sources/Game/Weapon.swift \
+                    Sources/Game/Monster.swift \
+                    Sources/Game/Item.swift \
+                    Sources/Game/Prop.swift \
+                    Sources/Game/Projectile.swift \
+                    Sources/Game/HighScores.swift \
+                    Sources/Game/Rng.swift \
+                    Sources/Render/GPURaymarch.swift \
+                    Sources/Render/GPUWorldRenderer.swift \
+                    Sources/Render/Canvas2D.swift \
+                    Sources/Render/Pixel.swift \
+                    Sources/Render/Textures.swift \
+                    Sources/Render/Lighting.swift \
+                    Sources/Render/WorldLight.swift \
+                    Sources/Render/SpriteCompositor.swift \
+                    Sources/Render/Sprites.swift \
+                    Sources/Render/Mesh3D.swift \
+                    Sources/Render/MonsterBake.swift \
+                    Sources/Render/StaticFX.swift \
+                    Sources/Render/Viewmodel.swift \
+                    Sources/UI/HUD.swift \
+                    Sources/UI/Codex.swift \
+                    Sources/UI/Automap.swift \
+                    Sources/UI/Font.swift \
+                    Sources/UI/TextImage.swift \
+                    Sources/Audio/AudioEngine.swift \
+                    Sources/Harness/SmokeTest.swift \
+                    Sources/Harness/Captures.swift \
+                    Sources/Harness/RoomShots.swift \
+                    Sources/Harness/ArtPreview.swift \
+                    Sources/Harness/CreatureLab.swift \
+                    Sources/Harness/MaterialPreview.swift \
+                    Sources/Harness/BeautyProof.swift
 
 PACKAGE_TYPE     := zip
 ALSO_SHIP_PKG    := true

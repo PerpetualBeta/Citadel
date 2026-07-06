@@ -7,6 +7,7 @@
 
 import Foundation
 import Metal
+import simd
 
 enum SmokeTest {
     private static var failures = 0
@@ -192,6 +193,9 @@ enum SmokeTest {
             for lv in [3, 5] {
                 let wd = World(level: lv, colonyIndex: Int(sd % 6), seed: sd &* 5077 &+ UInt64(lv))
                 for d in wd.drums {
+                    // fuel-STORE drums are an intentional stack (pump the front,
+                    // shoot the rest) — reachability applies to room drums only
+                    if wd.map.fuelStore.contains(wd.map.idx(Int(d.pos.x), Int(d.pos.y))) { continue }
                     drumsChecked += 1
                     if !wd.drumReachable(d.pos) { dryDrums += 1 }
                 }
@@ -457,6 +461,16 @@ enum SmokeTest {
                 qw.update(dt: 0.05, input: InputState(), audio: audio)
             }
             check(qw.monsters.contains { $0.kind == .queen && !$0.alive }, "plasma puts the Queen down")
+            // her death is an EVENT: she topples for queenDeathTime, the deck
+            // jolt + the BURN message fire as she lands, and only then is she a corpse
+            check(qw.monsters.contains { $0.kind == .queen && $0.state == .dying }, "the Queen's death plays out (dying state holds)")
+            var joltSeen = false
+            for _ in 0..<Int(World.queenDeathTime * 60) + 30 {
+                qw.update(dt: 1.0 / 60, input: InputState(), audio: audio)
+                if qw.impactShake > 0.9 { joltSeen = true }
+            }
+            check(joltSeen, "the toppling Queen jolts the deck as she lands")
+            check(qw.monsters.contains { $0.kind == .queen && $0.state == .dead }, "the landed Queen is a corpse")
             check(!qw.queenDefeated, "a downed-but-unburned Queen is still not defeated")
             // torch the body → she's finished and the exit unlocks
             if let qd = qw.monsters.firstIndex(where: { $0.kind == .queen }) { qw.monsters[qd].burn = 0.06 }
@@ -477,6 +491,58 @@ enum SmokeTest {
             if nbrsOpen < 3 { queenWedged += 1 }                              // boxed against walls
         }
         check(queenWedged == 0, "the Queen always spawns with clearance (\(queenWedged) wedged)")
+
+        // 2g2b. transit boxes are SEALED: entry/exit cars and teleporter pads
+        // must have back, jambs AND back corners solid. A ring open at a
+        // diagonal leaves two walls kissing at a single point, and the rounded
+        // SDF opens a floor-to-ceiling slit there ("the back corner of the
+        // elevator is missing"). Fallback exit switches (no car) are exempt.
+        var ringBreaches = 0, ringChecked = 0
+        for lvl in [1, 3, 8] {
+            for sd in 0..<10 {
+                let w = World(level: lvl, colonyIndex: (lvl - 1) % 6, seed: UInt64(sd) &* 977 &+ UInt64(lvl))
+                for cell in [w.map.entryCell, w.map.exitCell] where cell >= 0 {
+                    let isCar = w.map.doors[cell] != nil
+                    let isPad = w.map.floor[cell] == FlatTex.teleportPad.rawValue
+                    guard isCar || isPad else { continue }           // fallback switch: no box to seal
+                    let ex = cell % w.map.w, ey = cell / w.map.w
+                    var opens: [(Int, Int)] = []
+                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    where w.map.inBounds(ex + dx, ey + dy) && w.map.wall[w.map.idx(ex + dx, ey + dy)] == 0 {
+                        opens.append((dx, dy))
+                    }
+                    ringChecked += 1
+                    guard opens.count == 1 else { ringBreaches += 1; continue }
+                    let (dx, dy) = opens[0]
+                    for (bx, by) in [(ex - dx, ey - dy), (ex + dy, ey + dx), (ex - dy, ey - dx),
+                                     (ex - dx + dy, ey - dy + dx), (ex - dx - dy, ey - dy - dx)] {
+                        if !w.map.inBounds(bx, by) || w.map.wall[w.map.idx(bx, by)] == 0 { ringBreaches += 1; break }
+                    }
+                }
+            }
+        }
+        check(ringBreaches == 0, "transit boxes are sealed — no diagonal slits (\(ringChecked) checked)")
+
+        // 2g3. the Queen's death choreography must LAND on the corpse pose (the
+        // burn/revive pipeline takes over with no visible pop), and a creature's
+        // world scale + floor plant must be pose-invariant — deriving them from
+        // the current pose made the dying Queen inflate like a balloon.
+        var qm = Monster(kind: .queen, pos: SIMD2(4, 4))
+        qm.state = .dying; qm.stateTime = World.queenDeathTime
+        let endPose = GPURaymarch.poseShapes(qm)
+        qm.state = .dead
+        let corpsePose = GPURaymarch.poseShapes(qm)
+        check(endPose.count == corpsePose.count
+              && zip(endPose, corpsePose).allSatisfy { e, c in
+                  let d = e.a - c.a
+                  return d.x * d.x + d.y * d.y + d.z * d.z < 1e-6 && abs(e.r1 - c.r1) < 1e-3
+              },
+              "the Queen's death lands exactly on the corpse pose")
+        let qAlive = Monster(kind: .queen, pos: SIMD2(4, 4))
+        var qMid = qAlive; qMid.state = .dying; qMid.stateTime = World.queenDeathTime * 0.7
+        let (poseInv, _) = GPURaymarch.packCreatures([qAlive, qMid])
+        check(poseInv.count == 2 && abs(poseInv[0].a.w - poseInv[1].a.w) < 1e-6 && abs(poseInv[0].c.x - poseInv[1].c.x) < 1e-6,
+              "creature scale and floor plant are pose-invariant (no death balloon)")
 
         // 2h. resource props — fuel drums (refuel + shoot-to-detonate) and the
         // deployable proximity mine.
@@ -675,6 +741,25 @@ enum SmokeTest {
         var nonBlack = 0
         for i in 0..<(RenderConfig.width * RenderConfig.height) where (canvas.framebuffer[i] & 0x00FF_FFFF) != 0 { nonBlack += 1 }
         check(nonBlack > 5000, "world render + HUD drew a frame (\(nonBlack) lit pixels)")
+
+        // 3b. the SDF weapon viewmodels: every weapon packs shapes, the local
+        // bound contains them all, and the EYE sits outside the bound (a bound
+        // that swallows the camera would defeat the kernel's ray gate and
+        // march the gun for every pixel on screen)
+        for k in WeaponKind.allCases {
+            var vp = world.player
+            vp.current = k; vp.fireAnim = 0.1; vp.muzzle = 0.05
+            let vm = Viewmodel.pack(player: vp, time: 1.23)
+            check(!vm.shapes.isEmpty, "\(k.def.name) viewmodel packs shapes (\(vm.shapes.count))")
+            var inside = true
+            for sh in vm.shapes {
+                let c = SIMD3(sh.a.x, sh.a.y, sh.a.z)
+                if simd_length(c - vm.boundC) > vm.boundR { inside = false }
+            }
+            check(inside, "\(k.def.name) viewmodel bound contains its shapes (r \(String(format: "%.2f", vm.boundR)))")
+            let eyeLocal = SIMD3<Float>(-Viewmodel.anchorRight, Viewmodel.anchorDown, -Viewmodel.anchorFwd)
+            check(simd_length(eyeLocal - vm.boundC) > vm.boundR, "\(k.def.name) viewmodel bound excludes the eye")
+        }
 
         // front-end screens shouldn't crash
         FrontEnd.title(canvas, t: 1.0, hs: HighScores(fileURL: tmpURL()))

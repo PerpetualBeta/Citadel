@@ -259,6 +259,87 @@ enum CreatureLab {
         return out
     }
 
+    // ── THE QUEEN'S DEATH — an event, not a crumple ──────────────────────────
+    // The brood-mother rears back screaming, convulses as the plasma cooks
+    // her, then the whole upper mass topples forward and CRASHES to the deck.
+    // The timeline is normalised 0…1 (World.queenDeathTime maps it to
+    // seconds); the final frame lands EXACTLY on deadShapes(d:1, sprawl:0.15)
+    // so the corpse / burn / revive pipeline takes over with no visible pop.
+    // Phase fences, as fractions of the death:
+    static let queenRearT: Float = 0.20      // the scream arch peaks
+    static let queenConvulseT: Float = 0.55  // convulsions weaken to nothing
+    static let queenImpactT: Float = 0.78    // the mass hits the deck (World keys the floor-shake/thud to this)
+
+    static func queenDeathShapes(_ base: [Shape], t: Float) -> [Shape] {
+        let tt = max(0, min(1, t))
+        func smooth(_ e0: Float, _ e1: Float, _ x: Float) -> Float {
+            let u = max(0, min(1, (x - e0) / (e1 - e0))); return u * u * (3 - 2 * u)
+        }
+        // the upper body's pitch through the stages (radians; positive rears back)
+        let rearAngle: Float = 0.80, sag: Float = 0.14, fallAngle: Float = -1.30
+        let rearEnv = smooth(0, queenRearT, tt)
+        var pitch = rearAngle * rearEnv
+        var shudder: Float = 0                              // lateral convulsion whip
+        var heave: Float = 0                                // the sac's violent breathing
+        var lurch: Float = 0                                // the whole mass pitching into the fall
+        if tt >= queenRearT && tt < queenConvulseT {
+            let c = (tt - queenRearT) / (queenConvulseT - queenRearT)
+            let fade = 1 - c * 0.6                          // ~7 Hz spasms, weakening
+            shudder = sinf(c * 44) * 0.16 * fade
+            heave = sinf(c * 44) * 0.06 * fade
+            pitch += sinf(c * 31) * 0.09 * fade - sag * c
+        } else if tt >= queenConvulseT {
+            // gravity takes her: a quadratic fall with no easing back
+            let f = min(1, (tt - queenConvulseT) / (queenImpactT - queenConvulseT))
+            pitch = (rearAngle - sag) + (fallAngle - (rearAngle - sag)) * f * f
+            lurch = f * f
+        }
+        let settle = tt <= queenImpactT ? 0 : smooth(queenImpactT, 1, tt)
+        if settle > 0 { pitch += sinf(settle * 2 * .pi) * 0.07 * (1 - settle); lurch = 1 }   // the crash rings out
+        let lean = smooth(queenConvulseT, queenImpactT, tt) * 0.18                // she goes down slightly to one side
+        let glow = max(0, 1 - tt * 2.4)                     // the plasma-scream flush, fading
+        let bright = SIMD3<Float>(236, 72, 60)
+        let corpse = deadShapes(base, d: 1, gib: false, decals: false, sprawl: 0.15)
+        let pivot = SIMD3<Float>(0, 0.72, -0.05)            // where the torso rises from the rooted sac
+        var out = [Shape]()
+        for (i, s) in base.enumerated() {
+            func fall(_ p: SIMD3<Float>) -> SIMD3<Float> {
+                // the sac is ROOTED: only the torso/head/crest arc (w rises with
+                // height), so the mass pivots where it grows from the body…
+                let w = smooth(0.6, 1.15, p.y)
+                let th = pitch * w
+                var q = p - pivot
+                q.x += shudder * w
+                let cy = cosf(th), sy = sinf(th)
+                q = SIMD3(q.x, q.y * cy - q.z * sy, q.y * sy + q.z * cy)
+                var r = q + pivot
+                r.x += lean * w
+                // …but the MASS still tells the story: she gathers herself up for
+                // the scream, the sac heaves with each convulsion, and the whole
+                // body lurches forward into the fall
+                r.y *= 1 + (0.10 * rearEnv + heave) * (1 - w)
+                r.z -= lurch * (0.12 + 0.30 * w)
+                // the rooted skirt spasms with the convulsions, each tentacle on
+                // its own beat
+                r.x += shudder * (1 - w) * 0.35 * sinf(Float(i) * 1.7)
+                r.y = max(0.05, r.y)
+                return r
+            }
+            var a = fall(s.a), b = fall(s.b)
+            var r1 = s.r1, r2 = s.r2
+            var col = mix3(s.col, bright, glow * 0.45)
+            var k = s.k
+            if settle > 0 {                                 // blend onto the exact corpse pose
+                let c = corpse[i]
+                a = mix3(a, c.a, settle); b = mix3(b, c.b, settle)
+                r1 += (c.r1 - r1) * settle; r2 += (c.r2 - r2) * settle
+                col = mix3(col, c.col, settle); k += (c.k - k) * settle
+            }
+            out.append(Shape(a: a, b: b, r1: r1, r2: r2, col: col, k: k, sphere: s.sphere))
+        }
+        return out
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     static func run(gif: Bool) {
         let dir = URL(fileURLWithPath: NSHomeDirectory() + "/Desktop/Citadel-Aliens")
@@ -325,6 +406,27 @@ enum CreatureLab {
             }
             Captures.writePNG(ds.framebuffer, w: ds.width, h: ds.height, scale: 1, to: dir.appendingPathComponent("08-death-preview.png"))
             print("  wrote 08-death-preview.png")
+        }
+
+        // the QUEEN'S staged death — rear → convulse → topple → crash → settle,
+        // in profile so the arch and the forward fall read
+        do {
+            let qdef = queen()
+            let steps: [Float] = [0, 0.1, 0.2, 0.32, 0.44, 0.55, 0.65, 0.72, 0.78, 0.86, 1.0]
+            let qw2 = 250, qh2 = 260, qcw = qw2 + 10
+            let qs = Canvas2D(width: steps.count * qcw, height: qh2 + 92)
+            for y in 0..<qs.height { qs.hLine(0, qs.width - 1, y, mixRGBA(packRGBA(18, 12, 13), packRGBA(30, 16, 17), Float(y) / Float(qs.height))) }
+            qs.labelCentered("THE QUEEN'S DEATH   ·   rear → convulse → topple → CRASH → settle", 18, size: 22, color: packRGBA(236, 120, 110), weight: .heavy)
+            let base = qdef.build(0, 0)
+            for (c, tv) in steps.enumerated() {
+                let tile = renderShapes(queenDeathShapes(base, t: tv), viewH: qdef.viewH + 0.3, groundY: qdef.groundY - 0.15,
+                                        yaw: 1.55, w: qw2, h: qh2)
+                qs.blitBitmap(tile, qw2, qh2, c * qcw + 5, 52)
+                let tag = tv <= queenRearT ? "REAR" : (tv < queenConvulseT ? "CONVULSE" : (tv < queenImpactT ? "TOPPLE" : (tv < 0.82 ? "CRASH" : "SETTLE")))
+                qs.labelCentered2(String(format: "t %.2f  ·  %@", tv, tag), c * qcw, qcw, qh2 + 58, size: 13, color: packRGBA(184, 152, 152), weight: .medium)
+            }
+            Captures.writePNG(qs.framebuffer, w: qs.width, h: qs.height, scale: 1, to: dir.appendingPathComponent("09-queen-death.png"))
+            print("  wrote 09-queen-death.png")
         }
 
         if gif {
