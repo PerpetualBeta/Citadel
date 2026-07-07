@@ -70,6 +70,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     // edge tracking
     private var pConfirm = false, pEsc = false, pBrief = false, pIntel = false
     private var pPause = false, pMute = false, pShot = false, pMap = false
+    // the intel codex — current page + page-turn edge tracking (◀ ▶ / strafe keys)
+    private var intelPage = 0
+    private var pPageL = false, pPageR = false
     private var pausedDrawn = false        // pause freezes the frame — render it ONCE, then idle (no GPU raymarch while paused → fans don't spin on a frozen scene)
 
     private static let blitShaderSource = """
@@ -104,6 +107,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         gpuWorldRenderer = GPUWorldRenderer(device: device)
         gpuWorldRenderer?.prewarm()      // build the level-independent GPU resources now (title is up), not on the first fire-press
         warmKernel()                     // …and pay the kernel's first-dispatch compile now too
+        IntelPortraits.warm()            // …and raymarch the codex portrait plates in the background
         audio.startMusic(.title)
     }
 
@@ -148,7 +152,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         switch state {
         case .title: tickTitle(dt)
         case .briefing: tickInfo(dt, FrontEnd.briefing)
-        case .intel: tickInfo(dt, FrontEnd.intel)
+        case .intel: tickIntel(dt)
         case .riding: tickRiding(dt)
         case .playing: tickPlaying(dt)
         case .paused: tickPaused(dt)
@@ -187,11 +191,22 @@ final class Renderer: NSObject, MTKViewDelegate {
         FrontEnd.title(canvas, t: screenT, hs: highScores, pad: gamepad.connected)
         if rising(input.restart, pConfirm) { startGame() }
         else if rising(input.briefing, pBrief) { state = .briefing; screenT = 0 }
-        else if rising(input.intel, pIntel) { state = .intel; screenT = 0 }
+        else if rising(input.intel, pIntel) { state = .intel; intelPage = 0; screenT = 0 }
     }
 
     private func tickInfo(_ dt: Float, _ draw: (Canvas2D, Float) -> Void) {
         draw(canvas, screenT)
+        if rising(input.esc, pEsc) || rising(input.restart, pConfirm) { state = .title; screenT = 0 }
+    }
+
+    /// The intel codex: ◀ ▶ (or strafe / dpad) leaf through the pages, wrapping.
+    private func tickIntel(_ dt: Float) {
+        FrontEnd.intel(canvas, t: screenT, page: intelPage)
+        let left = input.turnLeft || input.strafeLeft
+        let right = input.turnRight || input.strafeRight
+        if rising(left, pPageL) { intelPage = (intelPage + FrontEnd.intelPages - 1) % FrontEnd.intelPages }
+        if rising(right, pPageR) { intelPage = (intelPage + 1) % FrontEnd.intelPages }
+        pPageL = left; pPageR = right
         if rising(input.esc, pEsc) || rising(input.restart, pConfirm) { state = .title; screenT = 0 }
     }
 

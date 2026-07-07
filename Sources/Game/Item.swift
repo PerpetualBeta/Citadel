@@ -31,6 +31,18 @@ enum ItemKind: Int, CaseIterable {
         }
     }
 
+    // Pickup magnitudes — the one table both World.applyPickup (the effect) and
+    // the intel codex (the printed promise) read, so the dossier can never
+    // drift from what the floor actually gives.
+    static let stimHeal = 10
+    static let medkitHeal = 25
+    static let armorRepair = 40          // green plate: patches the suit…
+    static let armorRepairCap = 100      // …but only up to a half-worn suit
+    static let cellsPerPickup = 40
+    static let rocketsPerPickup = 5
+    static let fuelPerPickup = 100
+    static let minesPerCrate = 3
+
     /// Items that should not be removed unless they actually help the player
     /// (e.g. don't vacuum up health you don't need). World decides; this hints.
     var alwaysTaken: Bool {

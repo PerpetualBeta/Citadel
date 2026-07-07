@@ -327,7 +327,7 @@ struct HUD {
         let rows: [(String, Int, Int, UInt32)] = [
             ("CELLS", p.ammoCount(.cells), AmmoType.cells.capacity, packRGBA(120, 210, 255)),
             ("FUEL", p.ammoCount(.fuel), AmmoType.fuel.capacity, packRGBA(255, 150, 80)),
-            ("MINES", p.mines, p.maxMines, packRGBA(232, 200, 90)),
+            ("MINES", p.mines, Player.maxMines, packRGBA(232, 200, 90)),
         ]
         for (i, r) in rows.enumerated() {
             let x0 = inX + i * colW

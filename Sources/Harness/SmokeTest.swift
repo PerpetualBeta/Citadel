@@ -773,8 +773,21 @@ enum SmokeTest {
 
         // front-end screens shouldn't crash
         FrontEnd.title(canvas, t: 1.0, hs: HighScores(fileURL: tmpURL()))
-        FrontEnd.intel(canvas, t: 1.0)
-        check(true, "front-end screens drew")
+        // the intel portrait plates: framed from the shapes' own bounds, so no ink
+        // may ever touch a plate border — a border hit means the bounds math is
+        // wrong (that's the exact defect the old walk-tile codex shipped with)
+        IntelPortraits.ensureRendered()
+        for k in MonsterKind.allCases { for v in IntelPortraits.View.allCases {
+            guard let p = IntelPortraits.plate(k, v) else { check(false, "\(k.displayName) \(v) plate rendered"); continue }
+            var edgeInk = false
+            for i in 0..<p.w where p.pixels[i] >> 24 != 0 || p.pixels[(p.h - 1) * p.w + i] >> 24 != 0 { edgeInk = true }
+            for j in 0..<p.h where p.pixels[j * p.w] >> 24 != 0 || p.pixels[j * p.w + p.w - 1] >> 24 != 0 { edgeInk = true }
+            check(!edgeInk, "\(k.displayName) \(v) plate uncropped (\(p.w)×\(p.h))")
+            let ink = p.pixels.lazy.filter { $0 >> 24 > 128 }.count
+            check(ink > p.w * p.h / 20, "\(k.displayName) \(v) plate has a body (\(ink) px)")
+        } }
+        for page in 0..<FrontEnd.intelPages { FrontEnd.intel(canvas, t: 1.0, page: page) }
+        check(true, "front-end screens drew (all \(FrontEnd.intelPages) intel pages)")
 
         // automap overlay (world ran above, so cells are visited → fog reveals)
         let visitedCells = world.map.visited.lazy.enumerated().filter { $0.element && world.map.wall[$0.offset] == 0 }.count

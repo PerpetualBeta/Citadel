@@ -12,10 +12,12 @@ struct Player {
     var pos: SIMD2<Float>
     var dir: Float
 
-    var health = 100
-    let maxHealth = 100
+    // Vitals caps are static so data-driven UI (the intel codex) can quote them
+    // without holding a Player — one source of truth, no copies to drift.
+    var health = Player.maxHealth
+    static let maxHealth = 100
     var armor = 0
-    let maxArmor = 200
+    static let maxArmor = 200
 
     var weapons: [Bool]
     var ammo: [Int]
@@ -25,7 +27,7 @@ struct Player {
     var fireCD: Float = 0
 
     var mines = 0                // proximity explosives carried (deploy with the mine key)
-    let maxMines = 8
+    static let maxMines = 8
 
     // view / feedback state
     var bobPhase: Float = 0

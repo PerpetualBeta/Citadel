@@ -309,7 +309,7 @@ final class World {
         player.ammo[AmmoType.cells.rawValue] = 400
         player.ammo[AmmoType.rockets.rawValue] = 50
         player.ammo[AmmoType.fuel.rawValue] = 300
-        player.mines = player.maxMines
+        player.mines = Player.maxMines
     }
 
     func message(_ s: String) {
@@ -1834,25 +1834,25 @@ final class World {
     private func applyPickup(_ k: ItemKind, audio: AudioEngine) -> Bool {
         switch k {
         case .stim:
-            if player.health >= player.maxHealth { return false }
-            player.health = min(player.maxHealth, player.health + 10); player.pickupFlash = 0.5; return true
+            if player.health >= Player.maxHealth { return false }
+            player.health = min(Player.maxHealth, player.health + ItemKind.stimHeal); player.pickupFlash = 0.5; return true
         case .medkit:
-            if player.health >= player.maxHealth { return false }
-            player.health = min(player.maxHealth, player.health + 25); player.pickupFlash = 0.6; return true
+            if player.health >= Player.maxHealth { return false }
+            player.health = min(Player.maxHealth, player.health + ItemKind.medkitHeal); player.pickupFlash = 0.6; return true
         case .armor:
-            if player.armor >= 100 { return false }
-            player.armor = min(100, player.armor + 40); return true
+            if player.armor >= ItemKind.armorRepairCap { return false }
+            player.armor = min(ItemKind.armorRepairCap, player.armor + ItemKind.armorRepair); return true
         case .megaArmor:
-            player.armor = player.maxArmor; player.pickupFlash = 0.8; return true
-        case .ammoCells: return player.giveAmmo(.cells, 40)
-        case .ammoRockets: return player.giveAmmo(.rockets, 5)
-        case .ammoFuel: return player.giveAmmo(.fuel, 100)
+            player.armor = Player.maxArmor; player.pickupFlash = 0.8; return true
+        case .ammoCells: return player.giveAmmo(.cells, ItemKind.cellsPerPickup)
+        case .ammoRockets: return player.giveAmmo(.rockets, ItemKind.rocketsPerPickup)
+        case .ammoFuel: return player.giveAmmo(.fuel, ItemKind.fuelPerPickup)
         case .mineCrate:
-            if player.mines >= player.maxMines { return false }
-            player.mines = min(player.maxMines, player.mines + 3)
+            if player.mines >= Player.maxMines { return false }
+            player.mines = min(Player.maxMines, player.mines + ItemKind.minesPerCrate)
             if !minesHintGiven { minesHintGiven = true; message("PRESS [G] TO DEPLOY A MINE") }
             return true
-        case .weaponRocket: player.giveWeapon(.rocket); player.giveAmmo(.rockets, 5); switchTo(.rocket); return true
+        case .weaponRocket: player.giveWeapon(.rocket); player.giveAmmo(.rockets, ItemKind.rocketsPerPickup); switchTo(.rocket); return true
         case .keyRed: player.keys.insert(.red); return true
         case .keyBlue: player.keys.insert(.blue); return true
         case .keyYellow: player.keys.insert(.yellow); return true
@@ -2144,7 +2144,7 @@ final class World {
             }
         }
         threat = min(1, threat + 0.10 * Float(max(0, pressing - 1)))   // a pack presses harder than one
-        let health = Float(max(0, player.health)) / Float(player.maxHealth)
+        let health = Float(max(0, player.health)) / Float(Player.maxHealth)
         return (threat, queen, health, min(1, combatHeat))
     }
 }

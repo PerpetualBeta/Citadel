@@ -97,7 +97,7 @@ enum FrontEnd {
         if Int(t * 1.5) % 2 == 0 {
             c.labelCentered("> PRESS  \(confirmName(pad: pad))  TO  DESCEND", uiS(252), size: uiSf(28), color: amberHi, weight: .bold, glow: packRGBA(60, 44, 0), mono: true)
         }
-        c.labelCentered("[B]  BRIEFING        [I]  ENEMY INTEL", uiS(288), size: uiSf(16), color: amber, weight: .medium, shadow: false, mono: true)
+        c.labelCentered("[B]  BRIEFING        [I]  FIELD INTEL", uiS(288), size: uiSf(16), color: amber, weight: .medium, shadow: false, mono: true)
         // [CMD,] not [⌘,]: the ⌘ glyph falls back out of the mono font and its
         // clashing metrics wreck the kerning — and a terminal wouldn't own it.
         // The "]" is hand-kerned into the comma's mono cell (which is mostly
@@ -207,29 +207,201 @@ enum FrontEnd {
         if Int(t * 1.5) % 2 == 0 { c.labelCentered("Good hunting, marine.    [ESC]", H - uiS(24), size: uiSf(17), color: amber, weight: .semibold) }
     }
 
-    static func intel(_ c: Canvas2D, t: Float) {
+    // ── FIELD INTEL — a paged dossier ────────────────────────────────────────
+    // Five plates: the two castes (static front + left-profile portraits,
+    // framed from their own bounds so nothing crops — IntelPortraits), the
+    // arsenal, the field supply, and what actually hurts. ◀ ▶ leaf through it;
+    // it's a codex, not a slideshow — nothing animates but the backdrop.
+    static let intelPages = 5
+
+    static func intel(_ c: Canvas2D, t: Float, page: Int = 0) {
         backdrop(c, t, top: packRGBA(14, 8, 18), bottom: packRGBA(26, 10, 26))
-        c.labelCentered("ENEMY INTEL", uiS(26), size: uiSf(40), color: packRGBA(220, 120, 220), weight: .heavy, shadow: true, glow: packRGBA(50, 10, 50))
-        let kinds = MonsterKind.allCases
-        let kind = kinds[Int(t / 6.0) % kinds.count]           // linger — this is a dossier, not a slideshow
-        let ms = Sprites.shared.monster(kind)
-        let spr = ms.walk[Int(t * 3) % 2][Int(t / 1.1) % 8]    // a stately turntable, not a jerky spin
-        let k = Float(RenderConfig.num) / Float(RenderConfig.den)
-        c.blitBitmapF(spr.pixels, spr.w, spr.h, (W - Int(Float(spr.w) * k)) / 2, uiS(78), scale: k)
-        var dotX = (W - kinds.count * uiS(14)) / 2
-        for i in kinds.indices { c.fillRect(dotX, uiS(256), uiS(9), uiS(5), i == kinds.firstIndex(of: kind) ? amber : packRGBA(80, 80, 92)); dotX += uiS(14) }
-        c.labelCentered(kind.displayName, uiS(268), size: uiSf(28), color: amber, weight: .heavy, glow: packRGBA(50, 36, 0))
-        c.labelCentered("THREAT \(kind.def.maxHealth) HP        \(kind.def.points) PTS", uiS(302), size: uiSf(15), color: packRGBA(220, 120, 120), weight: .semibold)
-        // wrap the dossier line to the page — one long label used to run off both edges
+        c.labelCentered("FIELD INTEL", uiS(20), size: uiSf(36), color: packRGBA(220, 120, 220), weight: .heavy, shadow: true, glow: packRGBA(50, 10, 50))
+        switch page {
+        case 0: creaturePage(c, .alien, t)
+        case 1: creaturePage(c, .queen, t)
+        case 2: arsenalPage(c)
+        case 3: supplyPage(c)
+        default: survivalPage(c)
+        }
+        var dotX = (W - intelPages * uiS(14)) / 2
+        for i in 0..<intelPages { c.fillRect(dotX, H - uiS(28), uiS(9), uiS(5), i == page ? amber : packRGBA(80, 80, 92)); dotX += uiS(14) }
+        c.labelCentered("◀ ▶  TURN PAGE        [ESC]  CLOSE", H - uiS(17), size: uiSf(13), color: dim, weight: .medium)
+    }
+
+    /// Wrap body copy to a width (one long label used to run off both edges).
+    private static func wrapLines(_ c: Canvas2D, _ text: String, size: CGFloat, weight: NSFont.Weight, maxW: Int) -> [String] {
         var lines: [String] = [""]
-        for word in kind.codexText.capitalizedSentence.split(separator: " ") {
+        for word in text.split(separator: " ") {
             let cand = lines[lines.count - 1].isEmpty ? String(word) : lines[lines.count - 1] + " " + word
-            if c.labelWidth(cand, size: uiSf(15), weight: .medium) > uiS(580) { lines.append(String(word)) }
+            if c.labelWidth(cand, size: size, weight: weight) > maxW { lines.append(String(word)) }
             else { lines[lines.count - 1] = cand }
         }
-        var ty = uiS(322)
-        for line in lines { c.labelCentered(line, ty, size: uiSf(15), color: ink, weight: .medium); ty += uiS(16) }
-        c.labelCentered("◀  [ESC]  ▶", H - uiS(20), size: uiSf(15), color: dim, weight: .medium)
+        return lines
+    }
+
+    // ── page: one caste — front + left profile, then the dossier line ──
+    private static func creaturePage(_ c: Canvas2D, _ kind: MonsterKind, _ t: Float) {
+        c.labelCentered(kind.displayName, uiS(58), size: uiSf(26), color: amber, weight: .heavy, glow: packRGBA(50, 36, 0))
+        let boxTop = uiS(86)
+        let views: [(IntelPortraits.View, String)] = [(.front, "FRONT"), (.profile, "LEFT PROFILE")]
+        let plates = views.map { IntelPortraits.plate(kind, $0.0) }
+        // pair layout from the plates' true widths; downscale only if the pair
+        // would overflow the page margins
+        let gap = uiS(56), nominalW = IntelPortraits.plateH * 3 / 4
+        let w0 = plates[0]?.w ?? nominalW, w1 = plates[1]?.w ?? nominalW
+        var k: Float = 1
+        let maxPair = W - uiS(80)
+        if w0 + w1 + gap > maxPair { k = Float(maxPair - gap) / Float(w0 + w1) }
+        var x = (W - (Int(Float(w0) * k) + Int(Float(w1) * k) + gap)) / 2
+        for (i, (_, tag)) in views.enumerated() {
+            let dw = Int(Float(i == 0 ? w0 : w1) * k)
+            if let p = plates[i] {
+                // soft ground shadow at the creature's true foot line, plate over it
+                let footY = boxTop + Int(Float(p.footY) * k)
+                let cx = x + dw / 2, hw = max(uiS(20), dw * 2 / 5), hh = uiS(5)
+                for jj in -hh...hh { for ii in -hw...hw {
+                    let dd = Float(ii * ii) / Float(hw * hw) + Float(jj * jj) / Float(hh * hh)
+                    if dd < 1 { c.blend(cx + ii, footY + jj, packRGBA(0, 0, 0), (1 - dd) * 0.45) }
+                } }
+                c.blitBitmapF(p.pixels, p.w, p.h, x, boxTop, scale: k)
+            } else {
+                // plates render in the background from launch; if the codex is
+                // reached first, the feed is still decoding
+                let dh = Int(Float(IntelPortraits.plateH) * k)
+                for e in 0..<2 {
+                    c.fillRectBlend(x, boxTop + (dh - 1) * e, dw, 1, packRGBA(150, 90, 160), 0.5)
+                    c.fillRectBlend(x + (dw - 1) * e, boxTop, 1, dh, packRGBA(150, 90, 160), 0.5)
+                }
+                if Int(t * 2) % 2 == 0 {
+                    c.labelCentered2("DECRYPTING", x, dw, boxTop + dh / 2 - uiS(8), size: uiSf(13), color: dim, weight: .semibold, shadow: false)
+                }
+            }
+            c.labelCentered2(tag, x, dw, boxTop + Int(Float(IntelPortraits.plateH) * k) + uiS(6), size: uiSf(12), color: dim, weight: .semibold, shadow: false)
+            x += dw + gap
+        }
+        c.labelCentered("THREAT \(kind.def.maxHealth) HP        \(kind.def.points) PTS", uiS(300), size: uiSf(15), color: packRGBA(220, 120, 120), weight: .semibold)
+        var ty = uiS(320)
+        for line in wrapLines(c, kind.codexText.capitalizedSentence, size: uiSf(15), weight: .medium, maxW: uiS(580)) {
+            c.labelCentered(line, ty, size: uiSf(15), color: ink, weight: .medium); ty += uiS(16)
+        }
+    }
+
+    // ── page: the arsenal — what kills, what feeds it, what it's FOR ──
+    private static func arsenalPage(_ c: Canvas2D) {
+        c.labelCentered("THE ARSENAL", uiS(58), size: uiSf(26), color: amber, weight: .heavy, glow: packRGBA(50, 36, 0))
+        let rows: [(icon: ItemKind, name: String, tag: String, desc: String)] = [
+            (.ammoCells, "PLASMA RIFLE", "CELLS · CARRY \(AmmoType.cells.capacity)",
+             "Always carried. Fast energy bolts — the workhorse, and the only weapon that wounds the Queen. Refills at wall sockets."),
+            (.ammoFuel, "FLAMETHROWER", "FUEL · CARRY \(AmmoType.fuel.capacity)",
+             "Always carried. A short cone of fire — the only thing that burns a corpse, or the Queen, away for good. Refills at fuel drums."),
+            (.weaponRocket, "ROCKET LAUNCHER", "ROCKETS · CARRY \(AmmoType.rockets.capacity)",
+             "Found in the field. Heavy splash — clears a packed corridor and ruptures drums across the room. Its blast does not know your name."),
+            (.mineCrate, "PROXIMITY MINES", "[G] DEPLOY · CARRY \(Player.maxMines)",
+             "The meanest bang you carry. Arms in a second, then takes whatever crosses it — you included. Blasts chain into drums and other mines."),
+        ]
+        var y = uiS(88)
+        for r in rows {
+            itemIcon(c, r.icon, uiS(92), y, box: uiS(30))
+            c.label(r.name, uiS(140), y, size: uiSf(17), color: amberHi, weight: .bold, shadow: false)
+            c.labelRight(r.tag, W - uiS(92), y + uiS(3), size: uiSf(12), color: dim, weight: .semibold, shadow: false, mono: true)
+            var dy = y + uiS(20)
+            for line in wrapLines(c, r.desc, size: uiSf(13), weight: .medium, maxW: uiS(448)) {
+                c.label(line, uiS(140), dy, size: uiSf(13), color: ink, weight: .medium, shadow: false); dy += uiS(14)
+            }
+            y += uiS(64)
+        }
+    }
+
+    // ── page: the field supply — every pickup, and the hardware that refills you ──
+    private static func supplyPage(_ c: Canvas2D) {
+        c.labelCentered("FIELD SUPPLY", uiS(58), size: uiSf(26), color: amber, weight: .heavy, glow: packRGBA(50, 36, 0))
+        let green = packRGBA(120, 220, 140), blue = packRGBA(130, 180, 245)
+        let rows: [(icons: [ItemKind], name: String, tint: UInt32, effect: String)] = [
+            ([.stim], "STIMPACK", ink, "+\(ItemKind.stimHeal) HEALTH"),
+            ([.medkit], "MEDKIT", ink, "+\(ItemKind.medkitHeal) HEALTH"),
+            ([.armor], "ARMOUR REPAIR", green, "+\(ItemKind.armorRepair) ARMOUR · UP TO \(ItemKind.armorRepairCap)"),
+            ([.megaArmor], "FULL ARMOUR", blue, "A FRESH SUIT — ARMOUR \(Player.maxArmor)"),
+            ([.ammoCells, .ammoFuel, .ammoRockets], "AMMUNITION", ink,
+             "CELLS \(ItemKind.cellsPerPickup) · FUEL \(ItemKind.fuelPerPickup) · ROCKETS \(ItemKind.rocketsPerPickup)"),
+            ([.mineCrate], "MINE CRATE", ink, "+\(ItemKind.minesPerCrate) PROXIMITY MINES"),
+            ([.keyRed, .keyBlue, .keyYellow], "KEYCARDS", ink, "EACH OPENS ITS COLOUR-SEALED DOOR"),
+        ]
+        var y = uiS(86)
+        for r in rows {
+            var ix = uiS(88)
+            for icon in r.icons { itemIcon(c, icon, ix, y - uiS(3), box: uiS(22)); ix += uiS(24) }
+            c.label(r.name, uiS(164), y, size: uiSf(15), color: r.tint, weight: .semibold, shadow: false)
+            c.labelRight(r.effect, W - uiS(88), y + uiS(2), size: uiSf(12), color: dim, weight: .medium, shadow: false, mono: true)
+            y += uiS(25)
+        }
+        // the fixed installations — the wall/floor hardware you work rather than
+        // carry. Name + a description line, so the mechanic has room to breathe.
+        c.labelCentered("FIELD HARDWARE", uiS(270), size: uiSf(15), color: amber, weight: .bold, shadow: false)
+        socketIcon(c, uiS(90), uiS(290), h: uiS(22))
+        c.label("RECHARGE SOCKET", uiS(140), uiS(290), size: uiSf(15), color: ink, weight: .semibold, shadow: false)
+        c.label("Stand close — the plasma rifle drinks cells; a drained panel recovers in time.",
+                uiS(140), uiS(307), size: uiSf(13), color: dim, weight: .medium, shadow: false)
+        drumIcon(c, uiS(92), uiS(326), h: uiS(22))
+        c.label("FUEL DRUM", uiS(140), uiS(326), size: uiSf(15), color: ink, weight: .semibold, shadow: false)
+        c.label("Stand close to refuel the flamethrower — or shoot it: a drum is a bomb.",
+                uiS(140), uiS(343), size: uiSf(13), color: dim, weight: .medium, shadow: false)
+    }
+
+    /// A floor pickup's actual sprite, fitted into a square box (centred, whole).
+    private static func itemIcon(_ c: Canvas2D, _ kind: ItemKind, _ x: Int, _ y: Int, box: Int) {
+        let spr = Sprites.shared.item(kind)
+        let s = min(Float(box) / Float(spr.w), Float(box) / Float(spr.h))
+        c.blitBitmapF(spr.pixels, spr.w, spr.h,
+                      x + (box - Int(Float(spr.w) * s)) / 2, y + (box - Int(Float(spr.h) * s)) / 2, scale: s)
+    }
+
+    /// The recharge socket, as it reads in the world: dark housing, cyan charge bar.
+    private static func socketIcon(_ c: Canvas2D, _ x: Int, _ y: Int, h: Int) {
+        let w = h * 3 / 4
+        c.fillRect(x, y, w, h, packRGBA(43, 48, 59))                          // housing
+        c.fillRect(x + uiS(2), y + uiS(2), w - uiS(4), h - uiS(4), packRGBA(18, 20, 26))   // inset faceplate
+        let segs = 4, segH = max(1, (h - uiS(10)) / segs - 1)
+        for k in 0..<segs {                                                   // lit capacity bar
+            c.fillRect(x + uiS(4), y + h - uiS(6) - (k + 1) * (segH + 1), w / 2 - uiS(4), segH, packRGBA(80, 220, 250))
+        }
+        c.fillRect(x + w - uiS(8), y + h / 2 - uiS(2), uiS(4), uiS(4), packRGBA(56, 128, 153))   // port lamp
+    }
+
+    /// A fuel drum, as it reads in the world: red-oxide barrel, rolled rim, hoops.
+    private static func drumIcon(_ c: Canvas2D, _ x: Int, _ y: Int, h: Int) {
+        let w = h * 3 / 4
+        let body = packRGBA(117, 43, 31), rim = packRGBA(82, 30, 22)
+        c.fillRect(x, y + uiS(2), w, h - uiS(2), body)
+        c.fillRect(x - uiS(1), y, w + uiS(2), uiS(3), rim)                    // rolled top rim, proud
+        for k in 1...2 { c.fillRect(x, y + uiS(2) + k * (h - uiS(4)) / 3, w, uiS(1), rim) }   // rolling hoops
+    }
+
+    // ── page: survival — what hurts, how badly, and what mends it ──
+    private static func survivalPage(_ c: Canvas2D) {
+        c.labelCentered("SURVIVAL", uiS(58), size: uiSf(26), color: amber, weight: .heavy, glow: packRGBA(50, 36, 0))
+        let orange = packRGBA(240, 140, 60)
+        c.labelCentered("WHAT HURTS", uiS(86), size: uiSf(15), color: packRGBA(220, 120, 120), weight: .bold, shadow: false)
+        let threats: [(name: String, sev: String, col: UInt32, note: String)] = [
+            ("DRONE BITE", "MAJOR", orange, "small on its own — but the pack flanks, and the wounds add up fast"),
+            ("QUEEN STRIKE", "SEVERE", red, "up to half your health in one blow — stay out of her reach"),
+            ("ACID POOLS", "MINOR", amber, "a slow burn underfoot — and it seeps straight through armour"),
+            ("BLAST SPLASH", "SEVERE", red, "rockets, mines and drums burn friend and foe alike — stand well clear"),
+        ]
+        var y = uiS(106)
+        for th in threats {
+            c.label(th.name, uiS(150), y, size: uiSf(16), color: ink, weight: .semibold, shadow: false)
+            c.labelRight(th.sev, W - uiS(150), y, size: uiSf(16), color: th.col, weight: .bold, shadow: false)
+            c.label(th.note, uiS(150), y + uiS(18), size: uiSf(13), color: dim, weight: .medium, shadow: false)
+            y += uiS(38)
+        }
+        c.labelCentered("STAYING ALIVE", uiS(262), size: uiSf(15), color: packRGBA(120, 220, 140), weight: .bold, shadow: false)
+        var ly = uiS(282)
+        for line in ["Armour turns away a third of every hit — acid excepted.",
+                     "Stims and medkits mend flesh; green plate patches armour, blue replaces the suit.",
+                     "Sockets refill cells and drums refill fuel — health only comes in crates."] {
+            c.labelCentered(line, ly, size: uiSf(14), color: ink, weight: .medium); ly += uiS(18)
+        }
     }
 
     /// The floor report shown INSIDE the elevator car (doors parted, world live
@@ -360,8 +532,15 @@ enum FrontEnd {
 }
 
 private extension String {
+    /// Lower-case the (ALL-CAPS authored) dossier text, then capitalise the start
+    /// of every sentence — the old version only lifted the first letter, so
+    /// "...pack hunter. carries no weapon..." shipped mid-sentence-looking.
     var capitalizedSentence: String {
-        let lower = lowercased(); guard let first = lower.first else { return self }
-        return String(first).uppercased() + lower.dropFirst()
+        var out = "", startOfSentence = true
+        for ch in lowercased() {
+            if startOfSentence && ch.isLetter { out.append(Character(ch.uppercased())); startOfSentence = false }
+            else { out.append(ch); if ch == "." || ch == "!" || ch == "?" { startOfSentence = true } }
+        }
+        return out
     }
 }

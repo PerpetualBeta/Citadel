@@ -74,6 +74,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Render/Viewmodel.swift \
                     Sources/UI/HUD.swift \
                     Sources/UI/Codex.swift \
+                    Sources/UI/IntelPortraits.swift \
                     Sources/UI/Automap.swift \
                     Sources/UI/Font.swift \
                     Sources/UI/TextImage.swift \
