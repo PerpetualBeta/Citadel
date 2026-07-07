@@ -91,8 +91,12 @@ SWIFT_SOURCES    := Sources/App/main.swift \
 PACKAGE_TYPE     := zip
 ALSO_SHIP_PKG    := true
 EMBEDDED_FRAMEWORKS := Sparkle
-# Hardened runtime must allow loading the embedded Sparkle framework + its
-# helper apps (same convention as Strataris / SpaceMan / HawkEye / CopyLens).
+# Entitlements are intentionally empty — Library Validation stays ON. The
+# release pipeline (jorvik-release/helpers/sign-framework.sh) re-signs the
+# embedded Sparkle framework + its XPC services / helpers with the Jorvik
+# Developer ID (leaf-first), so all loaded code shares the app's Team ID and
+# validates without com.apple.security.cs.disable-library-validation. See the
+# comment in Citadel.entitlements for the pre-release signed-build check.
 ENTITLEMENTS     := Citadel.entitlements
 
 include ../jorvik-release/release.mk
