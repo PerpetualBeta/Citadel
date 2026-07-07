@@ -64,10 +64,11 @@ final class HighScores {
     private func load() {
         guard let data = try? Data(contentsOf: url),
               let decoded = try? JSONDecoder().decode([HighScoreEntry].self, from: data) else { return }
-        entries = decoded
+        entries = Array(decoded
             .map { HighScoreEntry(name: String($0.name.prefix(32)), score: $0.score,
                                   depth: $0.depth, colony: $0.colony, stardate: $0.stardate) }
             .sorted { $0.score > $1.score }
+            .prefix(maxEntries))   // a hand-edited file can hold any number of rows; keep only the top table
     }
 
     private func save() {

@@ -1,8 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Intentionally empty — the hardened runtime keeps Library Validation ON.
+  The release pipeline (jorvik-release/helpers/sign-framework.sh) re-signs the
+  embedded Sparkle.framework and every nested XPC service / helper with the
+  Jorvik Developer ID, so all loaded code shares the app's Team ID and passes
+  validation on its own. `com.apple.security.cs.disable-library-validation`
+  was formerly set to tolerate nested code that still carried Sparkle's own
+  signature; leaf-first re-signing removed that need, so the entitlement is
+  dropped to keep the runtime locked down.
+  Pre-release check (can't be verified on an ad-hoc local build): on a
+  signed + notarised build, launch it and confirm a Sparkle update check runs
+  without a library-validation kill.
+-->
 <plist version="1.0">
-<dict>
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
-</dict>
+<dict/>
 </plist>
