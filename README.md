@@ -44,8 +44,8 @@ fuel and proximity mines — so every floor is a resource problem as much as a
 fight.
 
 - **The brood.** Two castes hunt you:
-  - **DRONE** — a fast, grey-green melee pack-hunter. It comes in numbers and
-    kills up close.
+  - **DRONE** — a slick green-black melee pack-hunter. Slow, but it thinks: it
+    comes in numbers, flanks, and kills up close.
   - **QUEEN** — the rooted brood-mother that holds each floor. She births fresh
     drones, she loathes the light, and she gates the exit. **Only plasma wounds
     her — and only fire keeps her down:** put her down with the plasma rifle,
@@ -63,21 +63,25 @@ fight.
   socket** to top up plasma cells — the sockets slowly refill their own reserve,
   so you're never permanently starved. Drop a **proximity mine** for the swarm
   to wander onto.
-- **The HUD.** A status bar with ammo, health, an **objective compass** that
-  points to the living Queen and swings to the exit once she's ash, armour and
-  your arsenal — plus always-on **cells / fuel / mines** gauges, so the survival
-  maths is legible at a glance.
-- **The front end.** A boot-up terminal title screen, a mission **briefing**, an
-  **enemy intel** codex, and a persistent **Hall of the Fallen** high-score table
-  — name, score, depth and colony, across sessions.
+- **The visor HUD.** No status bar — the 3-D view fills the screen, and every
+  readout is projected onto the helmet visor: an *Aliens*-style **motion
+  tracker** with the **objective caret** on its rim (it points to the living
+  Queen, then swings to the exit once she's ash), vitals and weapon pods, and
+  always-on **cells / fuel / mines** telemetry, so the survival maths is legible
+  at a glance.
+- **The front end.** A boot-up terminal title screen, a mission **briefing**, a
+  five-page **FIELD INTEL** dossier (the brood in front + profile, the arsenal,
+  the field supply, and what hurts you — and how badly), and a persistent
+  **Hall of the Fallen** high-score table — name, score, depth and colony,
+  across sessions.
 
 ## Screenshots
 
 | | |
 |---|---|
-| ![Combat](docs/screenshots/02-combat.png) | ![Enemy intel](docs/screenshots/03-intel.png) |
-| Plasma up in the steel corridors. | The enemy intel codex — meet the Queen. |
-| ![Mission briefing](docs/screenshots/04-briefing.png) | ![High scores](docs/screenshots/06-highscores.png) |
+| ![Combat and the visor HUD](docs/screenshots/02-combat.png) | ![Field intel — the Queen](docs/screenshots/04-intel-2.png) |
+| The visor HUD, live in an occupied ARC control room. | FIELD INTEL: the Queen, front and profile. |
+| ![Mission briefing](docs/screenshots/08-briefing.png) | ![The Hall of the Fallen](docs/screenshots/10-highscores.png) |
 | The occupation, in brief. | The Hall of the Fallen. |
 
 ## Run it
@@ -100,7 +104,7 @@ open .build/Citadel.app     # descend
 | **1 2 3** · **[ ]** | select / cycle weapon |
 | **Tab** | automap |
 | **P** · **M** | pause · mute |
-| **B** / **I** | briefing / enemy intel (from the title) |
+| **B** / **I** | briefing / field intel (from the title) |
 | **K** / **C** | keyboard / controller setup |
 | **⌘,** | settings (volumes, sensitivity, reset scores) |
 | **Esc** · **⌘Q** | back · quit |
@@ -123,6 +127,7 @@ defaults write cc.jorviksoftware.Citadel FastMonsters  -bool true   # nightmare 
 defaults write cc.jorviksoftware.Citadel RevealMap     -bool true   # automap fully revealed
 defaults write cc.jorviksoftware.Citadel ScreenshotKey -bool true   # F saves a 4× PNG to the Desktop
 defaults write cc.jorviksoftware.Citadel FixedSeed     -int 1234    # pin the level seed for testing
+defaults write cc.jorviksoftware.Citadel StartLevel    -int 9       # warp new runs to a floor (1-indexed; testing)
 ```
 
 ### Headless harnesses
