@@ -10,3 +10,6 @@ Info.plist.bak
 
 # Vendored framework — release.mk re-embeds it from jorvik-release; never commit a copy.
 Sparkle.framework
+
+# Harness output (CITADEL_GPU perf renders)
+perf/

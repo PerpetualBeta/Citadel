@@ -1064,6 +1064,56 @@ enum MapGen {
             } }
         }
 
+        // ── pipe FITTINGS ── placed HERE, on the CPU, with a true wall frame
+        // (anchor on the wall face + outward normal) — never derived in the
+        // kernel from x+z hashes, which sheared on two wall orientations,
+        // sliced on every routing-mask ramp, and doubled up on one run. Sites
+        // sit mid-run on full-mask straight faces only, and are rationed like
+        // real plant: a room's pipework is ONE circuit, so at most ONE
+        // shut-off valve per room, at most one gauge, on different sides.
+        var fits: [SIMD4<Float>] = []
+        for r in rooms {
+            // gather candidate anchors per side: contiguous piped face runs
+            var sideRuns: [[(SIMD2<Float>, SIMD2<Float>)]] = []
+            func gather(_ cells: [(Int, Int)], wallOff: (Int, Int), anchor: (Int, Int) -> SIMD2<Float>, normal: SIMD2<Float>) {
+                var run: [(SIMD2<Float>, SIMD2<Float>)] = []
+                func flush() {
+                    if run.count >= 4 { sideRuns.append(Array(run[1...(run.count - 2)])) }   // interior cells only
+                    run.removeAll()
+                }
+                for (cx, cy) in cells {
+                    let wx = cx + wallOff.0, wy = cy + wallOff.1
+                    let ok = map.inBounds(cx, cy) && map.inBounds(wx, wy)
+                        && map.wall[map.idx(cx, cy)] == 0 && map.pipe[map.idx(cx, cy)] >= 0.5
+                        && map.wall[map.idx(wx, wy)] != 0 && map.doors[map.idx(wx, wy)] == nil
+                        && map.pipe[map.idx(wx, wy)] >= 0.5                     // ext mask reaches the face → no ramp here
+                    if ok { run.append((anchor(cx, cy), normal)) } else { flush() }
+                }
+                flush()
+            }
+            gather((r.x..<(r.x + r.w)).map { ($0, r.y) }, wallOff: (0, -1),
+                   anchor: { SIMD2(Float($0) + 0.5, Float($1)) }, normal: SIMD2(0, 1))
+            gather((r.x..<(r.x + r.w)).map { ($0, r.y + r.h - 1) }, wallOff: (0, 1),
+                   anchor: { SIMD2(Float($0) + 0.5, Float($1 + 1)) }, normal: SIMD2(0, -1))
+            gather((r.y..<(r.y + r.h)).map { (r.x, $0) }, wallOff: (-1, 0),
+                   anchor: { SIMD2(Float($0), Float($1) + 0.5) }, normal: SIMD2(1, 0))
+            gather((r.y..<(r.y + r.h)).map { (r.x + r.w - 1, $0) }, wallOff: (1, 0),
+                   anchor: { SIMD2(Float($0 + 1), Float($1) + 0.5) }, normal: SIMD2(-1, 0))
+            guard !sideRuns.isEmpty else { continue }
+            if rng.chance(0.55) {                                               // this circuit's shut-off
+                let side = rng.i(0, sideRuns.count - 1)
+                let (a, n) = sideRuns[side][rng.i(0, sideRuns[side].count - 1)]
+                fits.append(SIMD4(a.x, a.y, atan2(n.y, n.x), 0))
+                sideRuns.remove(at: side)
+            }
+            if !sideRuns.isEmpty && rng.chance(0.45) {                          // its one instrument
+                let side = rng.i(0, sideRuns.count - 1)
+                let (a, n) = sideRuns[side][rng.i(0, sideRuns[side].count - 1)]
+                fits.append(SIMD4(a.x, a.y, atan2(n.y, n.x), 1))
+            }
+        }
+        map.pipeFittings = fits
+
         return (monsters, items, drums, sockets, props)
     }
 

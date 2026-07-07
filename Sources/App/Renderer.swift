@@ -53,7 +53,6 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var rideRumbleT: Float = 0
     // teleport arrival: static burning off the new floor's first view
     private var arrivalStatic: Float = 0
-    private var staticAudioT: Float = 0
     // The raymarch kernel's FIRST dispatch pays the driver's deferred back-end
     // compile (~3 s measured; mapgen itself is ~1 ms) — the real source of the
     // old fire-press stall. It's paid at launch, off the main thread, on a
@@ -159,6 +158,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         case .highScores: tickHighScores(dt)
         }
 
+        // ── the teleport static bed ── ONE authority drives the loop's volume
+        // every frame, wherever the story is: swelling with the pad charge,
+        // full through the interstitial hold, fading with the arrival burn-off,
+        // silent everywhere else (so no path can leave it running).
+        let staticLevel: Float
+        if state == .teleport { staticLevel = 1 }
+        else if state == .playing, let w = world, w.teleportPhase == .charging { staticLevel = 0.2 + 0.8 * w.teleportT }
+        else if state == .playing { staticLevel = arrivalStatic }
+        else { staticLevel = 0 }
+        audio.staticBed(staticLevel)
+
         updateEdges()
         present(view)
     }
@@ -230,7 +240,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             // interstitial: the feed is FULL STATIC now, and .teleport holds it
             // there (story card over the noise) until the next planet is ready.
             if Progression.isLastFloor(world.level) {
-                state = .teleport; screenT = 0; staticAudioT = 0
+                state = .teleport; screenT = 0
                 audio.stopMusic()
             } else {
                 audio.stopMusic()
@@ -300,20 +310,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         guard let world = world else { state = .title; return }
         StaticFX.fill(canvas, t: screenT)
         FrontEnd.teleportCard(canvas, world: world, t: screenT)
-        // the static HISSES for the whole hold: long overlapping noise voices
-        // (each ramps in while the last is still decaying) make one continuous
-        // crackle bed — short discrete bursts read as rhythmic clicks
-        staticAudioT -= dt
-        if staticAudioT <= 0 {
-            staticAudioT = 0.8
-            audio.trigger(wave: AudioEngine.noise, f0: 1, dur: 1.8, amp: 0.55, attack: 0.35)
-        }
+        // (the static's sound is the looping noise bed — one volume authority
+        // in tick() drives it through charge → hold → burn-off seamlessly)
         let minHold: Float = 2.6                       // the story beat needs to land
         if screenT >= minHold, let w = pendingWorld {
             arrivalStatic = 1
-            // arrival: a soft materialisation whoosh + a quiet falling tone —
-            // it outlives the 0.8 s static burn-off so nothing cuts dead
-            audio.trigger(wave: AudioEngine.noise, f0: 1, dur: 1.1, amp: 0.30, attack: 0.08)
+            // arrival: a quiet falling tone under the fading static
             audio.trigger(wave: AudioEngine.sine, f0: 1200, f1: 130, dur: 0.9, amp: 0.12, attack: 0.06)
             installWorld(w)
         }
@@ -410,6 +412,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         guard let c = carry, let w = world else { return }
         w.player.weapons = c.weapons
         w.player.ammo = c.ammo
+        w.player.mines = c.mines         // mines live outside the ammo array — they ride down too
         w.player.health = max(c.health, 1)
         w.player.armor = c.armor
         w.player.current = c.current

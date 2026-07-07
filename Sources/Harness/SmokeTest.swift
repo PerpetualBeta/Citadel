@@ -230,6 +230,7 @@ enum SmokeTest {
         // the teleport flow end-to-end: a defeated Queen + a body on the pad arms
         // the report; a FRESH fire press charges; full charge completes the level
         let tAudio = AudioEngine()
+        tAudio.muted = true                       // harnesses are SILENT — they get run in offices
         let tInput = InputState()
         let w8t = World(level: 8, colonyIndex: 0, seed: 8080)
         for i in w8t.monsters.indices where w8t.monsters[i].kind == .queen {
@@ -275,6 +276,7 @@ enum SmokeTest {
 
         // 2. game loop: run a world for a few seconds of simulated play
         let audio = AudioEngine()
+        audio.muted = true                        // harnesses are SILENT — they get run in offices
 
         // 2a0. the shipped sample set is complete: every logical sound decoded at
         // least one file from Resources/Audio. The synth fallback makes a missing
@@ -688,18 +690,26 @@ enum SmokeTest {
         check(MapGen.theme(0, level: 9).floor == MapGen.theme(0, level: 1).floor, "materials reset surface→depths each citadel")
         check(MapGen.theme(0, level: 8).floor != MapGen.theme(0, level: 1).floor, "the lowest floor's materials differ from the surface")
 
-        // deploy a proximity mine, walk a drone onto it → it arms and detonates
+        // deploy a proximity mine, walk a drone onto it → it arms and detonates.
+        // A mine is ordnance: EVERYTHING inside the ring dies — the drone that
+        // trips it AND a packmate right out at the blast's rim (where falloff
+        // damage alone would never kill) — while the Queen is rocked but holds
+        // on her plasma-only floor.
         let mw = World(level: 1, colonyIndex: 0, seed: 88)
         mw.player.mines = 3
+        mw.player.health = 500                    // ride out the self-splash + a queen swipe
         let deploy = InputState(); deploy.kb.deployMine = true
         mw.update(dt: 1.0 / 60, input: deploy, audio: audio)        // edge press → drop one
         check(mw.deployedMines.count == 1 && mw.player.mines == 2, "deploying drops one mine and spends one")
         let minePos = mw.deployedMines[0].pos
-        var ma = Monster(kind: .alien, pos: minePos + SIMD2<Float>(0.05, 0)); ma.awake = true
-        mw.monsters = [ma]
+        var ma = Monster(kind: .alien, pos: minePos + SIMD2<Float>(0.95, 0)); ma.awake = true
+        let mb = Monster(kind: .alien, pos: minePos + SIMD2<Float>(0, 2.9))   // asleep at the rim
+        var mq = Monster(kind: .queen, pos: minePos - SIMD2<Float>(1.5, 0)); mq.awake = true
+        mw.monsters = [ma, mb, mq]
         for _ in 0..<150 { mw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
         check(mw.deployedMines.isEmpty, "an armed mine detonates when an alien crosses it")
-        check(mw.monsters.allSatisfy { !$0.alive }, "the mine blast kills the alien")
+        check(!mw.monsters[0].alive && !mw.monsters[1].alive, "nothing inside the mine's ring survives — trigger drone AND rim packmate die")
+        check(mw.monsters[2].alive && mw.monsters[2].health < 900, "the Queen is rocked by a mine but her plasma-only floor holds")
 
         // 2i. centre-split doors: the two panels part down the middle and the slit
         // is see-through. Same camera, same door — opening it must push the centre

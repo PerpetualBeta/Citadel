@@ -36,6 +36,7 @@ final class GameMap {
     var visited: [Bool]         // for the automap / reveal
     var pipe: [Float]           // baked pipe-routing mask: 1 = a wall pipe runs along this open cell, 0 = none (dives into the wall toward 0)
     var fuelStore: Set<Int> = []   // interior cells of the fuel-storage chamber: its drums are an INTENTIONAL stack (exempt from reachability relocation)
+    var pipeFittings: [SIMD4<Float>] = []   // CPU-placed pipe fittings: (x, z, outward-normal angle, kind 0 valve · 1 gauge)
 
     var playerStart = SIMD2<Float>(1.5, 1.5)
     var playerDir: Float = 0

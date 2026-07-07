@@ -90,6 +90,22 @@ struct SpriteCompositor {
         for i in world.particles.indices { things.append(Renderable(dist: vlen(world.particles[i].pos - p.pos), kind: 3, index: i)) }
         things.sort { $0.dist > $1.dist }
 
+        // Under heavy combat the additive fire stack saturates long before every
+        // orb has drawn its full O(r²) footprint — the frame pays for pixels the
+        // eye can't see. Estimate the frame's total particle blend load and, when
+        // over budget, shrink every radius by ONE uniform factor (ops fall with
+        // its square). Normal scenes are untouched; a mine-into-drum-chain frame
+        // degrades gracefully instead of collapsing.
+        var estOps = 0.0
+        for t in things where t.kind == 3 {
+            let pa = world.particles[t.index]
+            if pa.fire && pa.color != 0 { continue }         // sparks are 2 px — don't let them shrink the fire
+            let re = Double(min(Float(RenderConfig.projHeight) / max(0.15, t.dist) * 0.05 * pa.size, Float(viewH) / 4))
+            estOps += 3.14159 * re * re / (re > 56 ? 2 : 1) / (re > 120 ? 2 : 1)
+        }
+        let opsBudget = 0.55 * Double(viewW * viewH)         // measured ~20 ns per scattered blend: this holds the composite near ~10 ms
+        let particleScale = estOps > opsBudget ? Float((opsBudget / estOps).squareRoot()) : 1
+
         let invDet = 1 / (planeX * dirY - dirX * planeY)
         for thing in things {
             let pos: SIMD2<Float>
@@ -155,7 +171,7 @@ struct SpriteCompositor {
                 let lit: Float = sk.charge > 0 ? (0.45 + 0.4 * sin(sk.pulse * 4)) : 0.05
                 extraGlow = SIMD3(0.10, 0.40, 0.55) * lit
             default:
-                drawParticle(world.particles[thing.index], into: c, p: p, dirX: dirX, dirY: dirY, planeX: planeX, planeY: planeY, invDet: invDet)
+                drawParticle(world.particles[thing.index], into: c, p: p, dirX: dirX, dirY: dirY, planeX: planeX, planeY: planeY, invDet: invDet, scale: particleScale)
                 continue
             }
 
@@ -253,8 +269,13 @@ struct SpriteCompositor {
         }
     }
 
+    /// (1 − √(d²/r²))² falloff by normalised squared distance. The per-pixel
+    /// sqrt inside the O(r²) particle loops was the compositor's hottest single
+    /// instruction under combat load — this table replaces it with one multiply.
+    private static let fallLUT: [Float] = (0...256).map { let f = 1 - (Float($0) / 256).squareRoot(); return f * f }
+
     private func drawParticle(_ pa: Particle, into c: Canvas2D, p: Player,
-                              dirX: Float, dirY: Float, planeX: Float, planeY: Float, invDet: Float) {
+                              dirX: Float, dirY: Float, planeX: Float, planeY: Float, invDet: Float, scale: Float = 1) {
         let rel = pa.pos - p.pos
         let tX = invDet * (dirY * rel.x - dirX * rel.y)
         let tY = invDet * (-planeY * rel.x + planeX * rel.y)
@@ -273,10 +294,15 @@ struct SpriteCompositor {
         // energy, and the scanline dither vanishes inside the additive stack.
         // (The first cut capped at viewH/8 with under-weighted dither and the
         // fire looked pathetic — this keeps the drama at ~1/6 the worst cost.)
-        let r = max(1, min(Int(lineFull * 0.05 * pa.size), viewH / 4))
+        let r = max(1, min(Int(lineFull * 0.05 * pa.size * scale), viewH / 4))
         let stride = r > 56 ? 2 : 1
-        let weight: Float = stride == 2 ? 2.0 : 1.0
+        let colStride = r > 120 ? 2 : 1        // the biggest orbs also skip columns (quincunx — invisible in the additive stack)
+        let weight = Float(stride * colStride)
+        let rr = r * r
+        let invRR = 256.0 / Float(rr)
         let lifeF = max(0, min(1, pa.life / pa.maxLife))
+        // One row-clamp + one sqrt per ROW (the circle's half-width) replaces the
+        // per-pixel radius test + bounds check; blendAddU/blendU skip re-checking.
         if pa.fire {
             if pa.color == 0 {
                 // flame: soft additive glow, age-ramped white-hot → orange → deep
@@ -289,12 +315,16 @@ struct SpriteCompositor {
                 let glow = (1 - age) * pa.maxAlpha * weight
                 var oy = -r
                 while oy <= r {
-                    for ox in -r...r {
+                    let py = screenY + oy
+                    if py < 0 || py >= c.height { oy += stride; continue }
+                    let hw = Int(Double(rr - oy * oy).squareRoot())
+                    var ox = max(-hw, -screenX)
+                    let oxEnd = min(hw, c.width - 1 - screenX)
+                    if colStride == 2 { ox += (ox + oy) & 1 }
+                    while ox <= oxEnd {
                         let d2 = ox * ox + oy * oy
-                        if d2 <= r * r {
-                            let fall = 1 - Float(d2).squareRoot() / Float(r)
-                            c.blendAdd(screenX + ox, screenY + oy, col, glow * fall * fall)
-                        }
+                        c.blendAdd(screenX + ox, py, col, glow * Self.fallLUT[min(256, Int(Float(d2) * invRR))])
+                        ox += colStride
                     }
                     oy += stride
                 }
@@ -315,18 +345,19 @@ struct SpriteCompositor {
         let a = lifeF * pa.maxAlpha * weight
         var oy2 = -r
         while oy2 <= r {
-            for ox2 in -r...r {
-                puffPixel(pa, c, screenX, screenY, ox2, oy2, r, a)
+            let py = screenY + oy2
+            if py < 0 || py >= c.height { oy2 += stride; continue }
+            let hw = Int(Double(rr - oy2 * oy2).squareRoot())
+            var ox2 = max(-hw, -screenX)
+            let oxEnd = min(hw, c.width - 1 - screenX)
+            if colStride == 2 { ox2 += (ox2 + oy2) & 1 }
+            while ox2 <= oxEnd {
+                let d2 = ox2 * ox2 + oy2 * oy2
+                c.blend(screenX + ox2, py, pa.color, a * Self.fallLUT[min(256, Int(Float(d2) * invRR))])
+                ox2 += colStride
             }
             oy2 += stride
         }
         return
-    }
-    @inline(__always) private func puffPixel(_ pa: Particle, _ c: Canvas2D, _ screenX: Int, _ screenY: Int,
-                                             _ ox: Int, _ oy: Int, _ r: Int, _ a: Float) {
-        let d2 = ox * ox + oy * oy
-        if d2 > r * r { return }
-        let fall = 1 - Float(d2).squareRoot() / Float(r)
-        c.blend(screenX + ox, screenY + oy, pa.color, a * fall * fall)
     }
 }

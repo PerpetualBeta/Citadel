@@ -27,9 +27,9 @@ enum GPURaymarch {
     #include <metal_stdlib>
     using namespace metal;
 
-    struct Uniforms { float4 ro, fwd, right, up, params, grid, extra, env, vmA, vmB; };  // extra.x = decalCount · env.xy = water-table offset (puddle field) · env.zw = viewmodel shape start/count · vmA = gun anchor.xyz + bound r · vmB = gun-local bound centre
+    struct Uniforms { float4 ro, fwd, right, up, params, grid, extra, env, vmA, vmB, dbg; };  // extra.x = decalCount · env.xy = water-table offset (puddle field) · env.zw = viewmodel shape start/count · vmA = gun anchor.xyz + bound r · vmB = gun-local bound centre · dbg.x = disable creature mask
     struct GPULight { float4 posR; float4 colI; };   // posR=(x,y,z,1/r²)  colI=(r,g,b,intensity)
-    struct GShape   { float4 a, b, col; };  // a.xyz,a.w=r1 ; b.xyz,b.w=r2(<0 → sphere) ; col.rgb,col.w=k
+    struct GShape   { float4 a, b, col, bnd; };  // a.xyz,a.w=r1 ; b.xyz,b.w=r2(<0 → sphere) ; col.rgb,col.w=k ; bnd = enclosing sphere (CPU-filled)
     struct GMonster { float4 a, b, c; };    // a=(x,z,yaw,scale) b=(shapeStart,shapeCount,boundR,boundCY) c=(minY,…)
     // params = (screenW, viewH, horizon, ceilH);  grid = (mapW, mapH, monsterCount, lightCount)
 
@@ -78,52 +78,70 @@ enum GPURaymarch {
         float wallFlange = max(length(float2(u, dy)) - 0.062, dW - 0.028);    // bolted collar at the wall
         float runFlange  = max(length(float2(dW - 0.10, dy)) - 0.058, fabs(u - 0.115) - 0.015);
         d = min(d, min(wallFlange, runFlange));
-        if (d > 0.35) return d;                              // fittings live near the pipe
-        // Fittings must stay clear of terminus ramps and elbows — but the gate
-        // must never SLICE one: a hard `enable < 0.9` cutoff crosses MID-WHEEL
-        // wherever a fitting bay straddles the mask's bilinear ramp (every
-        // door opening makes one), and the marcher carves the handwheel into
-        // a hard-edged croissant with garbage normals. Instead the whole
-        // fitting SINKS smoothly into the run as the ramp approaches. The band
-        // tops out at 0.90 — the SAME threshold the old hard gate used — so
-        // every bay that used to carry a full fitting still does (a 0.97 top
-        // quietly erased the thin wheel on any bay whose mask sat below it,
-        // leaving bare collars and orphaned red paint).
-        float mid = smoothstep(0.855, 0.90, enable);
-        if (mid <= 0.0) return d;
-        float sink = (1.0 - mid) * 0.08;                     // offset > any fitting radius → fully sunk
-        // Fittings are rationed by 9-unit SECTION — one per section at most,
-        // roughly half the sections bare — and a gauge is pinned to its
-        // section's middle bay, so two gauges can never share a stretch of
-        // pipe (nobody instruments one line twice). Valves may take any bay.
-        float along = p.x + p.z;                             // along the pipe (yaw-robust)
-        float sec = floor(along / 9.0);
-        float h = pipeHash(sec);
-        if (h > 0.55) return d;                              // a bare section
-        bool isGauge = h >= 0.30;
-        float bay = floor(along / 3.0) - sec * 3.0;          // 0 | 1 | 2 within the section
-        float want = isGauge ? 1.0 : floor(pipeHash(sec + 31.0) * 2.9999);
-        if (bay != want) return d;
-        float a = (fract(along / 3.0) - 0.5) * 3.0;          // local coord, 0 at the fitting
-        if (!isGauge) {
-            // CUTOFF VALVE: a fat body collar on the pipe with the handwheel
-            // bolted FLAT to its outward face, facing the player. The wheel and
-            // hub live in constant-distance shells off the wall, where the
-            // (along, height) frame is true — a stem SPANNING that distance
-            // shears 45° (the along coordinate is x+z), which is what made the
-            // first outward stopcock read as a smeared sliver.
-            float collar = max(length(float2(dW - 0.10, dy)) - 0.052, fabs(a) - 0.030);
-            float hub = max(length(float2(a, dy)) - 0.017, fabs(dW - 0.152) - 0.016);
-            float2 wq = float2(length(float2(a, dy)) - 0.040, dW - 0.168);
-            float wheel = length(wq) - 0.010;
-            d = min(d, min(collar, min(hub, wheel)) + sink);
-        } else {
-            // PRESSURE GAUGE: a stub up from the pipe + a dial facing the room
-            float stub = max(length(float2(a, dW - 0.10)) - 0.014, abs(dy - 0.045) - 0.045);
-            float dial = max(length(float2(a, dy - 0.105)) - 0.038, abs(dW - 0.10) - 0.016);
-            d = min(d, min(stub, dial) + sink);
-        }
+        // (fittings — valves and gauges — are NOT derived here: they are
+        //  CPU-placed objects with a true wall frame, see fittingDist below.
+        //  Deriving them from x+z hashes sheared them on two of four wall
+        //  orientations, sliced them on every routing-mask ramp, and put two
+        //  on one run.)
         return d;
+    }
+
+    // ── pipe fittings ── CPU-placed (map.pipeFittings): each is (x, z, outward
+    // normal angle, kind). The frame is TRUE — u along the wall, v off it,
+    // h off the pipe axis — so the geometry can be real plant, modelled on the
+    // reference stopcock: tapered bonnet on the run, rising stem, and a
+    // red-enamel handwheel (rim + four spokes) with a bare-steel stem nut.
+    // parts (out): x = red-enamel distance (rim/spokes/wheel hub) ·
+    //              y = gauge-dial distance · zw = the dial's (u, h) for artwork.
+    static inline float fittingDist(float3 p, float4 f, float ceilH, thread float3& parts, thread float2& dialUV) {
+        float2 n2 = float2(cos(f.z), sin(f.z));
+        float2 dxz = p.xz - f.xy;
+        float v = dot(dxz, n2);                              // off the wall face
+        float uu = dot(dxz, float2(-n2.y, n2.x));            // along the wall
+        float h = p.y - (ceilH - 0.28);                      // off the pipe axis height
+        float axisR = length(float2(uu, h));                 // radius off the stem axis
+        parts = float3(1e9, 1e9, 0.0); dialUV = float2(0.0, 0.0);
+        // Early-out with the distance TO the bounding volume (stem-axis cylinder
+        // ∩ off-wall slab), never "infinity": a sphere tracer trusts this as a
+        // step size, and an overstated far value lets a ray leap clean over the
+        // wheel — visibility then hinged on where earlier steps happened to land,
+        // so fittings flickered as the camera moved.
+        float reach = f.w < 0.5 ? 0.10 : 0.17;               // handwheel vs gauge-dial radius
+        float bound = max(axisR - reach, max(0.06 - v, v - 0.24));
+        // Floor the bound above the march's hit epsilon (0.0015): without it,
+        // rays CONVERGE onto the bounding surface itself and register phantom
+        // hits — the fitting renders as a featureless dark puck. The floor is
+        // safe: real geometry sits ≥ 0.02 inside the bound, so overstating the
+        // shell by 4 mm can never step past anything.
+        if (bound > 0.0) return max(bound, 0.004);
+        if (f.w < 0.5) {                                     // ── SHUT-OFF VALVE ──
+            float bonnet = max(axisR - (0.036 - 0.14 * (v - 0.10)), fabs(v - 0.124) - 0.028);
+            float stem   = max(axisR - 0.011, fabs(v - 0.163) - 0.030);
+            float rim    = length(float2(axisR - 0.052, v - 0.19)) - 0.0095;
+            float spokes = max(length(float2(min(fabs(uu), fabs(h)), v - 0.19)) - 0.007, axisR - 0.052);
+            float hub    = max(axisR - 0.014, fabs(v - 0.196) - 0.014);
+            parts.x = min(rim, spokes);                      // the wheel wears the enamel
+            return min(min(bonnet, stem), min(parts.x, hub));
+        }
+        // ── PRESSURE GAUGE ── a stub up off the run + a dial facing the room
+        float stub = max(length(float2(uu, v - 0.10)) - 0.013, fabs(h - 0.045) - 0.045);
+        float dial = max(length(float2(uu, h - 0.105)) - 0.038, fabs(v - 0.10) - 0.016);
+        parts.y = dial; dialUV = float2(uu, h);
+        return min(stub, dial);
+    }
+    static inline float fittingsField(float3 p, constant float4* fits, int n, float ceilH) {
+        float best = 1e9;
+        float3 parts; float2 uv;
+        for (int i = 0; i < n; i++) {
+            float2 dq = p.xz - fits[i].xy;
+            float dd = dot(dq, dq);
+            // Far fittings still contribute a bound (planar distance to the anchor
+            // minus the fitting's reach — see fittingDist); skipping to "infinity"
+            // here is what made the valves pop in and out with camera movement.
+            if (dd > 0.36) { best = min(best, sqrt(dd) - 0.30); continue; }
+            best = min(best, fittingDist(p, fits[i], ceilH, parts, uv));
+        }
+        return best;
     }
 
     // IQ round-cone (ported from CreatureLab) — the creature shape primitive
@@ -146,39 +164,61 @@ enum GPURaymarch {
     }
     // nearest creature surface to p: rgb = flesh colour, w = world distance.
     // each monster is bounding-sphere culled, then its shapes smin-blended.
-    static inline float4 creatureField(float3 p, int nMon, constant GMonster* mons, constant GShape* shapes, thread float& mat) {
+    // cmask: per-RAY bitmask of monsters whose bound sphere the ray can touch
+    // (built once in the kernel). Every monster used to pay its local-space
+    // transform + bound test per STEP per PIXEL — with a melee pack at the
+    // camera that alone collapsed the frame rate. A masked-out monster is
+    // > the mask margin from every point on the ray, so it can neither be
+    // hit nor win a material contest: skipping it is exact.
+    static inline float4 creatureField(float3 p, int nMon, constant GMonster* mons, constant GShape* shapes, ulong cmask, thread float& mat) {
         float best = 1e9; float3 bestCol = float3(0.5, 0.2, 0.18); mat = 0.0;
         for (int mi = 0; mi < nMon; mi++) {
+            if (mi < 64 && ((cmask >> mi) & 1) == 0) continue;
             GMonster m = mons[mi];
-            float yaw = m.a.z, scale = m.a.w;
+            float scale = m.a.w;
             float2 d = p.xz - m.a.xy;
-            float cs = cos(-yaw), sn = sin(-yaw);
+            float cs = m.a.z, sn = m.c.w;                        // cos/sin(-yaw), CPU-hoisted (fillMonsterTrig)
             float3 lp = float3((d.x * cs - d.y * sn) / scale, (p.y - m.c.y) / scale + m.c.x, (d.x * sn + d.y * cs) / scale);
             float bd = length(lp - float3(0.0, m.b.w, 0.0)) - m.b.z;   // bounding sphere (local)
             if (bd > 0.25) { best = min(best, bd * scale); continue; }
-            int start = int(m.b.x), count = int(m.b.y);
+            int start = int(m.b.x), n = int(m.b.y);
+            int G = (n + 7) / 8, sBase = start + G;               // [G group spheres][n shapes] — packShapeGroups layout
             float dd = 1e9; float3 col = float3(0.5, 0.2, 0.18);
-            for (int si = start; si < start + count; si++) {
-                GShape sh = shapes[si];
-                float sd;
-                if (sh.b.w < -2.5) {                              // flat-capped cylinder (drums) — FLAT top + bottom
-                    float3 q = lp - sh.a.xyz;
-                    float2 dcy = float2(length(q.xz) - (sh.a.w - sh.b.x), abs(q.y) - (sh.b.y - sh.b.x));
-                    sd = min(max(dcy.x, dcy.y), 0.0) + length(max(dcy, 0.0)) - sh.b.x;
-                } else if (sh.b.w < -1.5) {                       // rounded box (items)
-                    float3 q = abs(lp - sh.a.xyz) - sh.b.xyz;
-                    sd = length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - sh.a.w;
-                } else if (sh.b.w < 0.0) {                        // sphere
-                    sd = length(lp - sh.a.xyz) - sh.a.w;
-                } else {                                          // round cone
-                    sd = sdRoundCone(lp, sh.a.xyz, sh.b.xyz, sh.a.w, sh.b.w);
-                }
-                float k = sh.col.w;
-                if (dd > 1e8) { dd = sd; col = sh.col.rgb; }
-                else {
-                    float h = clamp(0.5 + 0.5 * (sd - dd) / k, 0.0, 1.0);
-                    dd = mix(sd, dd, h) - k * h * (1.0 - h);
-                    col = mix(sh.col.rgb, col, h);
+            for (int gi = 0; gi < G; gi++) {
+                // Group enclosing sphere: if the whole 8-shape run is provably
+                // ≥ its max k beyond the running blend, every member is an
+                // EXACT smin no-op (h = 1 leaves dd AND col untouched) — skip
+                // the run wholesale. Compared squared to save the sqrt.
+                GShape gb = shapes[start + gi];
+                float grhs = dd + gb.col.w + gb.bnd.w;
+                float3 gv = lp - gb.bnd.xyz;
+                if (grhs <= 0.0 || dot(gv, gv) >= grhs * grhs) continue;
+                int s1 = min(gi * 8 + 8, n);
+                for (int si = gi * 8; si < s1; si++) {
+                    GShape sh = shapes[sBase + si];
+                    float k = sh.col.w;
+                    float rhs = dd + k + sh.bnd.w;                // per-shape: the same exact no-op test
+                    float3 v = lp - sh.bnd.xyz;
+                    if (rhs <= 0.0 || dot(v, v) >= rhs * rhs) continue;
+                    float sd;
+                    if (sh.b.w < -2.5) {                          // flat-capped cylinder (drums) — FLAT top + bottom
+                        float3 q = lp - sh.a.xyz;
+                        float2 dcy = float2(length(q.xz) - (sh.a.w - sh.b.x), abs(q.y) - (sh.b.y - sh.b.x));
+                        sd = min(max(dcy.x, dcy.y), 0.0) + length(max(dcy, 0.0)) - sh.b.x;
+                    } else if (sh.b.w < -1.5) {                   // rounded box (items)
+                        float3 q = abs(lp - sh.a.xyz) - sh.b.xyz;
+                        sd = length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - sh.a.w;
+                    } else if (sh.b.w < 0.0) {                    // sphere
+                        sd = length(lp - sh.a.xyz) - sh.a.w;
+                    } else {                                      // round cone
+                        sd = sdRoundCone(lp, sh.a.xyz, sh.b.xyz, sh.a.w, sh.b.w);
+                    }
+                    if (dd > 1e8) { dd = sd; col = sh.col.rgb; }
+                    else {
+                        float h = clamp(0.5 + 0.5 * (sd - dd) / k, 0.0, 1.0);
+                        dd = mix(sd, dd, h) - k * h * (1.0 - h);
+                        col = mix(sh.col.rgb, col, h);
+                    }
                 }
             }
             dd *= scale;
@@ -186,8 +226,59 @@ enum GPURaymarch {
         }
         return float4(bestCol, best);
     }
-    static inline float4 creatureField(float3 p, int nMon, constant GMonster* mons, constant GShape* shapes) {
-        float mat; return creatureField(p, nMon, mons, shapes, mat);   // march/normal: material discarded
+    // March/normal variant: distance ONLY. Identical smin arithmetic (rays must
+    // see the exact field the shading pass sees) minus the colour blends, plus
+    // the same exact enclosing-sphere skip — this loop runs per STEP per PIXEL
+    // and dominates the frame when a creature fills the screen.
+    static inline float4 creatureField(float3 p, int nMon, constant GMonster* mons, constant GShape* shapes, ulong cmask) {
+        float best = 1e9;
+        for (int mi = 0; mi < nMon; mi++) {
+            if (mi < 64 && ((cmask >> mi) & 1) == 0) continue;
+            GMonster m = mons[mi];
+            float scale = m.a.w;
+            float2 d = p.xz - m.a.xy;
+            float cs = m.a.z, sn = m.c.w;                        // cos/sin(-yaw), CPU-hoisted (fillMonsterTrig)
+            float3 lp = float3((d.x * cs - d.y * sn) / scale, (p.y - m.c.y) / scale + m.c.x, (d.x * sn + d.y * cs) / scale);
+            float bd = length(lp - float3(0.0, m.b.w, 0.0)) - m.b.z;   // bounding sphere (local)
+            if (bd > 0.25) { best = min(best, bd * scale); continue; }
+            int start = int(m.b.x), n = int(m.b.y);
+            int G = (n + 7) / 8, sBase = start + G;               // [G group spheres][n shapes] — packShapeGroups layout
+            float dd = 1e9;
+            for (int gi = 0; gi < G; gi++) {
+                GShape gb = shapes[start + gi];
+                float grhs = dd + gb.col.w + gb.bnd.w;            // whole run is an exact smin no-op
+                float3 gv = lp - gb.bnd.xyz;
+                if (grhs <= 0.0 || dot(gv, gv) >= grhs * grhs) continue;
+                int s1 = min(gi * 8 + 8, n);
+                for (int si = gi * 8; si < s1; si++) {
+                    GShape sh = shapes[sBase + si];
+                    float k = sh.col.w;
+                    float rhs = dd + k + sh.bnd.w;                // exact smin no-op, compared squared
+                    float3 v = lp - sh.bnd.xyz;
+                    if (rhs <= 0.0 || dot(v, v) >= rhs * rhs) continue;
+                    float sd;
+                    if (sh.b.w < -2.5) {
+                        float3 q = lp - sh.a.xyz;
+                        float2 dcy = float2(length(q.xz) - (sh.a.w - sh.b.x), abs(q.y) - (sh.b.y - sh.b.x));
+                        sd = min(max(dcy.x, dcy.y), 0.0) + length(max(dcy, 0.0)) - sh.b.x;
+                    } else if (sh.b.w < -1.5) {
+                        float3 q = abs(lp - sh.a.xyz) - sh.b.xyz;
+                        sd = length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - sh.a.w;
+                    } else if (sh.b.w < 0.0) {
+                        sd = length(lp - sh.a.xyz) - sh.a.w;
+                    } else {
+                        sd = sdRoundCone(lp, sh.a.xyz, sh.b.xyz, sh.a.w, sh.b.w);
+                    }
+                    if (dd > 1e8) { dd = sd; }
+                    else {
+                        float h = clamp(0.5 + 0.5 * (sd - dd) / k, 0.0, 1.0);
+                        dd = mix(sd, dd, h) - k * h * (1.0 - h);
+                    }
+                }
+            }
+            best = min(best, dd * scale);
+        }
+        return float4(0.0, 0.0, 0.0, best);
     }
     // ── the marine's weapon (viewmodel) ── a private field marched as an
     // OVERLAY after the world resolves: it is deliberately NOT in sceneSDF, so
@@ -237,22 +328,25 @@ enum GPURaymarch {
         emis = em;
         return float4(col, dd);
     }
-    // full field: grid + creatures — used by the primary march + normals
+    // full field: grid + creatures + pipe fittings — the primary march + normals
     static inline float sceneSDF(float3 p, texture2d<float> dt, sampler s, float2 mapWH, float ceilH,
-                                 int nMon, constant GMonster* mons, constant GShape* shapes) {
+                                 int nMon, constant GMonster* mons, constant GShape* shapes,
+                                 constant float4* fits, int nFits, ulong cmask) {
         float2 dd = dt.sample(s, p.xz / mapWH).rg;           // .r wall distance · .g pipe-routing enable
         float dW = dd.x;
         float g = min(dW, min(p.y, ceilH - p.y));
         g = min(g, wallPipes(p, dW, ceilH, dd.y));           // baked routed pipework (marched + normals; not AO/shadow)
-        if (nMon > 0) g = min(g, creatureField(p, nMon, mons, shapes).w);
+        if (nFits > 0) g = min(g, fittingsField(p, fits, nFits, ceilH));
+        if (nMon > 0 && cmask != 0) g = min(g, creatureField(p, nMon, mons, shapes, cmask).w);
         return g;
     }
     static inline float3 calcNormal(float3 p, texture2d<float> dt, sampler s, float2 mapWH, float ceilH,
-                                    int nMon, constant GMonster* mons, constant GShape* shapes) {
+                                    int nMon, constant GMonster* mons, constant GShape* shapes,
+                                    constant float4* fits, int nFits, ulong cmask) {
         float2 e = float2(0.004, 0.0);
-        float dx = sceneSDF(p + e.xyy, dt, s, mapWH, ceilH, nMon, mons, shapes) - sceneSDF(p - e.xyy, dt, s, mapWH, ceilH, nMon, mons, shapes);
-        float dy = sceneSDF(p + e.yxy, dt, s, mapWH, ceilH, nMon, mons, shapes) - sceneSDF(p - e.yxy, dt, s, mapWH, ceilH, nMon, mons, shapes);
-        float dz = sceneSDF(p + e.yyx, dt, s, mapWH, ceilH, nMon, mons, shapes) - sceneSDF(p - e.yyx, dt, s, mapWH, ceilH, nMon, mons, shapes);
+        float dx = sceneSDF(p + e.xyy, dt, s, mapWH, ceilH, nMon, mons, shapes, fits, nFits, cmask) - sceneSDF(p - e.xyy, dt, s, mapWH, ceilH, nMon, mons, shapes, fits, nFits, cmask);
+        float dy = sceneSDF(p + e.yxy, dt, s, mapWH, ceilH, nMon, mons, shapes, fits, nFits, cmask) - sceneSDF(p - e.yxy, dt, s, mapWH, ceilH, nMon, mons, shapes, fits, nFits, cmask);
+        float dz = sceneSDF(p + e.yyx, dt, s, mapWH, ceilH, nMon, mons, shapes, fits, nFits, cmask) - sceneSDF(p - e.yyx, dt, s, mapWH, ceilH, nMon, mons, shapes, fits, nFits, cmask);
         return normalize(float3(dx, dy, dz));
     }
     static inline float calcAO(float3 p, float3 n, texture2d<float> dt, sampler s, float2 mapWH, float ceilH) {
@@ -512,6 +606,7 @@ enum GPURaymarch {
                          constant GShape* shapes   [[buffer(3)]],
                          constant float4* decals   [[buffer(4)]],   // (x,z,radius,w): w>0 scorch · w<0 blood
                          constant float4* doorsB   [[buffer(5)]],   // (cellX, cellY, part 0…1, flags: bit0 slideX · bit1 elevator)
+                         constant float4* fits     [[buffer(6)]],   // pipe fittings: (x, z, normal angle, kind) — count in U.vmB.w
                          constant Uniforms& U [[buffer(0)]]) {
         float screenW = U.params.x, viewH = U.params.y, horizon = U.params.z, ceilH = U.params.w;
         if (gid.x >= uint(screenW) || gid.y >= uint(viewH)) return;
@@ -528,12 +623,53 @@ enum GPURaymarch {
         float3 ro = U.ro.xyz;
         float time = U.ro.w;
 
+        int nFits = int(U.vmB.w);
+        // Per-ray creature culling, computed ONCE: which monster bounds can this
+        // ray touch (bitmask), and over what t-range (window). Outside the window
+        // the creature field is skipped wholesale — so when a biter fills the
+        // screen, rays pointing at the floor stop paying for it after a step or
+        // two instead of on all ~190.
+        ulong cmask = 0;
+        float cNear = 1e9, cFar = -1e9;
+        for (int mi = 0; mi < nMon; mi++) {
+            GMonster m = mons[mi];
+            float3 cc = float3(m.a.x, m.c.y + (m.b.w - m.c.x) * m.a.w, m.a.y);
+            // Margin over the packed bound (which already encloses surface +
+            // smin bleed): only needs to dominate the hit epsilon (0.0015) and
+            // the normal-probe offset — a masked-out monster's surface never
+            // lies ON the ray, so marching past it is harmless. Keeping it
+            // small matters: at melee a drone's sphere gates most of the
+            // screen's rays, and solid angle grows with R².
+            float R = m.b.z * m.a.w + 0.05;
+            float3 oc = ro - cc;
+            float bq = dot(oc, rd);
+            float hq = bq * bq - dot(oc, oc) + R * R;
+            if (hq < 0.0) continue;
+            float sq = sqrt(hq);
+            float tEnter = -bq - sq, tExit = -bq + sq;           // roots of t^2 + 2*bq*t + c = 0
+            if (tEnter > 64.0 || tExit < 0.0) continue;          // beyond march range / fully behind
+            if (mi < 64) cmask |= (ulong(1) << ulong(mi));
+            cNear = min(cNear, max(0.0, tEnter));
+            cFar = max(cFar, tExit);
+        }
+        if (nMon > 64) { cmask = ~ulong(0); cNear = 0.0; cFar = 64.0; }   // over the mask budget: evaluate everything
+        if (U.dbg.x > 0.5) { cmask = ~ulong(0); cNear = 0.0; cFar = 64.0; }   // harness ground truth: the mask is a pure optimisation, so forcing it off must not change a pixel
         float t = 0.02; bool hit = false;
         for (int i = 0; i < 190; i++) {
             float3 p = ro + rd * t;
-            float d = sceneSDF(p, dt, s, mapWH, ceilH, nMon, mons, shapes);
+            ulong cm = (t >= cNear - 0.05 && t <= cFar + 0.05) ? cmask : ulong(0);
+            float d = sceneSDF(p, dt, s, mapWH, ceilH, nMon, mons, shapes, fits, nFits, cm);
             if (d < 0.0015) { hit = true; break; }
-            t += d * 0.85;
+            float adv = d * 0.85;
+            // Entering the creature window: outside it the field OMITS the
+            // creature terms, so `d` says nothing about them — a wall-driven
+            // step must never leap over the window's leading edge (a mine's
+            // whole window is ~0.4: an open-room step clears it and the
+            // object vanishes for that ray). Land ON the edge instead.
+            // (dbg.y disables the clamp — harness-only, so the probe can prove
+            // its instrument still detects the leap this clamp prevents)
+            if (U.dbg.y < 0.5 && t < cNear - 0.05) adv = min(adv, cNear - 0.05 - t + 0.001);
+            t += adv;
             if (t > 64.0) break;
         }
 
@@ -541,12 +677,12 @@ enum GPURaymarch {
         bool worldProj = false;   // the hit is a projectile orb (may pass IN FRONT of the viewmodel)
         if (hit) {
             float3 p = ro + rd * t;
-            float3 n = calcNormal(p, dt, s, mapWH, ceilH, nMon, mons, shapes);
+            float3 n = calcNormal(p, dt, s, mapWH, ceilH, nMon, mons, shapes, fits, nFits, cmask);
             float2 ddp = dt.sample(s, p.xz / mapWH).rg;        // .r wall distance · .g pipe-routing enable
             float dWp = ddp.x, peP = ddp.y;
             float gd = min(min(dWp, min(p.y, ceilH - p.y)), wallPipes(p, dWp, ceilH, peP));   // grid incl. routed pipe
             float itemMat = 0.0;
-            float4 cf = (nMon > 0) ? creatureField(p, nMon, mons, shapes, itemMat) : float4(0.0, 0.0, 0.0, 1e9);
+            float4 cf = (nMon > 0 && cmask != 0) ? creatureField(p, nMon, mons, shapes, cmask, itemMat) : float4(0.0, 0.0, 0.0, 1e9);
             float3 alb; float emis = 0.0; bool reflective = false; bool isItem = false; bool isProj = false; bool isCreature = false; bool isProp = false; bool isDrum = false; bool isSocket = false; bool isMine = false;
             float rough = 0.7, metal = 0.0;   // PBR surface params, set per surface below
             if (cf.w < gd) {                                     // a creature / pickup / projectile / prop surface
@@ -647,73 +783,62 @@ enum GPURaymarch {
             } else {
                 float dW = dWp;
                 float dF = p.y, dC = ceilH - p.y;
-                float dP = wallPipes(p, dW, ceilH, peP);
+                float dPipe = wallPipes(p, dW, ceilH, peP);
+                // nearest CPU-placed fitting (valve/gauge), with part distances
+                float dFit = 1e9; float3 fitParts = float3(1e9, 1e9, 0.0); float2 dialUV = float2(0.0, 0.0);
+                float fitSeed = 0.0;
+                for (int fi = 0; fi < nFits; fi++) {
+                    float2 dq = p.xz - fits[fi].xy;
+                    if (dot(dq, dq) > 0.36) continue;
+                    float3 pp; float2 uv;
+                    float fd = fittingDist(p, fits[fi], ceilH, pp, uv);
+                    if (fd < dFit) { dFit = fd; fitParts = pp; dialUV = uv; fitSeed = fits[fi].x + fits[fi].y * 7.3; }
+                }
+                float dP = min(dPipe, dFit);
                 int2 dim = int2(mapWH);
-                if (dP <= dW && dP <= dF && dP <= dC) {          // ── BAKED WALL PIPE ── aged copper
+                if (dP <= dW && dP <= dF && dP <= dC) {          // ── BAKED WALL PIPE + FITTINGS ──
                     float along = p.x + p.z;                     // runs along the pipe (yaw-robust) for the grain
                     float rr = fbm2(float2(along * 3.0, p.y * 6.0));
-                    float3 copper = float3(0.62, 0.36, 0.26);    // drawn copper — warm against the iron walls
-                    alb = mix(copper, float3(0.28, 0.15, 0.10), smoothstep(0.5, 0.9, rr) * 0.7);   // tarnish eating the shine
-                    float drip = smoothstep(0.62, 0.95, fbm2(float2(along * 5.0, p.y * 0.8)));
-                    alb = mix(alb, float3(0.16, 0.30, 0.24), drip * 0.35 * clamp(1.0 - dC * 2.2, 0.0, 1.0));   // verdigris weeping below
-                    rough = clamp(0.30 + 0.40 * rr, 0.28, 0.75);  // polished where handled, dull where tarnished
-                    metal = 0.85;                                 // copper is properly metallic
-                    // the fittings paint themselves by zone: proud of the run
-                    // (toward the room) only a valve's stem + handwheel exist —
-                    // safety-red enamel; above it only a gauge — pale dial face,
-                    // dark rim + centre pin
-                    float fy = p.y - (ceilH - 0.28);
-                    // The valve's handwheel + hub wear safety-red enamel. The
-                    // paint zone must re-derive the VALVE SITE (same section/bay
-                    // hash as the geometry): the pipe's own face lies closer to
-                    // the wheel-boss centre than the wheel rim does, so a purely
-                    // geometric ellipse painted every mid-run pipe red.
-                    float alongP = p.x + p.z;
-                    float secP = floor(alongP / 9.0);
-                    float hP = pipeHash(secP);
-                    float bayP = floor(alongP / 3.0) - secP * 3.0;
-                    float aP = (fract(alongP / 3.0) - 0.5) * 3.0;
-                    bool valveSite = hP < 0.30
-                        && bayP == floor(pipeHash(secP + 31.0) * 2.9999)
-                        && fabs(aP) < 0.07;
-                    // enamel only where the surface IS the hub or the wheel —
-                    // exact SDF ownership (the same shells as the geometry),
-                    // gated by the SAME sink band as the geometry (paint where
-                    // the fitting has sunk = a red blob on a bare pipe), and
-                    // never on the run's own body (the hub band grazes the
-                    // pipe crown, which painted a red patch ON the pipe).
-                    float midP = smoothstep(0.855, 0.90, peP);
-                    float hubP = max(length(float2(aP, fy)) - 0.017, fabs(dW - 0.152) - 0.016);
-                    float wheelP = length(float2(length(float2(aP, fy)) - 0.040, dW - 0.168)) - 0.010;
-                    bool proud = length(float2(dW - 0.10, fy)) > 0.048;   // clear of the pipe body
-                    if (valveSite && midP > 0.85 && proud && min(hubP, wheelP) < 0.012) {
-                        alb = mix(float3(0.60, 0.09, 0.06), float3(0.36, 0.05, 0.04), smoothstep(0.4, 0.9, rr));
-                        rough = 0.5; metal = 0.2;
-                    } else if (fy > 0.075) {
-                        // the gauge's DIAL: bezel ring, tick marks arcing over
-                        // the top, a red needle at a per-gauge angle, centre pin
-                        // — without these the face read as a blank lollipop
-                        float fa = (fract(along / 3.0) - 0.5) * 3.0;
-                        float face = smoothstep(0.55, 0.85, length(n.xz));       // flat dial face vs rim
-                        alb = mix(float3(0.24, 0.22, 0.19), float3(0.82, 0.80, 0.72), face);
-                        if (face > 0.5) {
-                            float2 dv = float2(fa, fy - 0.105);
-                            float rd = length(dv);
-                            if (rd > 0.028) alb = float3(0.20, 0.19, 0.17);                    // bezel
-                            else {
-                                float angg = atan2(dv.y, dv.x);
-                                if (rd > 0.021 && angg > 0.35 && angg < 2.79
-                                    && fract((angg - 0.35) / 0.4886) < 0.16) {                 // ticks
-                                    alb = float3(0.22, 0.21, 0.19);
+                    if (dFit < dPipe) {
+                        // ── a FITTING's surface — matched to the reference stopcock:
+                        // worn steel body/bonnet/stem, RED-ENAMEL handwheel, and a
+                        // proper instrument dial. Ownership is exact: the same SDF
+                        // that marched the part says which part this is.
+                        if (fitParts.x < 0.012) {                              // the handwheel
+                            alb = mix(float3(0.58, 0.10, 0.07), float3(0.34, 0.05, 0.04), smoothstep(0.45, 0.9, rr));
+                            rough = 0.52; metal = 0.2;
+                        } else if (fitParts.y < 0.012) {                       // the gauge dial
+                            float face = smoothstep(0.55, 0.85, length(n.xz)); // flat face vs rim
+                            alb = mix(float3(0.24, 0.22, 0.19), float3(0.82, 0.80, 0.72), face);
+                            if (face > 0.5) {
+                                float2 dv = float2(dialUV.x, dialUV.y - 0.105);
+                                float rd2 = length(dv);
+                                if (rd2 > 0.028) alb = float3(0.20, 0.19, 0.17);               // bezel
+                                else {
+                                    float angg = atan2(dv.y, dv.x);
+                                    if (rd2 > 0.021 && angg > 0.35 && angg < 2.79
+                                        && fract((angg - 0.35) / 0.4886) < 0.16) {             // ticks
+                                        alb = float3(0.22, 0.21, 0.19);
+                                    }
+                                    float na = mix(0.5, 2.6, pipeHash(fitSeed + 17.0));        // needle angle
+                                    float2 nd = float2(cos(na), sin(na));
+                                    float sN = dot(dv, nd), qN = fabs(dv.x * nd.y - dv.y * nd.x);
+                                    if (sN > -0.006 && sN < 0.024 && qN < 0.0035) alb = float3(0.62, 0.10, 0.08);
                                 }
-                                float na = mix(0.5, 2.6, pipeHash(floor(along / 3.0) + 17.0)); // needle angle
-                                float2 nd = float2(cos(na), sin(na));
-                                float sN = dot(dv, nd), qN = fabs(dv.x * nd.y - dv.y * nd.x);
-                                if (sN > -0.006 && sN < 0.024 && qN < 0.0035) alb = float3(0.62, 0.10, 0.08);
+                                if (rd2 < 0.006) alb = float3(0.10, 0.10, 0.11);               // centre pin
                             }
-                            if (rd < 0.006) alb = float3(0.10, 0.10, 0.11);                    // centre pin
+                            rough = 0.35; metal = 0.15;
+                        } else {                                               // body, bonnet, stem, nut — worn steel
+                            alb = mix(float3(0.52, 0.54, 0.57), float3(0.30, 0.31, 0.33), smoothstep(0.4, 0.9, rr));
+                            rough = 0.45; metal = 0.7;
                         }
-                        rough = 0.35; metal = 0.15;
+                    } else {
+                        float3 copper = float3(0.62, 0.36, 0.26);    // drawn copper — warm against the iron walls
+                        alb = mix(copper, float3(0.28, 0.15, 0.10), smoothstep(0.5, 0.9, rr) * 0.7);   // tarnish eating the shine
+                        float drip = smoothstep(0.62, 0.95, fbm2(float2(along * 5.0, p.y * 0.8)));
+                        alb = mix(alb, float3(0.16, 0.30, 0.24), drip * 0.35 * clamp(1.0 - dC * 2.2, 0.0, 1.0));   // verdigris weeping below
+                        rough = clamp(0.30 + 0.40 * rr, 0.28, 0.75);  // polished where handled, dull where tarnished
+                        metal = 0.85;                                 // copper is properly metallic
                     }
                 } else if (dW <= dF && dW <= dC) {               // wall — id of the SOLID cell
                     int2 c = clamp(int2(floor(p.xz - n.xz * 0.5)), int2(0), dim - 1);
@@ -1456,10 +1581,86 @@ enum GPURaymarch {
     struct Uniforms { var ro, fwd, right, up, params, grid, extra: SIMD4<Float>
                       var env: SIMD4<Float> = SIMD4(0, 0, 0, 0)     // extra.x = decalCount · env.xy = water-table offset · env.zw = viewmodel shape start/count
                       var vmA: SIMD4<Float> = SIMD4(0, 0, 0, 0)     // viewmodel: gun anchor.xyz + local bound radius
-                      var vmB: SIMD4<Float> = SIMD4(0, 0, 0, 0) }   // viewmodel: gun-local bound centre
+                      var vmB: SIMD4<Float> = SIMD4(0, 0, 0, 0)     // viewmodel: gun-local bound centre
+                      var dbg: SIMD4<Float> = SIMD4(0, 0, 0, 0) }   // dbg.x = 1 → disable the per-ray creature mask (harness invariant checks)
     struct GPULight { var posR, colI: SIMD4<Float> }   // posR=(x,y,z,1/r²)  colI=(r,g,b,intensity)
-    struct GShape { var a, b, col: SIMD4<Float> }      // a.xyz/r1 ; b.xyz/r2(<0 sphere) ; col.rgb/k
+    struct GShape { var a, b, col: SIMD4<Float>; var bnd: SIMD4<Float> = .zero }   // a.xyz/r1 ; b.xyz/r2(<0 sphere) ; col.rgb/k ; bnd = enclosing sphere
     struct GMonster { var a, b, c: SIMD4<Float> }      // a=(x,z,yaw,scale) b=(start,count,boundR,boundCY) c=(minY,…)
+
+    /// Fill each shape's enclosing sphere (bnd = centre.xyz + radius) from its
+    /// primitive params. The kernel uses it as a cheap LOWER bound on the true
+    /// distance so the smin loop can skip shapes that provably can't move the
+    /// blend — MUST run on every shape list before it becomes a GPU buffer, or
+    /// a zero bnd makes the kernel skip everything (invisible geometry).
+    static func fillShapeBounds(_ shapes: inout [GShape]) {
+        for i in shapes.indices {
+            let sh = shapes[i]
+            if sh.b.w < -2.5 {            // flat-capped cylinder: radius a.w, half-height b.y
+                shapes[i].bnd = SIMD4(sh.a.x, sh.a.y, sh.a.z, simd_length(SIMD2(sh.a.w, sh.b.y)))
+            } else if sh.b.w < -1.5 {     // rounded box: half-extents b.xyz + rounding a.w
+                shapes[i].bnd = SIMD4(sh.a.x, sh.a.y, sh.a.z, simd_length(SIMD3(sh.b.x, sh.b.y, sh.b.z)) + sh.a.w)
+            } else if sh.b.w < 0 {        // sphere
+                shapes[i].bnd = SIMD4(sh.a.x, sh.a.y, sh.a.z, sh.a.w)
+            } else {                      // round cone: hull of sphere(a, r1) ∪ sphere(b, r2)
+                let av = SIMD3(sh.a.x, sh.a.y, sh.a.z), bv = SIMD3(sh.b.x, sh.b.y, sh.b.z)
+                let c = (av + bv) * 0.5
+                shapes[i].bnd = SIMD4(c.x, c.y, c.z, simd_length(bv - av) * 0.5 + max(sh.a.w, sh.b.w))
+            }
+        }
+    }
+
+    /// Replace each monster's yaw (a.z) with cos(-yaw) and stash sin(-yaw) in
+    /// the spare c.w — the kernel's local-space transform runs per STEP per
+    /// PIXEL, so the two transcendentals are hoisted to once per frame here.
+    /// Destructive (a.z stops being an angle): run ONCE per packed list, right
+    /// before the list becomes a GPU buffer, wherever fillShapeBounds runs.
+    static func fillMonsterTrig(_ mons: inout [GMonster]) {
+        for i in mons.indices {
+            let yaw = mons[i].a.z
+            mons[i].a.z = cosf(-yaw)
+            mons[i].c.w = sinf(-yaw)
+        }
+    }
+
+    /// Restructure monster shape lists for the GPU: per monster, prepend GROUP
+    /// entries — one enclosing sphere (bnd) per run of 8 consecutive shapes,
+    /// col.w = the run's max smin k — then the shapes themselves. The kernel
+    /// tests a group once and skips all 8 members wholesale; skipping is the
+    /// same EXACT smin no-op as the per-shape test (each member's lower bound
+    /// ≥ the group's). Shapes are authored body-part by body-part, so
+    /// consecutive runs are spatially tight — a 90-shape drone collapses to
+    /// ~12 group tests per step for rays not grazing that body part.
+    /// Layout per monster: [ceil(N/8) groups][N shapes]; b.x → group start,
+    /// b.y stays N. Also fills shape bounds and hoists monster trig, so this
+    /// REPLACES fillShapeBounds/fillMonsterTrig at monster-buffer sites.
+    /// Run it BEFORE appending non-monster shapes (the viewmodel overlay):
+    /// the rebuild keeps only monster-owned ranges.
+    static func packShapeGroups(_ mons: inout [GMonster], _ shapes: inout [GShape]) {
+        fillShapeBounds(&shapes)
+        fillMonsterTrig(&mons)
+        var out: [GShape] = []
+        out.reserveCapacity(shapes.count + shapes.count / 8 + mons.count)
+        for i in mons.indices {
+            let start = Int(mons[i].b.x), n = Int(mons[i].b.y)
+            mons[i].b.x = Float(out.count)
+            guard n > 0 else { continue }
+            for g in 0..<((n + 7) / 8) {
+                let lo = start + g * 8, hi = min(lo + 8, start + n)
+                var c = SIMD3<Float>.zero
+                for si in lo..<hi { c += SIMD3(shapes[si].bnd.x, shapes[si].bnd.y, shapes[si].bnd.z) }
+                c /= Float(hi - lo)
+                var r: Float = 0, kmax: Float = 0
+                for si in lo..<hi {
+                    let b = shapes[si].bnd
+                    r = max(r, simd_length(SIMD3(b.x, b.y, b.z) - c) + b.w)
+                    kmax = max(kmax, shapes[si].col.w)
+                }
+                out.append(GShape(a: .zero, b: .zero, col: SIMD4(0, 0, 0, kmax), bnd: SIMD4(c.x, c.y, c.z, r)))
+            }
+            out.append(contentsOf: shapes[start..<(start + n)])
+        }
+        shapes = out
+    }
 
     /// The creature's current pose as CreatureLab shapes, by gameplay state.
     static func poseShapes(_ m: Monster) -> [CreatureLab.Shape] {
@@ -2081,12 +2282,18 @@ enum GPURaymarch {
             let speed = simd_length(pr.vel)
             let len = min(0.8, speed * 0.045)
             let yaw = atan2(pr.vel.y, pr.vel.x) + .pi / 2            // local -z = direction of flight
-            shapes.append(iSphere(SIMD3(0, 0, 0), r, col, 0.01))
+            // geometry is centred on the streak's midpoint so the bounding
+            // sphere hugs it: anchored at the head the bound was len+r wide
+            // and every ray inside it paid the detail evaluation — with a
+            // dozen bolts in flight that was real frame time.
+            shapes.append(iSphere(SIMD3(0, 0, -len / 2), r, col, 0.01))
             if len > 0.05 {
-                shapes.append(iCone(SIMD3(0, 0, 0), SIMD3(0, 0, len), r * 0.85, r * 0.25, col * 0.55, 0.02))
+                shapes.append(iCone(SIMD3(0, 0, -len / 2), SIMD3(0, 0, len / 2), r * 0.85, r * 0.25, col * 0.55, 0.02))
             }
-            mons.append(GMonster(a: SIMD4(pr.pos.x, pr.pos.y, yaw, 1),
-                                 b: SIMD4(Float(start), Float(shapes.count - start), len + r + 0.05, 0),
+            let dirU = speed > 0.001 ? pr.vel / speed : SIMD2<Float>(1, 0)
+            let anchor = pr.pos - dirU * (len / 2)                   // head stays exactly at pr.pos
+            mons.append(GMonster(a: SIMD4(anchor.x, anchor.y, yaw, 1),
+                                 b: SIMD4(Float(start), Float(shapes.count - start), len / 2 + r + 0.05, 0),
                                  c: SIMD4(0, eyeY, 2, 0)))           // centred at eye height; c.z = 2 (orb)
         }
         return (mons, shapes)
@@ -2248,8 +2455,12 @@ enum GPURaymarch {
             // LDR) against this level's textures; returns GPU execution time (ms)
             // from the command-buffer timestamps, so the very same call renders a
             // shot AND measures the per-frame GPU cost for the 60 fps validation.
+            var fitsHarness = world.map.pipeFittings
+            let nFitsHarness = fitsHarness.count
+            if fitsHarness.isEmpty { fitsHarness = [SIMD4<Float>(0, 0, 0, 0)] }
             func dispatch(_ u0: Uniforms, _ dyn0: [GPULight], _ monBuf: MTLBuffer, _ shpBuf: MTLBuffer, _ decals0: [SIMD4<Float>]) -> Double {
                 var u = u0, dyn = dyn0, decals = decals0
+                u.vmB.w = Float(nFitsHarness)                    // CPU-placed pipe fittings ride along
                 let cmd = queue.makeCommandBuffer()!
                 let enc = cmd.makeComputeCommandEncoder()!
                 enc.setComputePipelineState(pipe)
@@ -2261,6 +2472,7 @@ enum GPURaymarch {
                 enc.setBytes(&dyn, length: MemoryLayout<GPULight>.stride * dyn.count, index: 1)
                 enc.setBuffer(monBuf, offset: 0, index: 2); enc.setBuffer(shpBuf, offset: 0, index: 3)
                 enc.setBytes(&decals, length: MemoryLayout<SIMD4<Float>>.stride * decals.count, index: 4)
+                enc.setBytes(&fitsHarness, length: MemoryLayout<SIMD4<Float>>.stride * fitsHarness.count, index: 6)
                 enc.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)
                 enc.endEncoding()
                 let penc = cmd.makeComputeCommandEncoder()!
@@ -2319,6 +2531,7 @@ enum GPURaymarch {
                 drone.dir = cor.dir + .pi + 0.3
                 drone.animTime = 0.75
                 var (qmons, qshapes) = packCreatures([q, drone])
+                packShapeGroups(&qmons, &qshapes)
                 if qmons.isEmpty { qmons = [GMonster(a: .zero, b: .zero, c: .zero)] }
                 if qshapes.isEmpty { qshapes = [GShape(a: .zero, b: .zero, col: .zero)] }
                 let qMonBuf = device.makeBuffer(bytes: qmons, length: MemoryLayout<GMonster>.stride * qmons.count, options: .storageModeShared)!
@@ -2393,6 +2606,7 @@ enum GPURaymarch {
             for pm0 in ppmons { var pm = pm0; pm.b.x += Float(ppbase); cmons.append(pm) }
             cshapes.append(contentsOf: ppshapes)
             u.grid.z = Float(cmons.count)
+            packShapeGroups(&cmons, &cshapes)   // before the vm append — the rebuild keeps only monster-owned shapes
             // the held weapon — the SDF viewmodel overlay, mid-fire, so the
             // content shot proves the path AND the perf timing pays its cost
             var vp = p

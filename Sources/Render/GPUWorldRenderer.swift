@@ -31,6 +31,15 @@ final class GPUWorldRenderer {
     private var gpuDoorSig: UInt64 = 0
     private var gpuWorldID: ObjectIdentifier?
     private var gpuReady = false
+    /// Harness-only: force the kernel's per-ray creature mask fully on. The mask
+    /// is a pure optimisation, so flipping this must not change a pixel — the
+    /// load probe diffs the two renders to prove it (catches sign/margin/window
+    /// bugs in one invariant).
+    var disableCreatureMask = false
+    /// Harness-only: disable the march's window-entry step clamp — reintroduces
+    /// the leap-over-small-windows bug ON PURPOSE so the probe can verify its
+    /// invariant check still detects that disease before trusting a PASS.
+    var disableWindowClamp = false
 
     /// Fails (returns nil) if the compute pipelines or a command queue can't be
     /// built — the caller then has no GPU path (the live renderer falls back to
@@ -365,6 +374,8 @@ final class GPUWorldRenderer {
             params: SIMD4(Float(RenderConfig.width), Float(RenderConfig.viewHeight), Float(RenderConfig.horizon), 1),
             grid: SIMD4(Float(gpuMapW), Float(gpuMapH), world.elapsed, 0),
             extra: SIMD4(0, 0, 0, 0))
+        u.dbg.x = disableCreatureMask ? 1 : 0   // harness invariant: mask off must be pixel-identical
+        u.dbg.y = disableWindowClamp ? 1 : 0    // harness calibration: reintroduce the window-leap bug
         // dramatic lighting = the level's fixtures (warm keys shadow, colour fills
         // don't) culled to the player, plus the player's own muzzle/projectile glows
         // appended after — so extra.z gates the few shadow-casters to the emitter keys.
@@ -405,6 +416,9 @@ final class GPUWorldRenderer {
         for pm0 in pmons { var pm = pm0; pm.b.x += Float(pbase); cmons.append(pm) }
         cshapes.append(contentsOf: pshapes)
         u.grid.z = Float(cmons.count)                                                // creatures + items + debris + projectiles
+        // group-bound restructure + shape bounds + trig hoist — MUST precede the
+        // viewmodel append below (the rebuild keeps only monster-owned shapes)
+        GPURaymarch.packShapeGroups(&cmons, &cshapes)
         // the held weapon (SDF viewmodel): shapes ride the same buffer but are
         // marched as an overlay — the kernel takes their range via env.zw and
         // the gun's world anchor + local bound via vmA/vmB. It anchors to the
@@ -422,6 +436,10 @@ final class GPUWorldRenderer {
             u.vmA = SIMD4(anchor.x, anchor.y, anchor.z, vm.boundR)
             u.vmB = SIMD4(vm.boundC.x, vm.boundC.y, vm.boundC.z, 0)
         }
+        // CPU-placed pipe fittings (valves/gauges) — count rides vmB.w
+        var fitsPack = world.map.pipeFittings
+        u.vmB.w = Float(fitsPack.count)
+        if fitsPack.isEmpty { fitsPack = [SIMD4<Float>(0, 0, 0, 0)] }         // ≥1 elem for setBytes
         // located damage decals (blood at kills, scorch under burned-out corpses)
         var decals = world.decals
         u.extra.x = Float(decals.count)
@@ -448,6 +466,7 @@ final class GPUWorldRenderer {
         enc.setBuffer(shpBuf, offset: 0, index: 3)
         enc.setBytes(&decals, length: MemoryLayout<SIMD4<Float>>.stride * decals.count, index: 4)
         enc.setBytes(&doorsPack, length: MemoryLayout<SIMD4<Float>>.stride * doorsPack.count, index: 5)
+        enc.setBytes(&fitsPack, length: MemoryLayout<SIMD4<Float>>.stride * fitsPack.count, index: 6)
         let tg = MTLSize(width: 16, height: 16, depth: 1)
         let groups = MTLSize(width: (RenderConfig.width + 15) / 16, height: (RenderConfig.viewHeight + 15) / 16, depth: 1)
         enc.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)

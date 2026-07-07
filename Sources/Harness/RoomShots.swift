@@ -131,6 +131,7 @@ enum RoomShots {
             world.player.dir = atan2(aim.y, aim.x)
             let input = InputState(); input.kb.fire = true
             let audio = AudioEngine()
+            audio.muted = true                        // harnesses are SILENT — they get run in offices
             for _ in 0..<8 { world.update(dt: 0.06, input: input, audio: audio) }   // build the jet
             func openLit(_ c: SIMD2<Float>) -> Bool {
                 let x = Int(c.x), y = Int(c.y)

@@ -131,7 +131,6 @@ final class World {
     let isTeleportFloor: Bool                    // exits by pad, not lift
     let arrivalByTeleport: Bool                  // floor 1 of a later citadel — you materialised here
     private var padHintCD: Float = 0
-    private var teleportHissT: Float = 0   // re-arms the charge's static-crackle bed
     /// The receiver pad's dying glow after a teleport arrival (renderer light).
     var arrivalGlow: Float { arrivalByTeleport ? max(0, 1 - elapsed / 6) : 0 }
 
@@ -176,8 +175,8 @@ final class World {
     private let drumRefuelRange: Float = 0.55
     private let mineArmTime: Float = 0.9     // delay before a dropped mine goes live
     private let mineTriggerRange: Float = 0.7
-    private let mineBlastRadius: Float = 2.4
-    private let mineBlastDamage = 85
+    private let mineBlastRadius: Float = 3.2 // the meanest bang the marine carries — outreaches a full drum
+    private let mineBlastDamage = 130        // shapes self-splash + falloff; INSIDE the ring lethality is absolute (explode lethal:)
     // a socket holds ~3 Queen-kills of plasma (derived from her HP ÷ plasma damage)
     // — enough to recover a dry rifle and still finish her, without trivialising the
     // cell economy. Dispenses fast while you stand in it.
@@ -725,14 +724,8 @@ final class World {
             else if fireEdge { engageTeleport(audio: audio) }
         case .charging:
             teleportT = min(1, teleportT + dt / World.teleportChargeTime)
-            // the static's crackle GROWS with the dissolve: long overlapping
-            // noise voices, re-armed while the last still decays, louder as
-            // the feed goes — the renderer's hold state continues the same bed
-            teleportHissT -= dt
-            if teleportHissT <= 0 {
-                teleportHissT = 0.8
-                audio.trigger(wave: AudioEngine.noise, f0: 1, dur: 1.8, amp: 0.15 + 0.35 * teleportT, attack: 0.35)
-            }
+            // (the growing static crackle is the renderer's looping noise bed,
+            //  volume-driven from teleportT — one authority, no burst voices)
             if teleportT >= 1 { completeLevel(audio: audio) }
         }
     }
@@ -740,7 +733,6 @@ final class World {
     private func engageTeleport(audio: AudioEngine) {
         guard teleportPhase != .charging else { return }
         teleportPhase = .charging
-        teleportHissT = 0
         message("TELEPORT ENGAGED")
         // spin-up: a rising carrier — the growing static crackle rides over it
         audio.trigger(wave: AudioEngine.sine, f0: 140, f1: 1300, dur: World.teleportChargeTime, amp: 0.26, attack: 0.5)
@@ -1506,32 +1498,44 @@ final class World {
         }
     }
 
-    private func explode(at pos: SIMD2<Float>, radius: Float, damage: Int, fromPlayer: Bool, audio: AudioEngine) {
-        spawnParticles(at: pos, n: 24, color: packRGBA(255, 150, 60), spread: 4.5, life: 0.5)
+    private func explode(at pos: SIMD2<Float>, radius: Float, damage: Int, fromPlayer: Bool,
+                         lethal: Bool = false, audio: AudioEngine) {
+        // every part of the show scales with the blast's reach (1 = a rocket's
+        // splash): particle count, throw speed, fireball size, light intensity
+        let k = radius / 2.0
+        spawnParticles(at: pos, n: Int(24 * k), color: packRGBA(255, 150, 60), spread: 4.5 * k, life: 0.5)
         // a real DETONATION: a fireball that blooms and rises, a smoke plume that
         // outlives it, and a flash of light thrown across the room (gatherDynLights)
-        blasts.append((pos, 0.3, SIMD3(1.0, 0.62, 0.28)))
-        for _ in 0..<14 {
-            let a = rng.f(0, 6.2832), sp = rng.f(0.8, 3.0)
+        blasts.append((pos, 0.3, SIMD3(1.0, 0.62, 0.28) * k))
+        for _ in 0..<Int(14 * k) {
+            let a = rng.f(0, 6.2832), sp = rng.f(0.8, 3.0) * k
             particles.append(Particle(pos: pos + SIMD2(rng.f(-0.25, 0.25), rng.f(-0.25, 0.25)),
                                       vel: SIMD2(cos(a) * sp, sin(a) * sp),
                                       life: rng.f(0.25, 0.55), maxLife: 0.55, color: 0,
-                                      size: rng.f(12, 26), height: rng.f(0.1, 0.6), rise: rng.f(0.4, 1.1),
+                                      size: rng.f(12, 26) * (0.7 + 0.3 * k), height: rng.f(0.1, 0.6), rise: rng.f(0.4, 1.1),
                                       maxAlpha: 0.9, fire: true))
         }
-        for _ in 0..<8 {
+        for _ in 0..<Int(8 * k) {
             particles.append(Particle(pos: pos + SIMD2(rng.f(-0.3, 0.3), rng.f(-0.3, 0.3)),
                                       vel: SIMD2(rng.f(-0.2, 0.2), rng.f(-0.2, 0.2)),
                                       life: rng.f(1.0, 1.8), maxLife: 1.8, color: packRGBA(58, 54, 52),
-                                      size: rng.f(14, 24), height: rng.f(0.2, 0.7), rise: rng.f(0.8, 1.4),
+                                      size: rng.f(14, 24) * (0.7 + 0.3 * k), height: rng.f(0.2, 0.7), rise: rng.f(0.8, 1.4),
                                       maxAlpha: 0.45))
         }
         if particles.count > 700 { particles.removeFirst(particles.count - 700) }
+        // the concussion kicks the camera — hard at the epicentre, a ripple
+        // across the room (same jolt channel as the Queen's landing)
+        let dpc = vlen(player.pos - pos)
+        impactShake = max(impactShake, min(1, max(0, 1 - dpc / (radius * 2.2)) * (0.35 + 0.45 * k)))
         audio.explosion()
         for i in monsters.indices where monsters[i].alive {
             let d = vlen(monsters[i].pos - pos)
             if d < radius {
-                let dmg = Int(Float(damage) * (1 - d / radius))
+                var dmg = Int(Float(damage) * (1 - d / radius))
+                // ordnance is absolute: nothing caught inside the ring survives.
+                // (Routed through damageMonster, so the Queen's plasma-only
+                // floor still holds — she is rocked, not killed.)
+                if lethal { dmg = max(dmg, 1000) }
                 if dmg > 0 { damageMonster(i, dmg, audio: audio, kind: .explosive) }
             }
         }
@@ -1608,8 +1612,17 @@ final class World {
                 }
             }
             if fire {
-                explode(at: deployedMines[i].pos, radius: mineBlastRadius, damage: mineBlastDamage,
-                        fromPlayer: true, audio: audio)
+                let mpos = deployedMines[i].pos
+                explode(at: mpos, radius: mineBlastRadius, damage: mineBlastDamage,
+                        fromPlayer: true, lethal: true, audio: audio)
+                addDecal(mpos, radius: mineBlastRadius * 0.7, w: 0.95)   // a scorched ring where it sat
+                for _ in 0..<26 {                        // shrapnel-fire: a low, fast, vicious ring
+                    let a = rng.f(0, 6.2832), s = rng.f(2.5, 7.0)
+                    particles.append(Particle(pos: mpos, vel: SIMD2(cos(a) * s, sin(a) * s),
+                                              life: rng.f(0.3, 0.7), maxLife: 0.7, color: 0,
+                                              size: rng.f(10, 20), height: rng.f(0.05, 0.35), rise: rng.f(0.2, 0.7),
+                                              maxAlpha: 0.95, fire: true))
+                }
                 deployedMines.remove(at: i)
             } else { i += 1 }
         }
@@ -1656,6 +1669,16 @@ final class World {
                 let ci = map.idx(cx, cy)
                 guard map.wall[ci] == 0, map.doors[ci] == nil, !map.hazard[ci] else { continue }
                 let c = SIMD2<Float>(Float(cx) + 0.5, Float(cy) + 0.5)
+                // never in or beside a doorway, and only on open room floor
+                // (≥3 open orthogonal neighbours): a solid drum parked in a
+                // chokepoint walls off everything behind it
+                var openN = 0, doorAdj = false
+                for (dx2, dy2) in [(1, 0), (-1, 0), (0, 1), (0, -1)] where map.inBounds(cx + dx2, cy + dy2) {
+                    let ni = map.idx(cx + dx2, cy + dy2)
+                    if map.doors[ni] != nil { doorAdj = true }
+                    if map.wall[ni] == 0 { openN += 1 }
+                }
+                guard !doorAdj, openN >= 3 else { continue }
                 // the drum's own footprint must clear walls, furniture and other drums
                 let rr: Float = 0.47
                 var clear = true

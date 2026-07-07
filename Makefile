@@ -79,6 +79,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/UI/TextImage.swift \
                     Sources/Audio/AudioEngine.swift \
                     Sources/Harness/SmokeTest.swift \
+                    Sources/Harness/AudioProbe.swift \
                     Sources/Harness/Captures.swift \
                     Sources/Harness/RoomShots.swift \
                     Sources/Harness/ArtPreview.swift \

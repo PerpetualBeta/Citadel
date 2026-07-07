@@ -121,8 +121,12 @@ final class AudioEngine {
     private var elevatorOn = false
     private let burnNode = AVAudioPlayerNode()                // corpse-fire crackle bed — volume rides the nearest pyre
     private var burnOn = false
-    private let queenSnarlNode = AVAudioPlayerNode()          // dedicated Queen-snarl voice → pitch shifter
+    private let queenSnarlNode = AVAudioPlayerNode()          // dedicated Queen-snarl voice → pitch shifter (her death wail rides it too)
     private let queenPitch = AVAudioUnitTimePitch()           // pitches her snarls DOWN + varies them, per utterance
+    private let stingNode = AVAudioPlayerNode()               // dedicated long-stinger voice (the Queen's deck slam) — pool-proof
+    private let staticNode = AVAudioPlayerNode()              // the teleport static: a seamless noise loop, volume-driven per frame
+    private var staticBuf: AVAudioPCMBuffer?
+    private var staticOn = false
     // Queen-snarl pitch manipulation — she's a VAST broodmother, so each snarl is
     // pitched down and randomly varied in pitch AND tempo, turning a handful of CC0
     // samples into an endless, never-identical set. Tune to taste:
@@ -184,6 +188,10 @@ final class AudioEngine {
         synthSrc = AVAudioSourceNode { [weak self] _, _, frameCount, abl in
             guard let self = self else { return noErr }
             let out = UnsafeMutableAudioBufferListPointer(abl)[0].mData!.assumingMemoryBound(to: Float.self)
+            // The synth rides the MAIN mixer (not the three group buses), so
+            // `muted` can't gate it there — it must silence itself, or muted
+            // harness runs still speak through every sample-less sound.
+            if self.muted { out.update(repeating: 0, count: Int(frameCount)); return noErr }
             self.render(out, Int(frameCount)); return noErr
         }
 
@@ -202,6 +210,20 @@ final class AudioEngine {
         engine.attach(queenSnarlNode); engine.attach(queenPitch)
         engine.connect(queenSnarlNode, to: queenPitch, format: canonical)
         engine.connect(queenPitch, to: sfxMix, format: canonical)
+        engine.attach(stingNode); engine.connect(stingNode, to: sfxMix, format: canonical)
+        // the static bed: 2 s of generated white noise (deterministic), looped
+        engine.attach(staticNode); engine.connect(staticNode, to: sfxMix, format: canonical)
+        if let buf = AVAudioPCMBuffer(pcmFormat: canonical, frameCapacity: AVAudioFrameCount(2 * 44100)) {
+            buf.frameLength = AVAudioFrameCount(2 * 44100)
+            var noiseSeed: UInt64 = 0x9E37_79B9_7F4A_7C15
+            for i in 0..<Int(buf.frameLength) {
+                noiseSeed ^= noiseSeed << 13; noiseSeed ^= noiseSeed >> 7; noiseSeed ^= noiseSeed << 17
+                let v = (Float(noiseSeed & 0xFFFFFF) / Float(0xFFFFFF) * 2 - 1) * 0.5
+                buf.floatChannelData![0][i] = v
+                buf.floatChannelData![1][i] = v
+            }
+            staticBuf = buf
+        }
         // distant-drone chain: muffled (low-pass) + echoing (reverb) — the unseen swarm.
         distantEQ.bands[0].filterType = .lowPass
         distantEQ.bands[0].frequency = 760                  // roll off the highs → "heard through steel"
@@ -239,12 +261,39 @@ final class AudioEngine {
         // CITADEL_MUTE (headless / CI / office): never start the engine, so no
         // output device is opened and nothing can make a sound — guaranteed silent,
         // not merely volume-0. Playback helpers all guard on engine.isRunning.
-        if ProcessInfo.processInfo.environment["CITADEL_MUTE"] == nil {
+        // CITADEL_AUDIOPROBE: run the whole graph in OFFLINE manual-rendering
+        // mode — silent, deterministic, and measurable (AudioProbe pumps it).
+        if ProcessInfo.processInfo.environment["CITADEL_AUDIOPROBE"] != nil {
+            try? engine.enableManualRenderingMode(.offline, format: canonical, maximumFrameCount: 4096)
+            engine.prepare()
+            try? engine.start()
+        } else if ProcessInfo.processInfo.environment["CITADEL_MUTE"] == nil {
             engine.prepare()
             try? engine.start()
         }
         applyGains()
         if engine.isRunning { for n in sfxPool { n.play() }; queenSnarlNode.play(); distantNode.play(); for n in dripNodes + wadeNodes { n.play() } }   // idle, ready to schedule
+    }
+
+    /// AudioProbe support: pump the offline engine `seconds` forward and return
+    /// the RMS of the rendered output (0 when not in manual-rendering mode).
+    func renderOfflineRMS(seconds: Double) -> Float {
+        guard engine.manualRenderingMode == .offline else { return 0 }
+        let frames = AVAudioFrameCount(44100 * seconds)
+        guard let buf = AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: 4096) else { return 0 }
+        var acc: Double = 0, n = 0
+        var left = frames
+        while left > 0 {
+            let chunk = min(4096, left)
+            guard (try? engine.renderOffline(chunk, to: buf)) == .success else { break }
+            let ch = Int(buf.format.channelCount)
+            for c in 0..<ch {
+                let d = buf.floatChannelData![c]
+                for i in 0..<Int(buf.frameLength) { acc += Double(d[i] * d[i]); n += 1 }
+            }
+            left -= chunk
+        }
+        return n > 0 ? Float((acc / Double(n)).squareRoot()) : 0
     }
 
     private func applyGains() {
@@ -394,14 +443,50 @@ final class AudioEngine {
     }
     func enemyShot(_ k: MonsterKind) { synthEnemyShot(k) }   // vestigial — no caste fires
     func monsterPain(_ k: MonsterKind)  { play(.hiss) { self.synthMonsterPain(k) } }       // aliens hiss when hit
-    func monsterDeath(_ k: MonsterKind) { play(k == .queen ? .queenDeath : .droneDeath) { self.synthMonsterDeath(k) } }
-    /// The toppled Queen SLAMS the deck — a real recorded impact; the layered
-    /// synth thump exists only as the missing-sample fallback.
+    /// A kill cry. The Queen's 3-second death WAIL must survive the combat she
+    /// dies in: the round-robin one-shot pool recycles its node within a second
+    /// of plasma fire (AudioProbe measured the wail collapsing to silence), so
+    /// she wails through her DEDICATED snarl node — nothing can steal it, and
+    /// her snarl rightly stops the moment the death cry starts.
+    func monsterDeath(_ k: MonsterKind) {
+        if k == .queen, engine.isRunning, let buf = bank[.queenDeath]?.randomElement() {
+            queenPitch.pitch = -150                          // a touch of extra mass
+            queenPitch.rate = 0.97
+            queenSnarlNode.volume = Sound.queenDeath.gain
+            queenSnarlNode.scheduleBuffer(buf, at: nil, options: .interrupts, completionHandler: nil)
+            if !queenSnarlNode.isPlaying { queenSnarlNode.play() }
+            return
+        }
+        play(k == .queen ? .queenDeath : .droneDeath) { self.synthMonsterDeath(k) }
+    }
+    /// The toppled Queen SLAMS the deck — a real recorded impact on its own
+    /// dedicated node (the one-shot pool would recycle it mid-boom under fire);
+    /// the layered synth thump remains only as the missing-sample fallback.
     func queenFall() {
-        play(.queenFall) {
-            self.trigger(wave: AudioEngine.sine, f0: 130, f1: 45, dur: 0.35, amp: 0.50, attack: 0.004)
-            self.trigger(wave: AudioEngine.sine, f0: 60, f1: 24, dur: 1.1, amp: 0.60, attack: 0.012)
-            self.trigger(wave: AudioEngine.noise, f0: 1, dur: 0.45, amp: 0.40, attack: 0.005, lp: 0.32)
+        if engine.isRunning, let buf = bank[.queenFall]?.randomElement() {
+            stingNode.volume = Sound.queenFall.gain
+            stingNode.scheduleBuffer(buf, at: nil, options: .interrupts, completionHandler: nil)
+            if !stingNode.isPlaying { stingNode.play() }
+            return
+        }
+        trigger(wave: AudioEngine.sine, f0: 130, f1: 45, dur: 0.35, amp: 0.50, attack: 0.004)
+        trigger(wave: AudioEngine.sine, f0: 60, f1: 24, dur: 1.1, amp: 0.60, attack: 0.012)
+        trigger(wave: AudioEngine.noise, f0: 1, dur: 0.45, amp: 0.40, attack: 0.005, lp: 0.32)
+    }
+    /// The teleport's static bed: a seamless white-noise LOOP on its own node,
+    /// volume-driven per frame by the renderer (0 = silent). A generated
+    /// buffer through the sample path — synth voices proved too fragile a bed.
+    func staticBed(_ level: Float) {
+        let v = max(0, min(1, level))
+        if v <= 0.001 {
+            if staticOn { staticNode.stop(); staticOn = false }
+            return
+        }
+        staticNode.volume = 0.62 * v
+        if !staticOn, engine.isRunning, let buf = staticBuf {
+            staticNode.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+            staticNode.play()
+            staticOn = true
         }
     }
     func monsterSight(_ k: MonsterKind) { play(.hiss) { self.synthMonsterSight(k) } }       // aliens hiss when they notice you

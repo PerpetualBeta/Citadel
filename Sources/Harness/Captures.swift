@@ -25,6 +25,7 @@ enum Captures {
 
         let hs = HighScores()
         let audio = AudioEngine()
+        audio.muted = true                        // harnesses are SILENT — they get run in offices
         // render the 3-D view through the GPU renderer (every Mac has a Metal device)
         let gpu = MTLCreateSystemDefaultDevice().flatMap { GPUWorldRenderer(device: $0) }
         func draw3D(_ w: World, into c: Canvas2D) { _ = gpu?.render(w, into: c) }
