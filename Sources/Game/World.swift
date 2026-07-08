@@ -175,6 +175,7 @@ final class World {
     private let drumRefuelRange: Float = 0.55
     private let mineArmTime: Float = 0.9     // delay before a dropped mine goes live
     private let mineTriggerRange: Float = 0.7
+    private let minePickupRange: Float = 0.8 // USE this close to your own mine to defuse + reclaim it (slightly > trigger range, so it's easy to grab)
     private let mineBlastRadius: Float = 3.2 // the meanest bang the marine carries — outreaches a full drum
     private let mineBlastDamage = 130        // shapes self-splash + falloff; INSIDE the ring lethality is absolute (explode lethal:)
     // a socket holds ~3 Queen-kills of plasma (derived from her HP ÷ plasma damage)
@@ -439,10 +440,12 @@ final class World {
 
     private func turn(dt: Float, input: InputState) {
         let base: Float = 2.7 * GameSettings.shared.turnSpeed
+        let fineFrac: Float = 0.30            // controller d-pad fine-aim: a slow precision yaw (~30% of base) — perceptible but far gentler than the stick, hand-tuned like `base`
         var d: Float = 0
         if input.turnLeft { d -= base }
         if input.turnRight { d += base }
         d += input.lookX * base
+        d += input.fineAim * base * fineFrac  // d-pad left/right: slow precision yaw for targeting
         player.dir += d * dt                  // turn-right rotates toward the camera plane's +right
         player.dir += input.takeMouseTurn()   // mouse-right turns right
         // keep faceDir for the HUD
@@ -531,6 +534,23 @@ final class World {
         let pressed = input.use && !prevUse
         prevUse = input.use
         guard pressed else { return }
+        // Recover a deployed mine you're standing near: defuse it and take it
+        // back to redeploy elsewhere. Works on ARMED mines — that's the point —
+        // and it's safe (updateMines only ever triggers on monsters, never the
+        // marine, so you never set off your own mine walking up to it).
+        if let mi = nearestOwnMineIndex(within: minePickupRange) {
+            if player.mines >= Player.maxMines {
+                message("MINES FULL"); audio.locked()
+            } else {
+                let mpos = deployedMines[mi].pos
+                deployedMines.remove(at: mi)
+                player.mines += 1
+                message("MINE RECOVERED")
+                audio.pickup()
+                spawnParticles(at: mpos, n: 4, color: packRGBA(180, 184, 196), spread: 1.0, life: 0.2)
+            }
+            return
+        }
         // probe a couple of points ahead
         let dx = cos(player.dir), dy = sin(player.dir)
         for reach: Float in [0.7, 1.2, 1.7] {
@@ -591,6 +611,16 @@ final class World {
         message("MINE ARMED")
         audio.pickup()
         spawnParticles(at: drop, n: 4, color: packRGBA(180, 184, 196), spread: 1.2, life: 0.2)
+    }
+
+    /// The nearest deployed mine within `r` of the marine (for USE-to-recover), or nil.
+    private func nearestOwnMineIndex(within r: Float) -> Int? {
+        var best: Int? = nil, bestD = r
+        for (i, m) in deployedMines.enumerated() {
+            let d = vlen(m.pos - player.pos)
+            if d <= bestD { bestD = d; best = i }
+        }
+        return best
     }
 
     /// The level objective: no Queen remains that isn't a fully-burned corpse —

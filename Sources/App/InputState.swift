@@ -65,6 +65,7 @@ final class InputState {
     var moveX: Float = 0    // strafe axis (gamepad)
     var moveY: Float = 0    // forward axis (gamepad)
     var lookX: Float = 0    // right-stick turn axis (gamepad)
+    var fineAim: Float = 0  // d-pad precision-aim yaw (gamepad): -1 left, +1 right — a slow, fine turn for targeting
 
     // Weapon digit select (keyboard 1–7); 0 = none. Edge-consumed by renderer.
     var weaponDigit = 0
@@ -82,7 +83,7 @@ final class InputState {
     func resetControls() {
         kb = Controls()
         gp = Controls()
-        moveX = 0; moveY = 0; lookX = 0
+        moveX = 0; moveY = 0; lookX = 0; fineAim = 0
         weaponDigit = 0
         mouseTurn = 0
         fireArmRequired = true   // require a fresh trigger pull before the first shot

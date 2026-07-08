@@ -99,7 +99,7 @@ open .build/Citadel.app     # descend
 | **← / →** · **Mouse** | turn / look |
 | **Shift** | run (hold) |
 | **Space** | fire |
-| **E** | use / open door / hit switch |
+| **E** | use / open door / hit switch / recover a nearby mine |
 | **G** | deploy a proximity mine |
 | **1 2 3** · **[ ]** | select / cycle weapon |
 | **Tab** | automap |
@@ -112,8 +112,10 @@ open .build/Citadel.app     # descend
 Every gameplay key is **reconfigurable** from the Keyboard sheet (**K**); the
 bindings above are the defaults. A connected controller (Xbox / DualShock / any
 Extended Gamepad) is detected automatically — left stick moves, right stick
-turns, triggers and bumpers fire and switch weapons — and is **rebindable** from
-the controller sheet (**C**). Keyboard always works alongside.
+turns, triggers and bumpers fire and switch weapons, and the **d-pad left/right
+fine-aligns the crosshair** (a slow precision yaw for targeting; up/down still
+nudge forward/back) — and is **rebindable** from the controller sheet (**C**).
+Keyboard always works alongside.
 
 ### Hidden feature flags
 

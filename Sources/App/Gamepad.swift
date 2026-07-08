@@ -119,7 +119,7 @@ final class Gamepad {
     func poll(_ input: InputState) {
         guard let gc = GCController.controllers().first, let gp = gc.extendedGamepad else {
             connected = false; name = "—"
-            input.gp = .init(); input.moveX = 0; input.moveY = 0; input.lookX = 0
+            input.gp = .init(); input.moveX = 0; input.moveY = 0; input.lookX = 0; input.fineAim = 0
             stickX = 0; stickY = 0; firing = false; usePressed = false; running = false; menu = false
             return
         }
@@ -133,7 +133,7 @@ final class Gamepad {
 
         if configuring {
             // freeze gameplay input while remapping
-            input.gp = .init(); input.moveX = 0; input.moveY = 0; input.lookX = 0
+            input.gp = .init(); input.moveX = 0; input.moveY = 0; input.lookX = 0; input.fineAim = 0
             firing = false; usePressed = false; running = false; menu = false
             return
         }
@@ -143,11 +143,13 @@ final class Gamepad {
         input.moveX = abs(lx) > dz ? lx : 0
         input.moveY = abs(ly) > dz ? ly : 0
         input.lookX = abs(rx) > dz ? rx : 0
-        // also let the dpad drive discrete movement
-        if gp.dpad.left.value > 0.5 { c.strafeLeft = true }
-        if gp.dpad.right.value > 0.5 { c.strafeRight = true }
+        // D-pad up/down still nudge movement; LEFT/RIGHT now FINE-ALIGN the aim
+        // (a slow precision yaw for targeting) — the left stick remains the
+        // primary mover/strafe, so the d-pad's redundant strafe is better spent
+        // on the fine-aim the stick can't do delicately.
         if gp.dpad.up.value > 0.5 { c.forward = true }
         if gp.dpad.down.value > 0.5 { c.back = true }
+        input.fineAim = (gp.dpad.right.value > 0.5 ? 1 : 0) - (gp.dpad.left.value > 0.5 ? 1 : 0)
 
         firing = down(.fire, gp)
         usePressed = down(.use, gp)

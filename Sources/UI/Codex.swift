@@ -322,10 +322,14 @@ enum FrontEnd {
             ([.medkit], "MEDKIT", ink, "+\(ItemKind.medkitHeal) HEALTH"),
             ([.armor], "ARMOUR REPAIR", green, "+\(ItemKind.armorRepair) ARMOUR · UP TO \(ItemKind.armorRepairCap)"),
             ([.megaArmor], "FULL ARMOUR", blue, "A FRESH SUIT — ARMOUR \(Player.maxArmor)"),
-            ([.ammoCells, .ammoFuel, .ammoRockets], "AMMUNITION", ink,
-             "CELLS \(ItemKind.cellsPerPickup) · FUEL \(ItemKind.fuelPerPickup) · ROCKETS \(ItemKind.rocketsPerPickup)"),
+            // Fuel is NOT a floor pickup — it only comes from drums (see hardware
+            // below); MapGen never places an ammoFuel item, so it's not listed here.
+            ([.ammoCells, .ammoRockets], "AMMUNITION", ink,
+             "CELLS \(ItemKind.cellsPerPickup) · ROCKETS \(ItemKind.rocketsPerPickup)"),
             ([.mineCrate], "MINE CRATE", ink, "+\(ItemKind.minesPerCrate) PROXIMITY MINES"),
-            ([.keyRed, .keyBlue, .keyYellow], "KEYCARDS", ink, "EACH OPENS ITS COLOUR-SEALED DOOR"),
+            // Only red + blue keycards spawn — MapGen places ≤2 locks from
+            // KeyColor.allCases[0…1]; yellow (index 2) is never reached.
+            ([.keyRed, .keyBlue], "KEYCARDS", ink, "EACH OPENS ITS COLOUR-SEALED DOOR"),
         ]
         var y = uiS(86)
         for r in rows {

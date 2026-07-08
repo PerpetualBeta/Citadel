@@ -121,9 +121,10 @@ final class AudioEngine {
     private var elevatorOn = false
     private let burnNode = AVAudioPlayerNode()                // corpse-fire crackle bed — volume rides the nearest pyre
     private var burnOn = false
-    private let queenSnarlNode = AVAudioPlayerNode()          // dedicated Queen-snarl voice → pitch shifter (her death wail rides it too)
+    private let queenSnarlNode = AVAudioPlayerNode()          // dedicated Queen-snarl voice → pitch shifter
     private let queenPitch = AVAudioUnitTimePitch()           // pitches her snarls DOWN + varies them, per utterance
     private let stingNode = AVAudioPlayerNode()               // dedicated long-stinger voice (the Queen's deck slam) — pool-proof
+    private let queenDeathNode = AVAudioPlayerNode()          // dedicated Queen DEATH-WAIL voice — its OWN node, never the snarl node, so a snarl in flight can't swallow the death cry (she must ALWAYS howl)
     private let staticNode = AVAudioPlayerNode()              // the teleport static: a seamless noise loop, volume-driven per frame
     private var staticBuf: AVAudioPCMBuffer?
     private var staticOn = false
@@ -211,6 +212,7 @@ final class AudioEngine {
         engine.connect(queenSnarlNode, to: queenPitch, format: canonical)
         engine.connect(queenPitch, to: sfxMix, format: canonical)
         engine.attach(stingNode); engine.connect(stingNode, to: sfxMix, format: canonical)
+        engine.attach(queenDeathNode); engine.connect(queenDeathNode, to: sfxMix, format: canonical)
         // the static bed: 2 s of generated white noise (deterministic), looped
         engine.attach(staticNode); engine.connect(staticNode, to: sfxMix, format: canonical)
         if let buf = AVAudioPCMBuffer(pcmFormat: canonical, frameCapacity: AVAudioFrameCount(2 * 44100)) {
@@ -272,7 +274,7 @@ final class AudioEngine {
             try? engine.start()
         }
         applyGains()
-        if engine.isRunning { for n in sfxPool { n.play() }; queenSnarlNode.play(); distantNode.play(); for n in dripNodes + wadeNodes { n.play() } }   // idle, ready to schedule
+        if engine.isRunning { for n in sfxPool { n.play() }; queenSnarlNode.play(); queenDeathNode.play(); distantNode.play(); for n in dripNodes + wadeNodes { n.play() } }   // idle, ready to schedule
     }
 
     /// AudioProbe support: pump the offline engine `seconds` forward and return
@@ -450,11 +452,14 @@ final class AudioEngine {
     /// her snarl rightly stops the moment the death cry starts.
     func monsterDeath(_ k: MonsterKind) {
         if k == .queen, engine.isRunning, let buf = bank[.queenDeath]?.randomElement() {
-            queenPitch.pitch = -150                          // a touch of extra mass
-            queenPitch.rate = 0.97
-            queenSnarlNode.volume = Sound.queenDeath.gain
-            queenSnarlNode.scheduleBuffer(buf, at: nil, options: .interrupts, completionHandler: nil)
-            if !queenSnarlNode.isPlaying { queenSnarlNode.play() }
+            // Her death wail MUST always sound — it's the reward for a rare, hard
+            // kill. It rides its OWN dedicated node (never the snarl node), so a
+            // snarl in flight when she dies — she snarls whenever she's near/seen,
+            // i.e. exactly when you finish her — can't pre-empt or swallow the cry.
+            // (The earlier shared-node version dropped the wail intermittently.)
+            queenDeathNode.volume = Sound.queenDeath.gain
+            queenDeathNode.scheduleBuffer(buf, at: nil, options: .interrupts, completionHandler: nil)
+            if !queenDeathNode.isPlaying { queenDeathNode.play() }
             return
         }
         play(k == .queen ? .queenDeath : .droneDeath) { self.synthMonsterDeath(k) }
