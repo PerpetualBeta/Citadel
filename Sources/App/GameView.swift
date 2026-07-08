@@ -19,7 +19,7 @@ enum VK {
 }
 
 enum KeyAction: String, CaseIterable {
-    case forward, back, strafeLeft, strafeRight, turnLeft, turnRight, run, fire, use, weaponNext, weaponPrev
+    case forward, back, strafeLeft, strafeRight, turnLeft, turnRight, run, fire, use, deployMine, weaponNext, weaponPrev
 
     var title: String {
         switch self {
@@ -32,6 +32,7 @@ enum KeyAction: String, CaseIterable {
         case .run: return "RUN (HOLD)"
         case .fire: return "FIRE"
         case .use: return "USE / OPEN"
+        case .deployMine: return "DEPLOY MINE"
         case .weaponNext: return "NEXT WEAPON"
         case .weaponPrev: return "PREV WEAPON"
         }
@@ -47,6 +48,7 @@ enum KeyAction: String, CaseIterable {
         case .run: return VK.shift
         case .fire: return VK.space
         case .use: return VK.e
+        case .deployMine: return VK.g
         case .weaponNext: return VK.rightBracket
         case .weaponPrev: return VK.leftBracket
         }
@@ -152,7 +154,6 @@ final class GameView: MTKView {
         case VK.esc: input.kb.cancel = true
         case VK.b: input.kb.briefing = true
         case VK.i: input.kb.intel = true
-        case VK.g: input.kb.deployMine = true
         case VK.f: if FeatureFlags.screenshotKey { input.kb.screenshot = true }
         case VK.ret, VK.space: input.kb.restart = true
         case VK.one: input.weaponDigit = 1
@@ -182,7 +183,6 @@ final class GameView: MTKView {
         case VK.esc: input.kb.cancel = false
         case VK.b: input.kb.briefing = false
         case VK.i: input.kb.intel = false
-        case VK.g: input.kb.deployMine = false
         case VK.f: input.kb.screenshot = false
         case VK.ret, VK.space: input.kb.restart = false
         default: super.keyUp(with: event)
@@ -207,6 +207,7 @@ final class GameView: MTKView {
         case .run: input.kb.run = down
         case .fire: input.kb.fire = down
         case .use: input.kb.use = down
+        case .deployMine: input.kb.deployMine = down
         case .weaponNext: input.kb.weaponNext = down
         case .weaponPrev: input.kb.weaponPrev = down
         }

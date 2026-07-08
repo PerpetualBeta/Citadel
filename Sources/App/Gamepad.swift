@@ -9,7 +9,7 @@ import Foundation
 import GameController
 
 enum PadAction: String, CaseIterable {
-    case fire, use, run, weaponNext, weaponPrev, pause, map, screenshot
+    case fire, use, run, weaponNext, weaponPrev, deployMine, pause, map, screenshot
 
     var title: String {
         switch self {
@@ -18,6 +18,7 @@ enum PadAction: String, CaseIterable {
         case .run: return "RUN (HOLD)"
         case .weaponNext: return "NEXT WEAPON"
         case .weaponPrev: return "PREV WEAPON"
+        case .deployMine: return "DEPLOY MINE"
         case .pause: return "PAUSE"
         case .map: return "AUTOMAP"
         case .screenshot: return "SCREENSHOT"
@@ -31,6 +32,7 @@ enum PadAction: String, CaseIterable {
         case .run: return "LB"
         case .weaponNext: return "RB"
         case .weaponPrev: return "LT"
+        case .deployMine: return "L3"
         case .pause: return "MENU"
         case .map: return "X"
         case .screenshot: return "Y"
@@ -38,7 +40,7 @@ enum PadAction: String, CaseIterable {
     }
 
     static var activeCases: [PadAction] {
-        var c: [PadAction] = [.fire, .use, .run, .weaponNext, .weaponPrev, .pause, .map]
+        var c: [PadAction] = [.fire, .use, .run, .weaponNext, .weaponPrev, .deployMine, .pause, .map]
         if FeatureFlags.screenshotKey { c.append(.screenshot) }
         return c
     }
@@ -162,7 +164,7 @@ final class Gamepad {
         if down(.weaponNext, gp) { c.weaponNext = true }
         if down(.weaponPrev, gp) { c.weaponPrev = true }
         if down(.map, gp) { c.map = true }
-        if (gp.leftThumbstickButton?.value ?? 0) > 0.5 { c.deployMine = true }   // L3 drops a mine
+        if down(.deployMine, gp) { c.deployMine = true }   // default L3 — drops a mine (rebindable)
         if gp.buttonB.value > 0.5 { c.cancel = true }
         if FeatureFlags.screenshotKey && down(.screenshot, gp) { c.screenshot = true }
         input.gp = c

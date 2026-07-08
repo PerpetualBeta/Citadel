@@ -189,8 +189,8 @@ enum SmokeTest {
         // trigger ring (a drum boxed in by dorm-bed colliders is fuel the
         // player can see and never have; World relocates those at load)
         var dryDrums = 0, drumsChecked = 0
-        for sd in UInt64(1)...12 {
-            for lv in [3, 5] {
+        for sd in UInt64(1)...20 {
+            for lv in [3, 5, 7] {
                 let wd = World(level: lv, colonyIndex: Int(sd % 6), seed: sd &* 5077 &+ UInt64(lv))
                 for d in wd.drums {
                     // fuel-STORE drums are an intentional stack (pump the front,
@@ -201,7 +201,9 @@ enum SmokeTest {
                 }
             }
         }
-        check(dryDrums == 0, "all \(drumsChecked) drums across a 24-map sweep are reachable (\(dryDrums) boxed in)")
+        // Survivors must ALL be reachable: World relocates a boxed-in drum, and
+        // drops any it can't place reachably (better gone than teasing).
+        check(dryDrums == 0, "all \(drumsChecked) drums across a 60-map sweep are reachable (\(dryDrums) boxed in)")
 
         // the citadel's LAST floor exits by TELEPORTER — an open pad (no door),
         // wearing the pad flat — and the first floor of the NEXT citadel receives

@@ -1665,18 +1665,34 @@ final class World {
     /// furniture can enclose a standable pocket no path reaches (a drum boxed
     /// in by bunks read as "inaccessible fuel" in playtest), so the whole
     /// approach LANE out to open floor must be standable too.
+    /// A genuinely-open floor cell: walkable, all four orthogonal neighbours
+    /// walkable, and clear of furniture — real room floor, not a nook.
+    private func openFloorCell(_ cx: Int, _ cy: Int) -> Bool {
+        guard map.inBounds(cx, cy), map.wall[map.idx(cx, cy)] == 0, !map.hazard[map.idx(cx, cy)] else { return false }
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            guard map.inBounds(cx + dx, cy + dy), map.wall[map.idx(cx + dx, cy + dy)] == 0 else { return false }
+        }
+        return !blockedBySolidProp(Float(cx) + 0.5, Float(cy) + 0.5, 0.26)
+    }
+
+    /// Can the marine actually walk up to this drum and refuel? True only if a
+    /// stand point within refuel range connects, over continuously-standable
+    /// floor, to the open room. The old check sampled a radial lane at coarse
+    /// 0.35 steps and false-positived — a diagonal slipped BETWEEN two bed
+    /// colliders at the sample points while the real path stayed blocked, so a
+    /// boxed-in drum read as reachable and never got relocated. Now: fine 0.18
+    /// steps from just outside the drum (0.72 < the 0.97 refuel reach) straight
+    /// out, and the lane must stay standable until it hits genuinely-open floor.
     func drumReachable(_ pos: SIMD2<Float>) -> Bool {
-        for k in 0..<16 {
-            let a = Float(k) / 16 * 2 * .pi
+        for k in 0..<24 {
+            let a = Float(k) / 24 * 2 * .pi
             let dir = SIMD2<Float>(cos(a), sin(a))
-            ring: for r: Float in [0.72, 0.90] {
-                var step = r
-                while step <= r + 0.71 {
-                    let p = pos + dir * step
-                    if !canStand(p.x, p.y) { continue ring }
-                    step += 0.35
-                }
-                return true
+            var step: Float = 0.72
+            while step <= 2.4 {
+                let p = pos + dir * step
+                if !canStand(p.x, p.y) { break }                   // lane blocked — try another heading
+                if openFloorCell(Int(p.x), Int(p.y)) { return true }   // reached the open room: a real approach
+                step += 0.18
             }
         }
         return false
@@ -1686,6 +1702,7 @@ final class World {
         // Fuel-STORE drums are exempt: the chamber is an intentional stack —
         // you pump what you can reach from the doorway and shoot the rest.
         // Relocating them one by one emptied whole stores into nearby rooms.
+        var unplaceable: [Int] = []
         for i in drums.indices
         where !map.fuelStore.contains(map.idx(Int(drums[i].pos.x), Int(drums[i].pos.y)))
               && !drumReachable(drums[i].pos) {
@@ -1718,8 +1735,12 @@ final class World {
                 let d = vlen(c - home)
                 if d < bestD { bestD = d; best = c }
             } }
-            if let b = best { drums[i].pos = b }
+            if let b = best { drums[i].pos = b } else { unplaceable.append(i) }
         }
+        // A drum with nowhere reachable to go (a room packed with bunks) is pure
+        // frustration — visible, promising fuel, never usable. Drop it rather
+        // than leave it teasing. Rare; remove high-index-first to keep indices valid.
+        for i in unplaceable.sorted(by: >) { drums.remove(at: i) }
     }
 
     private func refuelAtDrums(dt: Float, audio: AudioEngine) {

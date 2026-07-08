@@ -43,7 +43,7 @@ final class KeyboardSheet: NSObject {
 
     private init(parent: NSWindow) {
         self.parent = parent
-        sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 440),
+        sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 480),
                          styleMask: [.titled], backing: .buffered, defer: false)
         super.init()
         build()

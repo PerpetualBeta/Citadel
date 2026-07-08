@@ -37,7 +37,7 @@ final class ControllerSheet: NSObject {
 
     private init(gamepad: Gamepad, parent: NSWindow) {
         self.gamepad = gamepad; self.parent = parent
-        sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 400),
+        sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 470, height: 510),
                          styleMask: [.titled], backing: .buffered, defer: false)
         super.init()
         build()
@@ -47,8 +47,12 @@ final class ControllerSheet: NSObject {
         let title = NSTextField(labelWithString: "CONTROLLER")
         title.font = monoC(15, .bold)
         statusLabel.font = monoC(11, .semibold)
-        let hint = NSTextField(labelWithString: "Left stick moves · right stick turns. Click a binding, then press a button.")
+        // Wrapping label + a width bound so the instruction never clips at the
+        // window edge (it did as a single-line label).
+        let hint = NSTextField(wrappingLabelWithString: "Left stick moves · right stick turns. Click a binding, then press the control you want.")
         hint.font = monoC(9); hint.textColor = .secondaryLabelColor
+        hint.maximumNumberOfLines = 2
+        hint.widthAnchor.constraint(equalToConstant: 412).isActive = true
 
         var rows: [NSView] = [title, statusLabel, hint]
         for (i, action) in PadAction.activeCases.enumerated() {
