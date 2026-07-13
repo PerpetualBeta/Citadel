@@ -1447,6 +1447,11 @@ enum GPURaymarch {
         col = pow(clamp(col, 0.0, 1.0), float3(1.0 / 2.2));
         float2 d = uv * 2.0 - 1.0;
         col *= 1.0 - 0.34 * dot(d, d);                           // vignette
+        // film grain: a subtle, animated luminance dither so the clean SDF surfaces
+        // read grittier and less "plastic". Deliberately gentle (U.ro.w = time,
+        // so the pattern shifts each frame). Monochrome = a filmic grain, not colour noise.
+        float g = fract(sin(dot(float2(gid) + fract(U.ro.w) * 137.0, float2(12.9898, 78.233))) * 43758.5453) - 0.5;
+        col = clamp(col + g * 0.10, 0.0, 1.0);
         ldr.write(float4(col, 1.0), gid);
     }
     """
@@ -1820,17 +1825,26 @@ enum GPURaymarch {
         let black = SIMD3<Float>(0.07, 0.07, 0.08)
         let d: Float = 0.0025                                   // crisp boundary for surface detail
         switch kind {
-        case .stim, .medkit:                                   // white briefcase + bold red cross on top & front
+        case .stim:                                            // slim auto-injector: white barrel + GREEN chem charge & cross — a quick shot, deliberately NOT the red-cross case
+            let barrel = white
+            let chem = green
+            return [iCylinder(SIMD3(0, 0.26, 0), r: 0.055, halfH: 0.15, round: 0.012, barrel, 0.004),   // glass barrel, upright
+                    iCylinder(SIMD3(0, 0.20, 0), r: 0.059, halfH: 0.07, round: 0.004, chem, d),          // the charge — green fluid (protrudes a hair)
+                    iCylinder(SIMD3(0, 0.435, 0), r: 0.085, halfH: 0.014, round: 0.006, steel, 0.004),   // plunger flange (thumb rest)
+                    iBox(SIMD3(0, 0.475, 0), SIMD3(0.022, 0.03, 0.022), 0.008, steel, 0.004),            // plunger rod
+                    iCone(SIMD3(0, 0.11, 0), SIMD3(0, 0.0, 0), 0.028, 0.0, steel),                       // needle: hub → point, down to the floor
+                    iBox(SIMD3(0, 0.34, 0.056), SIMD3(0.05, 0.011, 0.012), 0.003, chem, d),              // green cross bar (front, on the white)
+                    iBox(SIMD3(0, 0.34, 0.056), SIMD3(0.011, 0.032, 0.012), 0.003, chem, d)]             // green cross upright (front)
+        case .medkit:                                          // white briefcase + bold red cross on top & front (the big heal)
             let body = white
             let cross = red
-            let s: Float = kind == .medkit ? 1.0 : 0.78
-            let bx = 0.26 * s, by = 0.12 * s, bz = 0.15 * s, cy = 0.17 * s
+            let bx: Float = 0.26, by: Float = 0.12, bz: Float = 0.15, cy: Float = 0.17
             return [iBox(SIMD3(0, cy, 0), SIMD3(bx, by, bz), 0.01, body, 0.004),                      // case (wide, flat — briefcase)
-                    iBox(SIMD3(0, cy + by + 0.022 * s, -bz * 0.62), SIMD3(0.085 * s, 0.02 * s, 0.018 * s), 0.012, steel, 0.004),  // handle (back edge, clear of cross)
-                    iBox(SIMD3(0, cy + by, 0), SIMD3(0.12 * s, 0.022 * s, 0.038 * s), 0.004, cross, d),// top cross bar — always read from above
-                    iBox(SIMD3(0, cy + by, 0), SIMD3(0.038 * s, 0.022 * s, 0.10 * s), 0.004, cross, d),// top cross bar
-                    iBox(SIMD3(0, cy, bz), SIMD3(0.11 * s, 0.032 * s, 0.022 * s), 0.004, cross, d),    // front cross
-                    iBox(SIMD3(0, cy, bz), SIMD3(0.032 * s, 0.10 * s, 0.022 * s), 0.004, cross, d)]    // front cross
+                    iBox(SIMD3(0, cy + by + 0.022, -bz * 0.62), SIMD3(0.085, 0.02, 0.018), 0.012, steel, 0.004),  // handle (back edge, clear of cross)
+                    iBox(SIMD3(0, cy + by, 0), SIMD3(0.12, 0.022, 0.038), 0.004, cross, d),            // top cross bar — always read from above
+                    iBox(SIMD3(0, cy + by, 0), SIMD3(0.038, 0.022, 0.10), 0.004, cross, d),            // top cross bar
+                    iBox(SIMD3(0, cy, bz), SIMD3(0.11, 0.032, 0.022), 0.004, cross, d),                // front cross
+                    iBox(SIMD3(0, cy, bz), SIMD3(0.032, 0.10, 0.022), 0.004, cross, d)]                // front cross
         case .armor, .megaArmor:                               // chest plate + shoulders + chevron
             let c = kind == .megaArmor ? blue : green
             return [iBox(SIMD3(0, 0.26, 0), SIMD3(0.21, 0.24, 0.10), 0.03, c, 0.006),                 // breastplate
@@ -2082,7 +2096,7 @@ enum GPURaymarch {
         let housing = SIMD3<Float>(0.17, 0.19, 0.23), face = SIMD3<Float>(0.07, 0.08, 0.10)
         let lit = SIMD3<Float>(0.40, 1.45, 1.70), off = SIMD3<Float>(0.10, 0.13, 0.15)
         // drained: every lamp on the panel turns RED until the reserve re-arms
-        let redLit = SIMD3<Float>(1.35, 0.16, 0.10), redOff = SIMD3<Float>(0.34, 0.05, 0.04)
+        let redLit = SIMD3<Float>(3.30, 0.16, 0.10), redOff = SIMD3<Float>(0.34, 0.05, 0.04)   // over-bright so the drained indicator still self-glows: red carries low luminance, so it must be high to cross the emissive gate — keeps the panel lit rather than winking out (which read as a local "dim")
         let frac = max(0, min(1, chargeFrac))
         let cy: Float = 0.52                                                                   // chest height
         var out: [GShape] = [

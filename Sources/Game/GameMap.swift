@@ -105,20 +105,30 @@ final class GameMap {
         return nil
     }
 
-    func update(dt: Float, occupied: Set<Int>) {
+    /// Advances every door's open/close animation. Returns the cells whose doors
+    /// BEGAN auto-closing this tick, so World can sound them (World decides
+    /// audibility by distance and skips the elevator's own doors).
+    func update(dt: Float, occupied: Set<Int>) -> [Int] {
         let speed: Float = 2.4
+        var beganClosing: [Int] = []
         for (i, var d) in doors {
             if d.opening {
                 d.open = min(1, d.open + speed * dt)
                 d.stay -= dt
                 if d.stay <= 0 && !occupied.contains(i) {
                     d.opening = false       // begin closing
+                    beganClosing.append(i)
                 }
             } else if d.open > 0 {
-                if occupied.contains(i) { d.stay = 1 }   // hold open while blocked
+                // Someone's in the doorway (IR sensor). Don't merely freeze a
+                // half-shut door: actively RE-OPEN it — a frozen partial door
+                // reads as open (part < passThreshold) yet blocks shots and steps,
+                // trapping the marine. Mirrors the elevator's step-back reopen.
+                if occupied.contains(i) { d.opening = true; d.stay = max(d.stay, 1) }
                 else { d.open = max(0, d.open - speed * dt) }
             }
             doors[i] = d
         }
+        return beganClosing
     }
 }

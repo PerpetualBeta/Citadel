@@ -498,8 +498,7 @@ enum FrontEnd {
         if qualifies && input.nameEntryActive {
             c.labelCentered("A NEW RECORD — ENTER YOUR NAME", uiS(286), size: uiSf(20), color: packRGBA(120, 230, 150), weight: .semibold)
             let name = input.nameBuffer.isEmpty ? " " : input.nameBuffer
-            let cursor = Int(t * 2) % 2 == 0 ? "_" : " "
-            c.drawUnicodeCentered(name + cursor, uiS(310), fontSize: uiSf(40), 1, 1, 0.65)
+            c.drawNameEntry(name, showCaret: Int(t * 2) % 2 == 0, uiS(310), fontSize: uiSf(40), 1, 1, 0.65)
             c.labelCentered("[RETURN]", uiS(362), size: uiSf(18), color: dim, weight: .medium)
         } else if Int(t * 2) % 2 == 0 {
             c.labelCentered("PRESS  \(confirmName(pad: pad))", uiS(300), size: uiSf(28), color: amber, weight: .bold)

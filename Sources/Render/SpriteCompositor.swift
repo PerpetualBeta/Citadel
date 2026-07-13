@@ -332,13 +332,16 @@ struct SpriteCompositor {
                 // spark: a sharp, tiny, bright glint (1–2px, flat additive — NOT a
                 // soft orb) with a short streak trailing its arc through the air
                 let sa = lifeF * pa.maxAlpha
-                let sr = min(2, r)
+                let sr = min(1, r)              // tight, sharp core — not a soft orb
                 for oy in -sr...sr { for ox in -sr...sr {
                     if ox * ox + oy * oy > sr * sr + 1 { continue }
                     c.blendAdd(screenX + ox, screenY + oy, pa.color, sa)
                 }}
-                c.blendAdd(screenX, screenY - sr - 1, pa.color, sa * 0.5)        // short trail
-                c.blendAdd(screenX, screenY - sr - 2, pa.color, sa * 0.28)
+                // a longer comet streak trailing up behind the falling glint, so a
+                // burst reads clearly as a shower of flying sparks (was a faint dot)
+                for t in 1...6 {
+                    c.blendAdd(screenX, screenY - sr - t, pa.color, sa * (1 - Float(t) / 7))
+                }
             }
             return
         }

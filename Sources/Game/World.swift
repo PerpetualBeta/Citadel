@@ -140,6 +140,7 @@ final class World {
     var blasts: [(pos: SIMD2<Float>, t: Float, col: SIMD3<Float>)] = []   // impact flashes (renderer light), coloured per cause
     private var steamTimer: Float = 0
     private var sparkTimer: Float = 0
+    private var faultAmbTimer: Float = 12        // countdown to the next distant electric-shock (damaged-building ambience)
     // ── the Queen ──
     private var queenBreedCD: Float = 60         // seconds to her next spawn
     private var queenHintCD: Float = 0           // throttle for the "plasma only" hint
@@ -188,6 +189,7 @@ final class World {
     // in ~2 minutes (derived, not magic). Far slower than it dispenses.
     private var socketRegenRate: Float { Float(socketCharge) / 120 }
     private let socketRange: Float = 0.8
+    private let doorHeardRange: Float = 8   // cells — a door slide carries about this far (the near-audio range), so you hear the door you came through seal behind you, not distant ones
     private var prevDeploy = false           // edge-track the mine-deploy button
     private var refueling = false            // edge-track standing at a drum (for the message)
     private var recharging = false           // edge-track standing in a socket (for the message)
@@ -404,7 +406,10 @@ final class World {
         if elevatorPhase == .closing || elevatorPhase == .descending {
             occupied.remove(map.exitCell)
         }
-        map.update(dt: dt, occupied: occupied)
+        for ci in map.update(dt: dt, occupied: occupied) where ci != map.exitCell && ci != map.entryCell {
+            let dc = SIMD2(Float(ci % map.w) + 0.5, Float(ci / map.w) + 0.5)      // door cell centre
+            if vlen(dc - player.pos) < doorHeardRange { audio.doorClose() }        // the door you came through seals audibly behind you
+        }
         updateElevator(dt: dt, input: input, audio: audio)
         updateTeleporter(dt: dt, input: input, audio: audio)
 
@@ -433,6 +438,8 @@ final class World {
         emitQueenDrips(dt: dt)
         emitWaterDrips(dt: dt, audio: audio)
         emitSparks(dt: dt)
+        faultAmbTimer -= dt
+        if faultAmbTimer <= 0 { audio.distantFault(); faultAmbTimer = rng.f(25, 60) }   // occasional far-off electrical crack
         map.visited[map.idx(Int(player.pos.x), Int(player.pos.y))] = true
     }
 
@@ -1680,9 +1687,12 @@ final class World {
     /// floor, to the open room. The old check sampled a radial lane at coarse
     /// 0.35 steps and false-positived — a diagonal slipped BETWEEN two bed
     /// colliders at the sample points while the real path stayed blocked, so a
-    /// boxed-in drum read as reachable and never got relocated. Now: fine 0.18
-    /// steps from just outside the drum (0.72 < the 0.97 refuel reach) straight
-    /// out, and the lane must stay standable until it hits genuinely-open floor.
+    /// boxed-in drum read as reachable and never got relocated. The fix: march from
+    /// just outside the drum (0.72 — clear of its own solid collider, inside the
+    /// 0.97 refuel reach) and only accept open floor found PAST the corner pocket
+    /// (step >= 0.95). A walkable pocket right beside the drum — e.g. between two
+    /// beds at right angles — no longer counts, so the lane must clear the pinch
+    /// (where `canStand` breaks) before it can reach genuinely-open floor.
     func drumReachable(_ pos: SIMD2<Float>) -> Bool {
         for k in 0..<24 {
             let a = Float(k) / 24 * 2 * .pi
@@ -1690,8 +1700,8 @@ final class World {
             var step: Float = 0.72
             while step <= 2.4 {
                 let p = pos + dir * step
-                if !canStand(p.x, p.y) { break }                   // lane blocked — try another heading
-                if openFloorCell(Int(p.x), Int(p.y)) { return true }   // reached the open room: a real approach
+                if !canStand(p.x, p.y) { break }                                     // lane pinched/walled — try another heading
+                if step >= 0.95 && openFloorCell(Int(p.x), Int(p.y)) { return true } // open floor reached past the corner, lane clear the whole way
                 step += 0.18
             }
         }
@@ -1752,14 +1762,13 @@ final class World {
                     let take = min(max(1, Int(drumRefuelRate * dt)), min(cap - player.ammo[fi], drums[i].fuel))
                     if take > 0 {
                         player.ammo[fi] += take; drums[i].fuel -= take
-                        player.pickupFlash = max(player.pickupFlash, 0.18)
                         didRefuel = true
                     }
                     break                                           // one drum at a time
                 }
             }
         }
-        if didRefuel && !refueling { message("REFUELLING FROM THE DRUM"); audio.pickup() }
+        if didRefuel && !refueling { message("REFUELLING FROM THE DRUM"); audio.pickup(); player.pickupFlash = max(player.pickupFlash, 0.18) }   // one blink on plug-in, NOT a per-frame lift — a sustained flash made the whole screen visibly "dim" the instant the reserve ran dry
         refueling = didRefuel
     }
 
@@ -1801,7 +1810,6 @@ final class World {
                 let take = min(max(1, Int(socketRechargeRate * dt)), min(cap - player.ammo[ci], sockets[i].charge))
                 if take > 0 {
                     player.ammo[ci] += take; sockets[i].charge -= take
-                    player.pickupFlash = max(player.pickupFlash, 0.18)
                     didCharge = true
                     if sockets[i].charge <= 0 {
                         sockets[i].depleted = true
@@ -1811,7 +1819,7 @@ final class World {
                 }
             }
         }
-        if didCharge && !recharging { message("RECHARGING PLASMA CELLS"); audio.pickup() }
+        if didCharge && !recharging { message("RECHARGING PLASMA CELLS"); audio.pickup(); player.pickupFlash = max(player.pickupFlash, 0.18) }   // flash once on plug-in (see refuelAtDrums — sustained lift caused the drain "dim")
         recharging = didCharge || standingAtDry     // standing at a dry panel isn't a fresh plug-in
     }
 
@@ -2099,24 +2107,24 @@ final class World {
         if sparkTimer > 0 { return }
         sparkTimer = 0.07
         let pr: Float = 11
-        var made = 0
         for v in sparkSites {
-            if made >= 5 { break }
             if abs(v.pos.x - player.pos.x) > pr || abs(v.pos.y - player.pos.y) > pr { continue }
-            if rng.f(0, 1) > 0.5 { continue }                       // bursty, not constant
-            for _ in 0..<rng.i(1, 3) {
-                particles.append(Particle(pos: v.pos + SIMD2(rng.f(-0.05, 0.05), rng.f(-0.05, 0.05)),
-                                          vel: v.dir * rng.f(0.4, 1.2) + SIMD2(rng.f(-0.7, 0.7), rng.f(-0.7, 0.7)),
-                                          life: rng.f(0.12, 0.3), maxLife: 0.3, color: packRGBA(255, 238, 185),
-                                          size: rng.f(1.5, 3.2), height: rng.f(0.45, 0.72), rise: rng.f(-1.8, -0.5),
-                                          maxAlpha: 0.95, fire: true))      // additive coloured glint, falls
+            // A faulty panel/light doesn't trickle constantly — it sits dark, then
+            // every few seconds throws a SHOWER of sparks, then goes quiet again.
+            if rng.f(0, 1) < 0.045 {
+                for _ in 0..<rng.i(20, 35) {                        // a big, unmistakable shower
+                    particles.append(Particle(pos: v.pos + SIMD2(rng.f(-0.06, 0.06), rng.f(-0.06, 0.06)),
+                                              vel: v.dir * rng.f(0.6, 2.8) + SIMD2(rng.f(-1.6, 1.6), rng.f(-1.6, 1.6)),
+                                              life: rng.f(0.25, 0.75), maxLife: 0.75, color: packRGBA(255, 246, 214),
+                                              size: rng.f(0.9, 2.0), height: rng.f(0.40, 0.82), rise: rng.f(-3.0, -0.5),
+                                              maxAlpha: 1.0, fire: true))        // sharp, energetic glints spraying out
+                }
             }
-            if rng.f(0, 1) < 0.12 {                                 // occasional smoke wisp
+            if rng.f(0, 1) < 0.02 {                                 // occasional smoke wisp off a dead panel
                 particles.append(Particle(pos: v.pos, vel: v.dir * 0.1, life: rng.f(0.9, 1.5), maxLife: 1.5,
                                           color: packRGBA(58, 56, 60), size: rng.f(8, 13), height: 0.62,
                                           rise: rng.f(0.4, 0.8), maxAlpha: 0.28))
             }
-            made += 1
         }
     }
 

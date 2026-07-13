@@ -309,6 +309,19 @@ final class Canvas2D {
         drawTextImage(bmp, (width - bmp.w) / 2, y)
     }
 
+    /// A centred text-entry field with a blinking caret. The caret's slot is
+    /// reserved in the centring at ALL times, and the name is placed at a fixed
+    /// left origin independent of the caret — so toggling the caret never
+    /// re-lays-out (nudges) the name. Only a newly typed letter re-centres it.
+    func drawNameEntry(_ name: String, showCaret: Bool, _ y: Int, fontSize: CGFloat,
+                       _ r: CGFloat, _ g: CGFloat, _ b: CGFloat) {
+        guard let nameBmp = TextImage.rasterize(name, fontSize: fontSize, r: r, g: g, b: b) else { return }
+        let caret = TextImage.rasterize("_", fontSize: fontSize, r: r, g: g, b: b)
+        let originX = (width - (nameBmp.w + (caret?.w ?? 0))) / 2   // centre the whole name+caret block
+        drawTextImage(nameBmp, originX, y)                          // name at a fixed origin — never moves on blink
+        if showCaret, let caret { drawTextImage(caret, originX + nameBmp.w, y) }
+    }
+
     // ── Core Text labels (crisp, cached) ───────────────────────────────────
 
     func labelWidth(_ s: String, size: CGFloat, weight: NSFont.Weight = .regular, mono: Bool = false) -> Int {

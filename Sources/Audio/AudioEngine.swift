@@ -40,6 +40,7 @@ final class AudioEngine {
         case queenFall             // QUEEN ONLY: the toppled brood-mother slams the deck
         case explosion, doorOpen, locked, pickup, secret, exit, playerPain, playerDeath, wade
         case drip                  // ceiling water onto the deep floors' pools (panned per-site, see drip(volume:pan:))
+        case fault                 // distant electric-shock ambience — occasional crack of a shorting circuit (see distantFault)
         case musicTitle, bedDrone, bedPulse, bedTension, bedSwarm
         case elevatorMove, elevatorDoor, elevatorShut
 
@@ -63,6 +64,7 @@ final class AudioEngine {
             case .playerDeath: return "player_death"
             case .wade: return "wade"
             case .drip: return "drip"
+            case .fault: return "fault"
             case .musicTitle: return "music_title"
             case .bedDrone: return "bed_drone"
             case .bedPulse: return "bed_pulse"
@@ -77,7 +79,7 @@ final class AudioEngine {
         var bus: Int {
             switch self {
             case .musicTitle: return 0
-            case .bedDrone, .bedPulse, .bedTension, .bedSwarm, .drip: return 2
+            case .bedDrone, .bedPulse, .bedTension, .bedSwarm, .drip, .fault: return 2
             default: return 1
             }
         }
@@ -100,6 +102,7 @@ final class AudioEngine {
             case .elevatorDoor, .elevatorShut: return 0.85
             case .wade: return 0.5
             case .drip: return 0.55
+            case .fault: return 0.7
             default: return 0.8
             }
         }
@@ -123,8 +126,12 @@ final class AudioEngine {
     private var burnOn = false
     private let queenSnarlNode = AVAudioPlayerNode()          // dedicated Queen-snarl voice → pitch shifter
     private let queenPitch = AVAudioUnitTimePitch()           // pitches her snarls DOWN + varies them, per utterance
-    private let stingNode = AVAudioPlayerNode()               // dedicated long-stinger voice (the Queen's deck slam) — pool-proof
-    private let queenDeathNode = AVAudioPlayerNode()          // dedicated Queen DEATH-WAIL voice — its OWN node, never the snarl node, so a snarl in flight can't swallow the death cry (she must ALWAYS howl)
+    private let queenDeathNode = AVAudioPlayerNode()          // dedicated Queen DEATH-WAIL voice — its own node so nothing in the pool can steal the cry
+    private let stingNode = AVAudioPlayerNode()               // dedicated Queen deck-slam voice
+    private let faultNode = AVAudioPlayerNode()               // distant electric-shock ambience → varispeed → lowpass → reverb → ambient bus
+    private let faultVari = AVAudioUnitVarispeed()            // per-hit pitch/pace tweak so the crack never repeats
+    private let faultEQ = AVAudioUnitEQ(numberOfBands: 1)     // lowpass — "heard through steel"
+    private let faultReverb = AVAudioUnitReverb()             // echo down the corridors → distance
     private let staticNode = AVAudioPlayerNode()              // the teleport static: a seamless noise loop, volume-driven per frame
     private var staticBuf: AVAudioPCMBuffer?
     private var staticOn = false
@@ -211,8 +218,8 @@ final class AudioEngine {
         engine.attach(queenSnarlNode); engine.attach(queenPitch)
         engine.connect(queenSnarlNode, to: queenPitch, format: canonical)
         engine.connect(queenPitch, to: sfxMix, format: canonical)
-        engine.attach(stingNode); engine.connect(stingNode, to: sfxMix, format: canonical)
         engine.attach(queenDeathNode); engine.connect(queenDeathNode, to: sfxMix, format: canonical)
+        engine.attach(stingNode); engine.connect(stingNode, to: sfxMix, format: canonical)
         // the static bed: 2 s of generated white noise (deterministic), looped
         engine.attach(staticNode); engine.connect(staticNode, to: sfxMix, format: canonical)
         if let buf = AVAudioPCMBuffer(pcmFormat: canonical, frameCapacity: AVAudioFrameCount(2 * 44100)) {
@@ -236,6 +243,19 @@ final class AudioEngine {
         engine.connect(distantNode, to: distantEQ, format: canonical)
         engine.connect(distantEQ, to: distantReverb, format: canonical)
         engine.connect(distantReverb, to: sfxMix, format: canonical)
+        // distant electric-shock chain: the occasional crack of a shorting circuit
+        // somewhere in the damaged citadel — the same "through steel + echo" as the
+        // drone, pitch-tweaked per hit, on the ambient bus (see distantFault).
+        faultEQ.bands[0].filterType = .lowPass
+        faultEQ.bands[0].frequency = 900
+        faultEQ.bands[0].bypass = false
+        faultReverb.loadFactoryPreset(.largeHall)
+        faultReverb.wetDryMix = 82                          // mostly wet → far off
+        engine.attach(faultNode); engine.attach(faultVari); engine.attach(faultEQ); engine.attach(faultReverb)
+        engine.connect(faultNode, to: faultVari, format: canonical)
+        engine.connect(faultVari, to: faultEQ, format: canonical)
+        engine.connect(faultEQ, to: faultReverb, format: canonical)
+        engine.connect(faultReverb, to: ambMix, format: canonical)
         // drip chain: the plinks echo off wet stone — a room-scale wash, drier
         // and tighter than the distant-vox hall so nearby drips still snap
         dripReverb.loadFactoryPreset(.largeRoom)
@@ -274,7 +294,19 @@ final class AudioEngine {
             try? engine.start()
         }
         applyGains()
-        if engine.isRunning { for n in sfxPool { n.play() }; queenSnarlNode.play(); queenDeathNode.play(); distantNode.play(); for n in dripNodes + wadeNodes { n.play() } }   // idle, ready to schedule
+        if engine.isRunning { for n in sfxPool { n.play() }; queenSnarlNode.play(); queenDeathNode.play(); stingNode.play(); faultNode.play(); distantNode.play(); for n in dripNodes + wadeNodes { n.play() } }   // idle, ready to schedule
+        // Warm-up: a player node that's playing but has never rendered a buffer leaves
+        // the SFX output path cold, so the DAC pops on the very first real sound (heard
+        // as crackle on level 1's opening sounds; by level 2 it's warm). Push half a
+        // second of pure silence through the SFX bus now so the path is primed before
+        // anything audible plays.
+        if engine.isRunning, let warm = AVAudioPCMBuffer(pcmFormat: canonical, frameCapacity: 22050) {
+            warm.frameLength = 22050                          // 0.5 s
+            if let data = warm.floatChannelData {
+                for c in 0..<Int(canonical.channelCount) { memset(data[c], 0, Int(warm.frameLength) * MemoryLayout<Float>.size) }   // zeros = silence
+            }
+            sfxPool[0].scheduleBuffer(warm, at: nil, completionHandler: nil)
+        }
     }
 
     /// AudioProbe support: pump the offline engine `seconds` forward and return
@@ -445,28 +477,22 @@ final class AudioEngine {
     }
     func enemyShot(_ k: MonsterKind) { synthEnemyShot(k) }   // vestigial — no caste fires
     func monsterPain(_ k: MonsterKind)  { play(.hiss) { self.synthMonsterPain(k) } }       // aliens hiss when hit
-    /// A kill cry. The Queen's 3-second death WAIL must survive the combat she
-    /// dies in: the round-robin one-shot pool recycles its node within a second
-    /// of plasma fire (AudioProbe measured the wail collapsing to silence), so
-    /// she wails through her DEDICATED snarl node — nothing can steal it, and
-    /// her snarl rightly stops the moment the death cry starts.
+    /// A kill cry. The Queen's 3-second death WAIL rides its OWN dedicated node so
+    /// nothing in the one-shot pool can steal it. (The old "intermittent silent
+    /// death" was a stale, truncated `queen_death` variant lingering in the build
+    /// bundle — a bad sample, not this code; the build now prunes stale Resources.)
     func monsterDeath(_ k: MonsterKind) {
-        if k == .queen, engine.isRunning, let buf = bank[.queenDeath]?.randomElement() {
-            // Her death wail MUST always sound — it's the reward for a rare, hard
-            // kill. It rides its OWN dedicated node (never the snarl node), so a
-            // snarl in flight when she dies — she snarls whenever she's near/seen,
-            // i.e. exactly when you finish her — can't pre-empt or swallow the cry.
-            // (The earlier shared-node version dropped the wail intermittently.)
-            queenDeathNode.volume = Sound.queenDeath.gain
-            queenDeathNode.scheduleBuffer(buf, at: nil, options: .interrupts, completionHandler: nil)
-            if !queenDeathNode.isPlaying { queenDeathNode.play() }
+        guard k == .queen, engine.isRunning, let buf = bank[.queenDeath]?.randomElement() else {
+            play(k == .queen ? .queenDeath : .droneDeath) { self.synthMonsterDeath(k) }
             return
         }
-        play(k == .queen ? .queenDeath : .droneDeath) { self.synthMonsterDeath(k) }
+        queenDeathNode.volume = Sound.queenDeath.gain
+        queenDeathNode.scheduleBuffer(buf, at: nil, options: .interrupts, completionHandler: nil)
+        if !queenDeathNode.isPlaying { queenDeathNode.play() }
     }
-    /// The toppled Queen SLAMS the deck — a real recorded impact on its own
-    /// dedicated node (the one-shot pool would recycle it mid-boom under fire);
-    /// the layered synth thump remains only as the missing-sample fallback.
+
+    /// The toppled Queen SLAMS the deck on its own dedicated node; the layered
+    /// synth thump remains as the missing-sample fallback.
     func queenFall() {
         if engine.isRunning, let buf = bank[.queenFall]?.randomElement() {
             stingNode.volume = Sound.queenFall.gain
@@ -478,6 +504,19 @@ final class AudioEngine {
         trigger(wave: AudioEngine.sine, f0: 60, f1: 24, dur: 1.1, amp: 0.60, attack: 0.012)
         trigger(wave: AudioEngine.noise, f0: 1, dur: 0.45, amp: 0.40, attack: 0.005, lp: 0.32)
     }
+
+    /// A distant electric-shock — the occasional crack of a shorting circuit
+    /// somewhere in the damaged citadel. Pitch and level are tweaked at random each
+    /// hit and it's drenched in the through-steel reverb, so it always reads as
+    /// far-off ambience. Fired on an irregular timer by World; pure atmosphere.
+    func distantFault() {
+        guard engine.isRunning, let buf = bank[.fault]?.randomElement() else { return }
+        faultVari.rate = Float.random(in: 0.82...1.18)
+        faultNode.volume = Sound.fault.gain * Float.random(in: 0.45...0.85)
+        faultNode.scheduleBuffer(buf, at: nil, options: .interrupts, completionHandler: nil)
+        if !faultNode.isPlaying { faultNode.play() }
+    }
+
     /// The teleport's static bed: a seamless white-noise LOOP on its own node,
     /// volume-driven per frame by the renderer (0 = silent). A generated
     /// buffer through the sample path — synth voices proved too fragile a bed.
@@ -557,6 +596,7 @@ final class AudioEngine {
         }
     }
     func doorOpen()    { play(.doorOpen)    { self.synthDoorOpen() } }
+    func doorClose()   { play(.doorOpen)    { self.synthDoorOpen() } }   // a sliding door sounds much the same shutting — reuse the slide (no separate shut sample yet)
     func locked()      { play(.locked)      { self.synthLocked() } }
     func pickup()      { play(.pickup)      { self.synthPickup() } }
     func secret()      { play(.secret)      { self.synthSecret() } }

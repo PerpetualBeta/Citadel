@@ -5,13 +5,13 @@ deliberate exception to the Jorvik "everything generated in code" rule: Citadel
 ships real sampled sound effects, ambient beds, and a title theme, because the
 atmosphere leans too hard on sound to synthesise convincingly.
 
-All audio assets are **CC0** (public domain) or **CC-BY** (attribution). This file
+All audio assets are **CC0** (public domain), **CC-BY** (attribution), or under the **Pixabay Content License** (royalty-free, no attribution required). This file
 records every asset, its source, author, and licence. CC0 requires no attribution
 but is listed here as a courtesy and for provenance.
 
 ## Audio
 
-**Complete CC0 sound set in place** — all assets below are **CC0 1.0 / public domain**
+**Full sound set in place** — assets below are **CC0 1.0 / public domain** (bar one Pixabay-licensed ambience, noted in the table)
 (<https://creativecommons.org/publicdomain/zero/1.0/>), so no attribution is
 required; sources are credited here as a courtesy and for provenance. They're
 placeholders that prove the pipeline and set the tone — swap any for a final using
@@ -46,6 +46,7 @@ Ogrebane — *Monster Sound Effects 2* (<https://opengameart.org/content/monster
 | player_death | marine death cry | HaelDB Male Grunt/Yelling | yell10 |
 | wade, wade1 (L/R, alternating) | wading splash — the flooded floor 8 + floor-7 puddles | rubberduck 40 CC0 water splash/slime SFX | splash_12 / splash_14 |
 | drip, drip1–drip5 (random, pitch-varied per plink in-engine) | ceiling water plinking into the deep floors' pools (panned per site) | freesound.org, all CC0: beskhu #273870, qubodup #792927, florianreichelt #683102, Ev-Dawg #337525, arseniiv #257349 (two plinks sliced) | trimmed + peak-normalised |
+| fault | distant electric-shock — the occasional far-off crack of a shorting circuit (damaged-building ambience; pitch/level tweaked + reverb-drenched in-engine so it reads as far off) | freesound_community — *Electric shock*, via Pixabay (<https://pixabay.com/users/freesound_community-46691455/>, Pixabay Content License) | Electric shock #33018 |
 | elevator_move | freight elevator descent — low winch hum (loops, stops with the car) | Kenney Sci-Fi Sounds | spaceEngineLow_000 |
 | elevator_door, elevator_shut | elevator leaves part / seal | Kenney Sci-Fi Sounds | doorOpen_002 / doorClose_002 |
 | bed_drone | ambient bed: room tone (always on) | SRG774 Dark Sci-Fi Audio Pack | sector |

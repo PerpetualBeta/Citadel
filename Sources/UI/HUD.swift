@@ -96,12 +96,22 @@ struct HUD {
 
     private func drawCrosshair(_ c: Canvas2D) {
         let cx = W / 2, cy = RenderConfig.horizon
-        let col = packRGBA(210, 225, 232)
-        c.blend(cx, cy, col, 0.9)
-        for d in uiS(5)...uiS(8) {
-            c.blend(cx - d, cy, col, 0.5); c.blend(cx + d, cy, col, 0.5)
-            c.blend(cx, cy - d, col, 0.5); c.blend(cx, cy + d, col, 0.5)
+        let red = HUD.crit                                      // a clean, bright red reticle
+        let rim = packRGBA(0, 0, 0)                             // thin dark edge → stays legible on pale/bright walls
+        let gap = uiS(4), arm = uiS(10)                         // open centre (never hides the target) + spoke reach
+        // A centre pip + four 2-px spokes: a dark rim for contrast, then crisp
+        // bright red on top. No glow — just a sharp, always-visible cross.
+        func forEachPixel(_ f: (Int, Int) -> Void) {
+            for t in 0...1 {                                    // 2-px thickness
+                f(cx + t, cy); f(cx, cy + t)                    // centre pip
+                for d in gap...arm { f(cx - d, cy + t); f(cx + d, cy + t); f(cx + t, cy - d); f(cx + t, cy + d) }
+            }
         }
+        forEachPixel { x, y in                                  // thin dark rim
+            c.blend(x - 1, y, rim, 0.5); c.blend(x + 1, y, rim, 0.5)
+            c.blend(x, y - 1, rim, 0.5); c.blend(x, y + 1, rim, 0.5)
+        }
+        forEachPixel { x, y in c.plot(x, y, red) }              // crisp bright red core
     }
 
     private func drawViewmodel(_ world: World, _ c: Canvas2D) {
