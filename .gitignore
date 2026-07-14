@@ -13,3 +13,6 @@ Sparkle.framework
 
 # Harness output (CITADEL_GPU perf renders)
 perf/
+
+# Claude Code local worktree state (transient agent checkouts, never source)
+.claude/worktrees/
