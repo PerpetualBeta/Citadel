@@ -376,6 +376,7 @@ final class GPUWorldRenderer {
             extra: SIMD4(0, 0, 0, 0))
         u.dbg.x = disableCreatureMask ? 1 : 0   // harness invariant: mask off must be pixel-identical
         u.dbg.y = disableWindowClamp ? 1 : 0    // harness calibration: reintroduce the window-leap bug
+        u.dbg.z = world.powerDim                // scene dim 0…1 — the lights sag + flicker with a distant electrical fault
         // dramatic lighting = the level's fixtures (warm keys shadow, colour fills
         // don't) culled to the player, plus the player's own muzzle/projectile glows
         // appended after — so extra.z gates the few shadow-casters to the emitter keys.

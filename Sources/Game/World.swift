@@ -141,6 +141,9 @@ final class World {
     private var steamTimer: Float = 0
     private var sparkTimer: Float = 0
     private var faultAmbTimer: Float = 12        // countdown to the next distant electric-shock (damaged-building ambience)
+    private var faultFlickerT: Float = 0         // remaining lights-flicker time after a fault fires
+    private static let faultFlickerDur: Float = 1.7
+    private(set) var powerDim: Float = 0         // 0 normally; 0…~0.65 as the lights sag/flicker with a fault (renderer reads it → dbg.z)
     // ── the Queen ──
     private var queenBreedCD: Float = 60         // seconds to her next spawn
     private var queenHintCD: Float = 0           // throttle for the "plasma only" hint
@@ -401,9 +404,11 @@ final class World {
         // an unburned corpse in the threshold jams the door — it can't close on a
         // body (until fire has consumed it), matching the canStand corpse blocking
         for m in monsters where m.state == .dead && m.burn < 0.85 { occupied.insert(map.idx(Int(m.pos.x), Int(m.pos.y))) }
-        // the closing elevator must shut WITH the marine inside — his cell is
-        // exempt from the hold-open rule once the ride has been committed
-        if elevatorPhase == .closing || elevatorPhase == .descending {
+        // the elevator shuts WITH the marine inside, so his cell is exempt from the
+        // door hold-open rule — but ONLY once he's clear of the closing plane. While
+        // he straddles the doorway the cell stays occupied so the leaves re-open on
+        // him (IR sensor) instead of trapping him and descending.
+        if elevatorPhase == .descending || (elevatorPhase == .closing && exitDoorClear()) {
             occupied.remove(map.exitCell)
         }
         for ci in map.update(dt: dt, occupied: occupied) where ci != map.exitCell && ci != map.entryCell {
@@ -439,7 +444,13 @@ final class World {
         emitWaterDrips(dt: dt, audio: audio)
         emitSparks(dt: dt)
         faultAmbTimer -= dt
-        if faultAmbTimer <= 0 { audio.distantFault(); faultAmbTimer = rng.f(25, 60) }   // occasional far-off electrical crack
+        if faultAmbTimer <= 0 { audio.distantFault(); faultAmbTimer = rng.f(25, 60); faultFlickerT = World.faultFlickerDur }   // occasional far-off crack — and the lights answer it
+        if faultFlickerT > 0 {
+            faultFlickerT -= dt
+            let env = max(0, faultFlickerT / World.faultFlickerDur)                 // 1 → 0, easing the flicker back to full brightness
+            let f = 0.5 + 0.5 * sinf(elapsed * 52), g = 0.5 + 0.5 * sinf(elapsed * 33 + 1.3)
+            powerDim = env * (0.22 + 0.6 * f * g)                                   // a deep, ragged sag + fast stutter, like a failing circuit
+        } else { powerDim = 0 }
         map.visited[map.idx(Int(player.pos.x), Int(player.pos.y))] = true
     }
 
@@ -660,6 +671,26 @@ final class World {
         audio.elevatorDoor(open: true)
     }
 
+    /// True when the marine is safely INSIDE the exit car, clear of the door's
+    /// closing plane, so the leaves can shut without catching him. Mirrors the door
+    /// geometry the renderer uses (GPURaymarch `doorSlidesAlongX` / `elevatorPlane`):
+    /// the plane sits toward the open (corridor) edge; the rest of the cell is car.
+    /// He must be past the closing slab (half-thickness 0.14) by a body radius (0.26).
+    private func exitDoorClear() -> Bool {
+        guard map.exitCell >= 0,
+              map.idx(Int(player.pos.x), Int(player.pos.y)) == map.exitCell else { return false }
+        let cx = map.exitCell % map.w, cy = map.exitCell / map.w
+        let slideX = map.inBounds(cx - 1, cy) && map.wall[map.idx(cx - 1, cy)] != 0 &&
+                     map.inBounds(cx + 1, cy) && map.wall[map.idx(cx + 1, cy)] != 0
+        let (nx, ny) = slideX ? (cx, cy - 1) : (cx - 1, cy)
+        let (px, py) = slideX ? (cx, cy + 1) : (cx + 1, cy)
+        let lowOpen  = map.inBounds(nx, ny) && map.wall[map.idx(nx, ny)] == 0
+        let highOpen = map.inBounds(px, py) && map.wall[map.idx(px, py)] == 0
+        let plane: Float = (lowOpen == highOpen) ? 0.5 : (lowOpen ? 0.20 : 0.80)
+        let thruFrac = slideX ? (player.pos.y - Float(cy)) : (player.pos.x - Float(cx))
+        return abs(thruFrac - plane) > 0.40
+    }
+
     /// The ride state machine: boarding (doors parted, waiting for the marine)
     /// → awaitFire (he's in the car; the floor report overlays the view until
     /// FIRE commits) → closing (the leaves shut in front of him) → descending
@@ -667,7 +698,7 @@ final class World {
     /// the doors have shut re-opens them; the ride only commits once they have.
     private func updateElevator(dt: Float, input: InputState, audio: AudioEngine) {
         guard elevatorPhase != .idle, let d = map.doors[map.exitCell] else { return }
-        let inCar = map.idx(Int(player.pos.x), Int(player.pos.y)) == map.exitCell
+        let clear = exitDoorClear()                          // fully aboard AND clear of the door's closing plane
         let fireEdge = input.fire && !prevElevFire
         prevElevFire = input.fire
         switch elevatorPhase {
@@ -675,13 +706,13 @@ final class World {
             break
         case .boarding:
             map.doors[map.exitCell]!.stay = max(d.stay, 2)   // never slam mid-boarding
-            if inCar && d.open >= GameMap.passThreshold {
+            if clear && d.open >= GameMap.passThreshold {
                 elevatorPhase = .awaitFire
                 prevElevFire = true                          // require a FRESH press — a held trigger doesn't commit
             }
         case .awaitFire:
             map.doors[map.exitCell]!.stay = max(d.stay, 2)
-            if !inCar { elevatorPhase = .boarding }          // stepped back out — report hides
+            if !clear { elevatorPhase = .boarding }          // stepped out / straddling the doors — report hides
             else if fireEdge {
                 elevatorPhase = .closing
                 map.doors[map.exitCell]!.opening = false
@@ -689,7 +720,7 @@ final class World {
                 audio.elevatorDoor(open: false)
             }
         case .closing:
-            if !inCar {                                       // stepped back out — reopen
+            if !clear {                                       // stepped out or blocking the doors — reopen
                 map.doors[map.exitCell]!.opening = true
                 map.doors[map.exitCell]!.stay = 3
                 elevatorPhase = .boarding

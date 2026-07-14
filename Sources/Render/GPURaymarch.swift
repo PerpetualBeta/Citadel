@@ -1437,7 +1437,7 @@ enum GPURaymarch {
             float l = dot(c, float3(0.299, 0.587, 0.114));
             bloom += max(0.0, l - 1.35) / max(l, 0.001) * c;
         }
-        float3 col = (base + bloom * (0.42 / 24.0)) * 0.58;      // bloom add + exposure (low-key, moody)
+        float3 col = (base + bloom * (0.42 / 24.0)) * 0.58 * (1.0 - U.dbg.z);   // bloom add + exposure; dbg.z sags the whole scene (electrical-fault dim/flicker; 0 = normal)
         // teal/amber grade — lift the shadows cool, warm the highlights (the
         // colorimetric move that gives the beauty proof its filmic mood)
         float lum = dot(col, float3(0.299, 0.587, 0.114));
