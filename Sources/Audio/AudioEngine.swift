@@ -176,6 +176,7 @@ final class AudioEngine {
     private var tHealth: Float = 1    // 0…1 player health fraction
     private var tCombat: Float = 0    // 0…1 recent weapon-fire / damage heat
     private var bedLevel: Float = 0   // smoothed master intensity (fast up, slow down)
+    private var bedStartup: Float = 0   // 0→1 ease-in at level start so the beds don't snap on from silence (arrival thump)
     private var levelDepth = 1
     private var usingSampleBed = false
     // synth-fallback bed clocks (only used when no bed_* stems are bundled)
@@ -193,13 +194,19 @@ final class AudioEngine {
         delayLen = Int(0.19 * 44100)
         delay = [Float](repeating: 0, count: delayLen)
         let monoFmt = AVAudioFormat(standardFormatWithSampleRate: Double(sr), channels: 1)!
+        // Diagnostic: silence ONLY the synth-on-main path, independent of the three
+        // buses, to corner the floor-1 arrival thump — the buses ride mutedBuses,
+        // but the synth bypasses them, so muteBuses can't isolate it. Read once
+        // (relaunch to apply) so the real-time callback never touches UserDefaults.
+        //   defaults write cc.jorviksoftware.Citadel muteSynth -bool YES
+        let muteSynthFlag = UserDefaults.standard.bool(forKey: "muteSynth")
         synthSrc = AVAudioSourceNode { [weak self] _, _, frameCount, abl in
             guard let self = self else { return noErr }
             let out = UnsafeMutableAudioBufferListPointer(abl)[0].mData!.assumingMemoryBound(to: Float.self)
             // The synth rides the MAIN mixer (not the three group buses), so
             // `muted` can't gate it there — it must silence itself, or muted
             // harness runs still speak through every sample-less sound.
-            if self.muted { out.update(repeating: 0, count: Int(frameCount)); return noErr }
+            if self.muted || muteSynthFlag { out.update(repeating: 0, count: Int(frameCount)); return noErr }
             self.render(out, Int(frameCount)); return noErr
         }
 
@@ -306,6 +313,13 @@ final class AudioEngine {
                 for c in 0..<Int(canonical.channelCount) { memset(data[c], 0, Int(warm.frameLength) * MemoryLayout<Float>.size) }   // zeros = silence
             }
             sfxPool[0].scheduleBuffer(warm, at: nil, completionHandler: nil)
+            // Same cold-path pop on the AMBIENT bus (ambMix): the reactive beds are
+            // its first signal, on level 1, so their nodes have never rendered and
+            // the DAC pops on arrival (by level 2 they're warm — hence "only the
+            // first level"). Prime each bed node with the same silence now.
+            for s in [Sound.bedDrone, .bedPulse, .bedTension, .bedSwarm] {
+                if let n = loopNodes[s] { n.play(); n.scheduleBuffer(warm, at: nil, completionHandler: nil) }
+            }
         }
     }
 
@@ -331,9 +345,10 @@ final class AudioEngine {
     }
 
     private func applyGains() {
-        musicMix.outputVolume = muted ? 0 : musicGain
-        sfxMix.outputVolume   = muted ? 0 : sfxGain
-        ambMix.outputVolume   = muted ? 0 : ambientGain
+        let mb = mutedBuses, allB = mb.contains("all")
+        musicMix.outputVolume = (muted || allB || mb.contains("music")) ? 0 : musicGain
+        sfxMix.outputVolume   = (muted || allB || mb.contains("sfx"))   ? 0 : sfxGain
+        ambMix.outputVolume   = (muted || allB || mb.contains("amb"))   ? 0 : ambientGain
     }
 
     // ── sample loading ─────────────────────────────────────────────────────────
@@ -398,6 +413,8 @@ final class AudioEngine {
     @discardableResult
     private func startLoop(_ s: Sound, volume: Float) -> Bool {
         guard engine.isRunning, let node = loopNodes[s], let buf = bank[s]?.first else { return false }
+        alog("startLoop \(s) vol=\(String(format: "%.2f", volume))")
+        if isMuted(s) { return false }
         node.stop()
         node.volume = volume
         node.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
@@ -405,8 +422,38 @@ final class AudioEngine {
         return true
     }
 
-    private func stopAllLoops() { for (_, n) in loopNodes { n.stop() }; flameNode.stop(); flameOn = false; elevatorNode.stop(); elevatorOn = false; burnNode.stop(); burnOn = false }
-    private func setLoopVol(_ s: Sound, _ v: Float) { loopNodes[s]?.volume = max(0, v) }
+    private func stopAllLoops() { alog("stopAllLoops"); for (_, n) in loopNodes { n.stop() }; flameNode.stop(); flameOn = false; elevatorNode.stop(); elevatorOn = false; burnNode.stop(); burnOn = false }
+    private func setLoopVol(_ s: Sound, _ v: Float) { let nv = max(0, v); if let n = loopNodes[s] { if abs(nv - n.volume) > 0.12 { alog("volJump \(s) \(String(format: "%.2f", n.volume))->\(String(format: "%.2f", nv))") }; n.volume = nv } }
+
+    // ── elimination harness: silence buses or named sounds to corner a mystery pop ──
+    //   defaults write cc.jorviksoftware.Citadel muteBuses  "amb"                (amb | sfx | music | all)
+    //   defaults write cc.jorviksoftware.Citadel muteSounds "elevatorShut bedDrone"   (Sound-case names, as in audio.log; or "all")
+    //   relaunch to apply. muteBuses zeroes the whole bus gain, so it catches even an untriggered glitch.
+    private var mutedBuses: Set<String> {
+        Set((UserDefaults.standard.string(forKey: "muteBuses") ?? "")
+            .lowercased().split(whereSeparator: { ", ".contains($0) }).map(String.init))
+    }
+    private var mutedSounds: Set<String> {
+        Set((UserDefaults.standard.string(forKey: "muteSounds") ?? "")
+            .split(whereSeparator: { ", ".contains($0) }).map(String.init))
+    }
+    private func isMuted(_ s: Sound) -> Bool {
+        let m = mutedSounds
+        return m.contains("all") || m.contains("\(s)") || m.contains(s.base)
+    }
+
+    /// Diagnostic timeline, off unless `defaults write cc.jorviksoftware.Citadel
+    /// audioLog -bool YES` — appends to ~/Library/Logs/Citadel/audio.log with a
+    /// systemUptime stamp. For chasing the floor-1 first-sound pops; makes no sound.
+    private func alog(_ msg: String) {
+        guard UserDefaults.standard.bool(forKey: "audioLog") else { return }
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Citadel", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("audio.log")
+        let line = Data(String(format: "%.3f  %@\n", ProcessInfo.processInfo.systemUptime, msg).utf8)
+        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(line); try? h.close() }
+        else { try? line.write(to: url) }
+    }
 
     /// The flamethrower's continuous roar: a looped 5-second stem on the SFX bus that
     /// tracks the trigger, instead of randomly-retriggered one-shots (which desynced
@@ -427,6 +474,8 @@ final class AudioEngine {
 
     /// Play the sample for `s`, or run `fallback` (the synth) when it isn't bundled.
     private func play(_ s: Sound, _ fallback: () -> Void) {
+        alog("play \(s)")
+        if isMuted(s) { return }
         if engine.isRunning, let bufs = bank[s] { playOneShot(bufs, gain: s.gain) }
         else { fallback() }
     }
@@ -444,6 +493,8 @@ final class AudioEngine {
     /// deeper. Plays a curated sample if one's bundled, else a synth splash
     /// (filtered noise) as a stopgap until a CC0 sample is hand-picked.
     func wade(_ depth: Float, foot: Int) {
+        alog("wade foot=\(foot) depth=\(String(format: "%.2f", depth))")
+        if isMuted(.wade) { return }
         let v = 0.5 + 0.5 * min(1, max(0, depth))
         // alternate L/R: foot 0 → wade.*, foot 1 → wade1.* — two slightly different
         // splashes so the gait reads as real footfalls — and jitter each step's
@@ -463,6 +514,8 @@ final class AudioEngine {
     /// ambience (World.emitWaterDrips). Sample if bundled (drip*.wav), else the
     /// synth plink.
     func drip(volume: Float, pan: Float) {
+        alog("drip vol=\(String(format: "%.2f", volume))")
+        if isMuted(.drip) { return }
         let v = Sound.drip.gain * max(0, min(1, volume))
         if engine.isRunning, let bufs = bank[.drip], let buf = bufs.randomElement() {
             let i = dripNext; dripNext = (dripNext + 1) % dripNodes.count
@@ -511,6 +564,7 @@ final class AudioEngine {
     /// far-off ambience. Fired on an irregular timer by World; pure atmosphere.
     func distantFault() {
         guard engine.isRunning, let buf = bank[.fault]?.randomElement() else { return }
+        if isMuted(.fault) { return }
         faultVari.rate = Float.random(in: 0.82...1.18)
         faultNode.volume = Sound.fault.gain * Float.random(in: 0.45...0.85)
         faultNode.scheduleBuffer(buf, at: nil, options: .interrupts, completionHandler: nil)
@@ -585,6 +639,8 @@ final class AudioEngine {
     func elevatorMove(_ on: Bool) {
         guard on != elevatorOn else { return }
         elevatorOn = on
+        alog("elevatorMove \(on)")
+        if on && isMuted(.elevatorMove) { return }
         guard engine.isRunning else { return }
         if on, let buf = bank[.elevatorMove]?.first {
             elevatorNode.stop()
@@ -594,6 +650,10 @@ final class AudioEngine {
         } else {
             elevatorNode.stop()
         }
+        // The car stopped → its descent rumble stops with it. Fast-release any
+        // lingering synth voice so the sub-bass can't ring on into the new floor
+        // (the floor-1 arrival thump).
+        if !on { quenchSynth() }
     }
     func doorOpen()    { play(.doorOpen)    { self.synthDoorOpen() } }
     func doorClose()   { play(.doorOpen)    { self.synthDoorOpen() } }   // a sliding door sounds much the same shutting — reuse the slide (no separate shut sample yet)
@@ -612,6 +672,7 @@ final class AudioEngine {
     }
 
     func startMusic(_ m: MusicMode, depth: Int = 1) {
+        alog("startMusic \(m) depth=\(depth)")
         mode = m; levelDepth = depth
         stopAllLoops()
         seqTime = 0; seqStep = 0
@@ -624,7 +685,7 @@ final class AudioEngine {
         case .level:
             if hasSampleBeds {
                 usingSampleBed = true
-                bedLevel = 0
+                bedLevel = 0; bedStartup = 0
                 for s in [Sound.bedDrone, .bedPulse, .bedTension, .bedSwarm] { _ = startLoop(s, volume: 0) }
             }
         }
@@ -644,6 +705,7 @@ final class AudioEngine {
     }
 
     private func updateBed(_ dt: Float) {
+        bedStartup = min(1, bedStartup + dt / 0.4)        // ease the whole bed in from silence — no volume snap on arrival
         // master intensity: the swarm drives it; the Queen and combat lift it.
         let target = max(tThreat, 0.85 * tQueen, 0.6 * tCombat)
         // danger swells fast (~0.35 s) and lingers (~2.6 s) — tension shouldn't snap off.
@@ -652,10 +714,10 @@ final class AudioEngine {
         let lowHealth = max(0, 1 - tHealth / 0.30)        // 0 above 30% health → 1 at death's door
 
         if usingSampleBed {
-            setLoopVol(.bedDrone,   0.55 + 0.25 * bedLevel)              // ever-present room tone
-            setLoopVol(.bedPulse,   smoothstep(0.05, 0.6, bedLevel))     // the throb that grows
-            setLoopVol(.bedTension, smoothstep(0.40, 1.0, bedLevel))     // dissonance at high threat
-            setLoopVol(.bedSwarm,   max(smoothstep(0.55, 1.0, bedLevel), tQueen))   // near-swarm / Queen layer
+            setLoopVol(.bedDrone,   bedStartup * (0.55 + 0.25 * bedLevel))            // ever-present room tone
+            setLoopVol(.bedPulse,   bedStartup * smoothstep(0.05, 0.6, bedLevel))     // the throb that grows
+            setLoopVol(.bedTension, bedStartup * smoothstep(0.40, 1.0, bedLevel))     // dissonance at high threat
+            setLoopVol(.bedSwarm,   bedStartup * max(smoothstep(0.55, 1.0, bedLevel), tQueen))   // near-swarm / Queen layer
         } else {
             synthBed(dt, level: bedLevel, lowHealth: lowHealth)
         }
@@ -779,6 +841,34 @@ final class AudioEngine {
     func trigger(wave: Int, f0: Float, f1: Float? = nil, dur: Float, amp: Float,
                  attack: Float = 0.004, drive: Float = 1, bus: Int = 1, lp: Float = 1) {
         add(wave, f0, f1 ?? f0, dur, amp, attack: attack, lp: lp, bus: bus)
+    }
+
+    /// Fast-release every live synth voice so a lingering tone can't outlast the
+    /// event that owns it. Each voice is recast into a short linear decay that
+    /// STARTS at its current envelope level (env = left/(total−attack); with
+    /// attack 0 and total = r/curEnv, left = r ⇒ env = curEnv), so the quench
+    /// introduces no amplitude jump — it never clicks. This is the floor-1
+    /// arrival thump: the lift's descent sub-bass (Renderer's ride rumble,
+    /// dur 2.4 s) kept ringing ~2 s past the car stopping, into dead silence.
+    /// The rumble is part of the car, so it stops WITH the car (elevatorMove
+    /// false) — later floors mask the tail, floor 1's silence exposed it.
+    func quenchSynth(release: Float = 0.08) {
+        let r = max(1, Int(release * sr))
+        os_unfair_lock_lock(lock)
+        for i in voices.indices {
+            var v = voices[i]
+            let elapsed = v.total - v.left
+            let curEnv: Float = elapsed < v.attack
+                ? Float(elapsed) / Float(max(1, v.attack))
+                : Float(v.left) / Float(max(1, v.total - v.attack))
+            if curEnv <= 0.0002 { v.left = 0; voices[i] = v; continue }   // already silent → let render cull it
+            if v.left <= r { continue }                                   // already ending within the release window → leave it
+            v.attack = 0
+            v.total = max(r + 1, Int(Float(r) / curEnv))
+            v.left = r
+            voices[i] = v
+        }
+        os_unfair_lock_unlock(lock)
     }
 
     private func note(_ m: Int) -> Float { 440 * powf(2, Float(m - 69) / 12) }
