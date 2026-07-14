@@ -30,8 +30,8 @@ final class AudioEngine {
 
     // ── logical sounds (the asset manifest) ─────────────────────────────────
     // Each case maps to a base filename in Resources/Audio/. The loader accepts
-    // <base>.<ext> and numbered variants <base>1..<base>4.<ext> (picked at
-    // random) for ext in wav/caf/aiff/aif/m4a/mp3. `bed_*` / `music_title` loop.
+    // <base>.<ext> and numbered variants <base>1..<base>16.<ext> (picked at
+    // random) for ext in wav/caf/aiff/aif/m4a/mp3/ogg. `bed_*` / `music_title` loop.
     enum Sound: CaseIterable {
         case plasma, flamethrower, rocket
         case hiss                  // shared alien hiss pool: drone + Queen pain (random)
