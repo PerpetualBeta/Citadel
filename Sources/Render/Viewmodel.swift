@@ -30,6 +30,9 @@ enum Viewmodel {
     static let pilotAmber = SIMD3<Float>(1.00, 0.55, 0.15)
     static let flashWhite = SIMD3<Float>(0.70, 1.00, 1.10)
     static let flashOrange = SIMD3<Float>(1.00, 0.62, 0.25)
+    static let gunBlack  = SIMD3<Float>(0.09, 0.09, 0.10)   // matte parkerised black — the plasma rifle body
+    static let armyGreen = SIMD3<Float>(0.20, 0.27, 0.15)   // olive drab — the rocket launcher tube
+    static let steelGrey = SIMD3<Float>(0.30, 0.31, 0.34)   // dark blued steel — the flamethrower body
 
     // ── primitive builders (gun-local space; encodings in GPURaymarch.vmShapeDist) ──
     private static func box(_ c: SIMD3<Float>, _ h: SIMD3<Float>, _ round: Float,
@@ -61,13 +64,13 @@ enum Viewmodel {
     // flash = muzzle-flash 0…1.
     static func plasma(fire: Float, flash: Float) -> [GShape] {
         var s: [GShape] = []
-        s.append(box(SIMD3(0, 0, -0.04), SIMD3(0.052, 0.048, 0.15), 0.014, gunmetal))          // receiver
+        s.append(box(SIMD3(0, 0, -0.04), SIMD3(0.052, 0.048, 0.15), 0.014, gunBlack))          // receiver
         s.append(box(SIMD3(0, 0.058, -0.02), SIMD3(0.020, 0.010, 0.17), 0.006, darkSteel))     // top spine rail
-        s.append(zcyl(SIMD3(0, 0.006, 0.17), r: 0.042, half: 0.10, edge: 0.008, darkSteel))    // barrel shroud
+        s.append(zcyl(SIMD3(0, 0.006, 0.17), r: 0.042, half: 0.10, edge: 0.008, gunBlack))     // barrel shroud
         for z in [Float(0.10), 0.15, 0.20] {                                                   // induction coils
             s.append(zcyl(SIMD3(0, 0.006, z), r: 0.050, half: 0.008, edge: 0.004, copper))
         }
-        s.append(zcyl(SIMD3(0, 0.006, 0.285), r: 0.046, half: 0.014, edge: 0.005, gunmetal))   // muzzle collar
+        s.append(zcyl(SIMD3(0, 0.006, 0.285), r: 0.046, half: 0.014, edge: 0.005, gunBlack))   // muzzle collar
         s.append(zcyl(SIMD3(0, 0.006, 0.30), r: 0.020, half: 0.045, edge: 0.004, nearBlack))   // inner barrel
         s.append(ycyl(SIMD3(-0.055, 0.01, -0.02), r: 0.020, half: 0.035, edge: 0.004, darkSteel))   // cell housing
         s.append(glow(SIMD3(-0.070, 0.012, -0.02), r: 0.016, plasmaCyan, em: 2.4))             // the energy cell window
@@ -75,7 +78,7 @@ enum Viewmodel {
             s.append(glow(SIMD3(0.012, 0.066, z), r: 0.007, plasmaCyan, em: 1.8))
         }
         s.append(box(SIMD3(0, -0.10, -0.13), SIMD3(0.026, 0.065, 0.030), 0.010, darkSteel))    // grip
-        s.append(box(SIMD3(0, -0.01, -0.21), SIMD3(0.036, 0.042, 0.045), 0.012, gunmetal))     // stock block
+        s.append(box(SIMD3(0, -0.01, -0.21), SIMD3(0.036, 0.042, 0.045), 0.012, gunBlack))     // stock block
         s.append(cone(SIMD3(0, -0.045, 0.02), SIMD3(0, -0.020, 0.20), 0.018, 0.012, darkSteel)) // under-barrel strut
         if flash > 0 {
             s.append(glow(SIMD3(0, 0.006, 0.345 + 0.015 * flash), r: 0.014 + 0.012 * flash, flashWhite, em: 2.6 * flash))
@@ -89,14 +92,14 @@ enum Viewmodel {
     // burning at the nozzle (it grows when the trigger is down).
     static func flamethrower(fire: Float, flash: Float, time: Float) -> [GShape] {
         var s: [GShape] = []
-        s.append(zcyl(SIMD3(0, 0, 0.0), r: 0.055, half: 0.16, edge: 0.010, brassDark))          // body tube
+        s.append(zcyl(SIMD3(0, 0, 0.0), r: 0.055, half: 0.16, edge: 0.010, steelGrey))          // body tube
         s.append(zcyl(SIMD3(0, 0, -0.06), r: 0.058, half: 0.008, edge: 0.004, copper))          // jacket bands
         s.append(zcyl(SIMD3(0, 0, 0.08), r: 0.058, half: 0.008, edge: 0.004, copper))
         s.append(ycyl(SIMD3(-0.02, -0.105, -0.06), r: 0.048, half: 0.065, edge: 0.010, redEnamel))  // fuel tank
         s.append(sph(SIMD3(-0.02, -0.035, -0.06), r: 0.020, darkSteel))                         // tank cap
         s.append(cone(SIMD3(-0.055, -0.08, -0.10), SIMD3(-0.02, -0.005, -0.155), 0.011, 0.011, rubber, k: 0.02))   // feed hose
         s.append(cone(SIMD3(0, 0.004, 0.16), SIMD3(0, 0.004, 0.31), 0.020, 0.014, darkSteel))   // nozzle pipe
-        s.append(cone(SIMD3(0, 0.004, 0.31), SIMD3(0, 0.004, 0.355), 0.014, 0.030, gunmetal))   // nozzle bell
+        s.append(cone(SIMD3(0, 0.004, 0.31), SIMD3(0, 0.004, 0.355), 0.014, 0.030, steelGrey))  // nozzle bell
         s.append(zcyl(SIMD3(0, 0.004, 0.352), r: 0.032, half: 0.006, edge: 0.003, copper))      // pilot ring
         s.append(box(SIMD3(0, 0.078, 0.0), SIMD3(0.012, 0.010, 0.060), 0.005, darkSteel))       // carry handle
         s.append(box(SIMD3(0, 0.062, -0.05), SIMD3(0.010, 0.014, 0.010), 0.004, darkSteel))
@@ -114,17 +117,17 @@ enum Viewmodel {
     // the sight rail.
     static func rocket(fire: Float, flash: Float) -> [GShape] {
         var s: [GShape] = []
-        s.append(zcyl(SIMD3(0, 0.01, 0.03), r: 0.058, half: 0.23, edge: 0.010, darkSteel))      // main tube
+        s.append(zcyl(SIMD3(0, 0.01, 0.03), r: 0.058, half: 0.23, edge: 0.010, armyGreen))      // main tube
         s.append(zcyl(SIMD3(0, 0.01, 0.265), r: 0.048, half: 0.012, edge: 0.004, nearBlack))    // muzzle counterbore
         s.append(cone(SIMD3(0, 0.01, 0.26), SIMD3(0, 0.01, 0.315), 0.030, 0.004, redEnamel))    // the loaded warhead
         s.append(zcyl(SIMD3(0, 0.01, 0.20), r: 0.062, half: 0.010, edge: 0.004, redEnamel))     // safety band
         s.append(zcyl(SIMD3(0, 0.01, -0.12), r: 0.061, half: 0.008, edge: 0.004, copper))       // copper joint ring
         s.append(cone(SIMD3(0, 0.01, -0.20), SIMD3(0, 0.01, -0.26), 0.052, 0.066, nearBlack))   // rear exhaust flare
-        s.append(box(SIMD3(0, 0.082, 0.05), SIMD3(0.012, 0.008, 0.090), 0.005, gunmetal))       // sight rail
+        s.append(box(SIMD3(0, 0.082, 0.05), SIMD3(0.012, 0.008, 0.090), 0.005, armyGreen))      // sight rail
         s.append(box(SIMD3(0, 0.098, 0.115), SIMD3(0.006, 0.010, 0.006), 0.003, darkSteel))     // sight post
         s.append(glow(SIMD3(0, 0.114, 0.115), r: 0.005, SIMD3(1.0, 0.20, 0.12), em: 1.6))       // aim bead
         s.append(box(SIMD3(0, -0.085, 0.02), SIMD3(0.026, 0.058, 0.030), 0.010, darkSteel))     // grip
-        s.append(box(SIMD3(0, -0.02, -0.235), SIMD3(0.030, 0.055, 0.020), 0.010, gunmetal))     // shoulder rest
+        s.append(box(SIMD3(0, -0.02, -0.235), SIMD3(0.030, 0.055, 0.020), 0.010, armyGreen))    // shoulder rest
         if flash > 0 {
             s.append(glow(SIMD3(0, 0.01, 0.34 + 0.02 * flash), r: 0.020 + 0.018 * flash, flashOrange, em: 2.4 * flash))
         }

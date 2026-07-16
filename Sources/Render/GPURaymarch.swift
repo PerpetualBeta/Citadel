@@ -1877,12 +1877,15 @@ enum GPURaymarch {
                     iBox(SIMD3(0, 0.15, 0), SIMD3(0.175, 0.045, 0.145), 0.004, cyan, d),              // glowing ring — wraps, protrudes
                     iBox(SIMD3(0, 0.26, 0), SIMD3(0.175, 0.04, 0.145), 0.004, cyan, d),               // second ring
                     iBox(SIMD3(0, 0.41, 0), SIMD3(0.06, 0.025, 0.05), 0.01, steel, d)]                // terminal cap (top)
-        case .weaponRocket:                                    // launcher tube + grip + dark muzzle bore
+        case .weaponRocket:                                    // echoes the held launcher: olive tube, red safety band + warhead, red aim bead
             let len: Float = 0.40
-            return [iCone(SIMD3(-len, 0.24, 0), SIMD3(len, 0.24, 0), 0.07, 0.07, steel),              // tube
-                    iCone(SIMD3(len, 0.24, 0), SIMD3(len + 0.03, 0.24, 0), 0.073, 0.05, black),       // muzzle bore
+            let launcher = SIMD3<Float>(0.20, 0.27, 0.15)      // olive drab, matching the viewmodel tube
+            return [iCone(SIMD3(-len, 0.24, 0), SIMD3(len, 0.24, 0), 0.07, 0.07, launcher),           // main tube (olive drab)
+                    iCone(SIMD3(len * 0.34, 0.24, 0), SIMD3(len * 0.48, 0.24, 0), 0.078, 0.078, red), // red safety band
+                    iCone(SIMD3(len - 0.02, 0.24, 0), SIMD3(len + 0.07, 0.24, 0), 0.05, 0.0, red),    // red warhead peeking, pointed
                     iBox(SIMD3(-len * 0.2, 0.12, 0), SIMD3(0.045, 0.09, 0.045), 0.015, black, 0.005), // grip
-                    iBox(SIMD3(0, 0.32, 0), SIMD3(0.04, 0.04, 0.03), 0.01, darkM, 0.005)]             // sight
+                    iBox(SIMD3(0, 0.32, 0), SIMD3(0.04, 0.04, 0.03), 0.01, darkM, 0.005),             // sight rail
+                    iSphere(SIMD3(0, 0.365, 0), 0.016, SIMD3<Float>(1.0, 0.20, 0.12))]                // red aim bead (glows, like the held one)
         case .keyRed, .keyBlue, .keyYellow:                    // flat keycard: card + mag stripe + chip
             let c = kind == .keyRed ? red : (kind == .keyBlue ? blue : yellow)
             return [iBox(SIMD3(0, 0.24, 0), SIMD3(0.14, 0.20, 0.02), 0.008, c, 0.004),                // card

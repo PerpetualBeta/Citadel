@@ -148,6 +148,12 @@ final class World {
     private var queenBreedCD: Float = 60         // seconds to her next spawn
     private var queenHintCD: Float = 0           // throttle for the "plasma only" hint
     private var droneVoxCD: Float = 1.2           // throttle for the drone vocal director (one voice at a time: near hiss vs far echo)
+    // Plasma auto-aim: the locked alien's world position this frame (nil = no lock).
+    // The HUD slides + greens the reticle onto it; handleFire flies the bolt at it.
+    // Plasma ONLY — the flamethrower (cone) and rocket (splash) don't assist.
+    private(set) var plasmaLockPos: SIMD2<Float>? = nil
+    private let plasmaAimArc: Float = 0.14        // ~8° half-angle assist cone around the reticle
+    private let plasmaAimRange: Float = 40        // cells; matches the plasma's projectile reach
     private let queenBreedInterval: Float = 60   // she births a drone about once a minute
     private let queenReviveWindow: Float = 8     // a downed Queen has this long to be burned before she rises
     private let queenDroneCap = 14               // most simultaneous live drones she'll grow the brood to
@@ -371,6 +377,7 @@ final class World {
         if vlen(pv) > 6 { pv = pv / vlen(pv) * 6 }
         playerVel = playerVel * 0.6 + pv * 0.4
         lastPlayerPos = player.pos
+        acquirePlasmaTarget()                 // plasma auto-aim lock for this frame (drives the reticle + bolt direction)
         handleFire(dt: dt, input: input, audio: audio)
 
         // player timers
@@ -851,6 +858,28 @@ final class World {
         player.fireCD = max(player.fireCD, 0.12)
     }
 
+    /// Plasma auto-target: the nearest live, visible alien within a small arc of
+    /// the aim. Recomputed each frame before firing, so the reticle lock, the bolt
+    /// direction and what actually takes damage all agree. Plasma only.
+    private func acquirePlasmaTarget() {
+        plasmaLockPos = nil
+        guard player.current == .plasma, !player.dead else { return }
+        let ahead = SIMD2<Float>(cos(player.dir), sin(player.dir))
+        let cosArc = cos(plasmaAimArc)
+        var bestD = Float.greatestFiniteMagnitude
+        var best = -1
+        for i in monsters.indices where monsters[i].alive {
+            let rel = monsters[i].pos - player.pos
+            let d = vlen(rel)
+            if d < 0.0001 || d > plasmaAimRange { continue }
+            let nd = rel / d
+            if nd.x * ahead.x + nd.y * ahead.y < cosArc { continue }   // outside the assist cone
+            if !lineOfSight(player.pos, monsters[i].pos) { continue }   // never lock through a wall
+            if d < bestD { bestD = d; best = i }
+        }
+        if best >= 0 { plasmaLockPos = monsters[best].pos }
+    }
+
     private func handleFire(dt: Float, input: InputState, audio: AudioEngine) {
         // Committed to the elevator (or standing on a live pad): FIRE belongs to
         // the descend/jump prompt, not the trigger — the marine doesn't discharge
@@ -886,7 +915,13 @@ final class World {
         } else if player.current == .flamethrower {
             flameTick(def, audio: audio)
         } else if let pk = def.projectile {
-            let dx = cos(player.dir), dy = sin(player.dir)
+            // Plasma flies at the auto-locked alien so the bolt visibly strikes what
+            // it damages; other projectiles (rocket) fire straight down the aim.
+            var ang = player.dir
+            if player.current == .plasma, let t = plasmaLockPos {
+                ang = atan2(t.y - player.pos.y, t.x - player.pos.x)
+            }
+            let dx = cos(ang), dy = sin(ang)
             let origin = SIMD2<Float>(player.pos.x + dx * 0.4, player.pos.y + dy * 0.4)
             projectiles.append(Projectile(pos: origin, vel: SIMD2(dx, dy) * pk.speed,
                                           kind: pk, damage: def.damage, fromPlayer: true, life: pk.lifetime))

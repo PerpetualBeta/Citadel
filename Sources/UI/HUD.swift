@@ -33,7 +33,7 @@ struct HUD {
         drawWeaponPod(world.player, c)
         drawMissionBlock(world, c)
         drawMessages(world, c)
-        drawCrosshair(c)
+        drawCrosshair(world, c)
         // the ARC seal, top-centre: worn visor furniture (the kit is ARC-issued) —
         // clear of the viewmodel, never explained
         FrontEnd.arcSeal(c, cx: W / 2, cy: uiS(24), r: uiS(11),
@@ -94,13 +94,27 @@ struct HUD {
         }
     }
 
-    private func drawCrosshair(_ c: Canvas2D) {
-        let cx = W / 2, cy = RenderConfig.horizon
-        let red = HUD.crit                                      // a clean, bright red reticle
+    private func drawCrosshair(_ world: World, _ c: Canvas2D) {
+        let cy = RenderConfig.horizon
+        var cx = W / 2
+        var locked = false
+        // Plasma auto-aim: slide the reticle onto the locked alien's screen bearing
+        // (same camera projection the 3-D view uses, so it sits on the target) and
+        // switch it red → green. Other weapons keep the plain centred red reticle.
+        if world.player.current == .plasma, !world.player.dead, let t = world.plasmaLockPos {
+            let p = world.player
+            let ahead = SIMD2<Float>(cosf(p.dir), sinf(p.dir))
+            let to = t - p.pos
+            let rel = atan2(ahead.x * to.y - ahead.y * to.x, ahead.x * to.x + ahead.y * to.y)   // +right of aim
+            let px = Float(W) / 2 * (1 + tanf(rel) / RenderConfig.cameraPlane)
+            cx = max(uiS(12), min(W - uiS(12), Int(px)))
+            locked = true
+        }
+        let mark = locked ? HUD.good : HUD.crit                 // green = locked; red = free
         let rim = packRGBA(0, 0, 0)                             // thin dark edge → stays legible on pale/bright walls
         let gap = uiS(4), arm = uiS(10)                         // open centre (never hides the target) + spoke reach
         // A centre pip + four 2-px spokes: a dark rim for contrast, then crisp
-        // bright red on top. No glow — just a sharp, always-visible cross.
+        // colour on top. No glow — just a sharp, always-visible cross.
         func forEachPixel(_ f: (Int, Int) -> Void) {
             for t in 0...1 {                                    // 2-px thickness
                 f(cx + t, cy); f(cx, cy + t)                    // centre pip
@@ -111,7 +125,7 @@ struct HUD {
             c.blend(x - 1, y, rim, 0.5); c.blend(x + 1, y, rim, 0.5)
             c.blend(x, y - 1, rim, 0.5); c.blend(x, y + 1, rim, 0.5)
         }
-        forEachPixel { x, y in c.plot(x, y, red) }              // crisp bright red core
+        forEachPixel { x, y in c.plot(x, y, mark) }             // crisp bright core
     }
 
     private func drawViewmodel(_ world: World, _ c: Canvas2D) {
