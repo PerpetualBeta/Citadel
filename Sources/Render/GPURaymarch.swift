@@ -903,20 +903,65 @@ enum GPURaymarch {
                     //   bulkhead. Mask by texel brightness so the dark panel body
                     //   stays steady while just the fixture pulses or dies.
                     float screenGlass = 0.0;                    // lit-glass mask (screens / strip lights) — kept clean below
-                    if (id == 4u || id == 10u) {
+                    if (id == 4u) {
+                        // litPanel strip light: only the bright strip emits, flickers, dies when busted
                         float strip = smoothstep(0.36, 0.54, dot(alb, float3(0.299, 0.587, 0.114)));
-                        emis *= strip;                                          // panel body doesn't glow
+                        emis *= strip;
                         screenGlass = strip;
-                        if (fixtureBusted(c)) { emis = 0.0; alb = mix(alb, alb * 0.30, strip); }  // dead: only the strip burns out
-                        else emis *= fixtureFlicker(float2(c), time);           // only the strip flickers
-                        if (id == 10u && emis > 0.0) {
-                            // CRT refresh bar rolling down each monitor of the bank
-                            // (a 4×4 monitor grid per texture tile — Textures .computer),
-                            // phase-offset per monitor so the bank doesn't sweep in
-                            // lockstep — the baked text reads as a live raster.
-                            float2 mcell = floor(float2(along, 1.0 - p.y) * 4.0);
-                            float roll = fract((1.0 - p.y) * 4.0 - time * 0.25 + hash21(mcell));
-                            emis *= 0.90 + 0.55 * smoothstep(0.84, 1.0, roll);
+                        if (fixtureBusted(c)) { emis = 0.0; alb = mix(alb, alb * 0.30, strip); }
+                        else emis *= fixtureFlicker(float2(c), time);
+                    } else if (id == 10u) {
+                        // COMPUTER BANK — live AMBER instrumentation. Each monitor of the 4×4
+                        // grid renders a distinct TECHNICAL readout (scrolling code · oscilloscope
+                        // · spectrum analyser · dashboard), varied per-monitor by hash, all
+                        // monochrome amber on dark glass over a faint graticule — the classic
+                        // phosphor-terminal look. Overrides the baked screen so content genuinely
+                        // MOVES; pure time-driven math, negligible cost.
+                        float2 g4 = float2(along, 1.0 - p.y) * 4.0;
+                        float2 mcell = floor(g4);
+                        float2 muv = fract(g4);
+                        float mh = hash21(mcell), mh2 = hash21(mcell + 7.0);
+                        float2 s = (muv - 0.09) / 0.82;            // screen glass inside the bezel, 0..1
+                        bool onScreen = s.x > 0.0 && s.x < 1.0 && s.y > 0.0 && s.y < 1.0;
+                        if (onScreen && !fixtureBusted(c)) {
+                            float sp = 0.6 + 1.6 * mh2;            // per-monitor rate
+                            float glow = 0.05 * (step(0.92, fract(s.x * 8.0)) + step(0.92, fract(s.y * 6.0)));  // faint graticule under everything
+                            if (mh < 0.34) {                       // SCROLLING CODE / LOG — fine rows of ragged text
+                                float ry = s.y * 13.0 + time * (1.3 + sp);
+                                float row = floor(ry);
+                                float len = 0.15 + 0.80 * hash21(float2(row, mcell.x + mcell.y * 3.0));         // per-line length
+                                float ch = step(0.40, fract(s.x * 16.0 + hash21(float2(row, 2.0)) * 17.0));     // character cells
+                                glow += 0.85 * ch * step(s.x, len) * step(0.20, fract(ry));                     // ragged lines, gaps between
+                            } else if (mh < 0.56) {                // OSCILLOSCOPE — a complex trace on the grid
+                                float y = 0.5 + 0.20 * sin(s.x * 16.0 + time * (3.0 + sp))
+                                              + 0.09 * sin(s.x * 37.0 - time * (5.0 + sp));
+                                glow += 1.0 - smoothstep(0.0, 0.035, abs(s.y - y));
+                            } else if (mh < 0.78) {                // SPECTRUM ANALYSER — many thin bars
+                                float bar = floor(s.x * 14.0);
+                                float h = 0.12 + 0.80 * pow(0.5 + 0.5 * sin(time * (2.4 + sp) + bar * 0.8 + mh * 6.0), 2.0);
+                                glow += 0.85 * step(s.y, h) * step(0.28, fract(s.x * 14.0));
+                            } else {                               // DASHBOARD — bar meters / scrolling values / mini-scope
+                                if (s.y > 0.64) {                  // two segmented bar meters (top)
+                                    float meter = (s.y > 0.82) ? 0.45 + 0.45 * sin(time * (1.4 + sp))
+                                                               : 0.30 + 0.55 * fract(time * 0.35 + mh);
+                                    glow += 0.85 * step(s.x, meter) * step(0.10, fract(s.x * 26.0));
+                                } else if (s.y > 0.28) {           // scrolling numeric rows (middle)
+                                    float row = floor(s.y * 8.0 + time * (0.8 + sp));
+                                    glow += 0.80 * step(0.50, fract(s.x * 18.0 + row * 4.0)) * step(s.x, 0.92);
+                                } else {                           // a mini oscilloscope strip (bottom)
+                                    glow += 1.0 - smoothstep(0.0, 0.03, abs(s.y - (0.14 + 0.09 * sin(s.x * 26.0 + time * 4.0))));
+                                }
+                            }
+                            glow *= 0.9 + 0.15 * fixtureFlicker(float2(c), time);
+                            if (U.dbg.z > 0.0) glow *= 0.40 + 0.60 * step(0.40, fract(time * 20.0 + mh * 3.1));  // fault stutter
+                            glow = clamp(glow, 0.0, 1.4);
+                            float3 amber = float3(1.0, 0.66, 0.15);
+                            alb = mix(float3(0.035, 0.022, 0.010), amber, min(1.0, glow));   // dark amber glass → bright amber content
+                            emis = glow * 2.3;                                               // self-lit; blooms + mirrors in the wet floor
+                            screenGlass = 1.0;
+                        } else {
+                            alb = fixtureBusted(c) ? float3(0.04, 0.04, 0.045) : float3(0.09, 0.10, 0.12);   // dark steel bezel (darker if dead)
+                            emis = 0.0;
                         }
                     }
                     float dirt = 1.0 - screenGlass;             // powered glass stays clean (matches the desk terminals)
