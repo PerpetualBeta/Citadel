@@ -106,6 +106,7 @@ final class GameView: MTKView {
     var onOpenSettings: (() -> Void)?
 
     private var mouseCaptured = false
+    private var cursorHidden = false
 
     init(frame: CGRect, device: MTLDevice, input: InputState) {
         self.input = input
@@ -123,11 +124,20 @@ final class GameView: MTKView {
 
     // ── mouse-look ──
     func updateMouseCapture(_ wanted: Bool) {
-        let want = wanted && GameSettings.shared.mouseEnabled && (window?.isKeyWindow ?? false)
-        if want == mouseCaptured { return }
-        mouseCaptured = want
-        if want { NSCursor.hide(); CGAssociateMouseAndMouseCursorPosition(0) }
-        else { CGAssociateMouseAndMouseCursorPosition(1); NSCursor.unhide() }
+        let inPlay = wanted && (window?.isKeyWindow ?? false)
+        // Hide the pointer during open play whether or not mouse-look is enabled — a
+        // visible cursor sitting over the game reads as a bug (matches Strataris).
+        if inPlay != cursorHidden {
+            cursorHidden = inPlay
+            if inPlay { NSCursor.hide() } else { NSCursor.unhide() }
+        }
+        // Capture the mouse (lock to relative motion for look) ONLY when mouse-look is
+        // enabled; keyboard/gamepad players keep a free — but hidden — cursor.
+        let wantCapture = inPlay && GameSettings.shared.mouseEnabled
+        if wantCapture != mouseCaptured {
+            mouseCaptured = wantCapture
+            CGAssociateMouseAndMouseCursorPosition(wantCapture ? 0 : 1)
+        }
     }
 
     override func mouseMoved(with event: NSEvent) { applyMouse(event) }
