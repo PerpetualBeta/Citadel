@@ -144,6 +144,13 @@ final class World {
     private var faultFlickerT: Float = 0         // remaining lights-flicker time after a fault fires
     private static let faultFlickerDur: Float = 1.7
     private(set) var powerDim: Float = 0         // 0 normally; 0…~0.65 as the lights sag/flicker with a fault (renderer reads it → dbg.z)
+    // electrical-fault audio: a shower CHARGES (buzz) then EMITs (sparks + crackle) a beat later
+    private var sparkCharge: [(site: Int, t: Float)] = []
+    private let faultHumRange: Float = 2.6       // metres — proximity hum inaudible beyond this (per spec: only within 2–3 m)
+    private let faultSparkRange: Float = 8.0     // metres — buzz/crackle distance falloff
+    private let faultChargeLead: Float = 0.20    // seconds the buzz leads the sparks
+    private var faultHumLevel: Float = 0         // smoothed hum level — eased toward target so it swells/fades, never snaps on
+    private let faultHumSmooth: Float = 0.30     // hum fade time-constant (s)
     // ── the Queen ──
     private var queenBreedCD: Float = 60         // seconds to her next spawn
     private var queenHintCD: Float = 0           // throttle for the "plasma only" hint
@@ -449,7 +456,7 @@ final class World {
         emitSteam(dt: dt)
         emitQueenDrips(dt: dt)
         emitWaterDrips(dt: dt, audio: audio)
-        emitSparks(dt: dt)
+        emitSparks(dt: dt, audio: audio)
         faultAmbTimer -= dt
         if faultAmbTimer <= 0 { audio.distantFault(); faultAmbTimer = rng.f(25, 60); faultFlickerT = World.faultFlickerDur }   // occasional far-off crack — and the lights answer it
         if faultFlickerT > 0 {
@@ -2167,30 +2174,78 @@ final class World {
     }
 
     /// Sparks spitting from shattered fixtures near the player (bursty), with the
-    /// odd curl of smoke off a dead panel.
-    private func emitSparks(dt: Float) {
+    /// odd curl of smoke off a dead panel. Audio: a close proximity HUM (louder the
+    /// nearer you stand, silent past ~2.6 m), and per shower a BUZZ just before, then
+    /// the sparks + a CRACKLE as they emit.
+    private func emitSparks(dt: Float, audio: AudioEngine) {
+        // ── every frame: proximity hum from the nearest VISIBLE fault. LOS-gated
+        // (a fault behind a wall stays quiet), on a smoothstep distance curve, and
+        // EASED toward the target so it swells with the approach + fades as you
+        // leave — no sudden cut-in when a fault first comes into view ──
+        var target: Float = 0
+        for v in sparkSites {
+            let d = vlen(v.pos - player.pos)
+            if d > faultHumRange { continue }
+            if !lineOfSight(player.pos, v.pos) { continue }
+            let t = 1 - d / faultHumRange
+            target = max(target, t * t * (3 - 2 * t))       // smoothstep: gentlest at the edge, loudest alongside
+        }
+        faultHumLevel += (target - faultHumLevel) * min(1, dt / faultHumSmooth)
+        audio.faultHum(faultHumLevel)
+        // ── every frame: resolve charging showers → emit sparks + crackle ──
+        var k = 0
+        while k < sparkCharge.count {
+            sparkCharge[k].t -= dt
+            if sparkCharge[k].t <= 0 {
+                let v = sparkSites[sparkCharge[k].site]
+                emitSparkShower(v)                                  // the sparks fly…
+                audio.faultCrackle(faultAudible(v.pos))             // …and crackle as they do (LOS-gated)
+                sparkCharge.remove(at: k)
+            } else { k += 1 }
+        }
+        // ── throttled: roll each nearby fault for a new shower ──
         sparkTimer -= dt
         if sparkTimer > 0 { return }
         sparkTimer = 0.07
         let pr: Float = 11
-        for v in sparkSites {
+        for (i, v) in sparkSites.enumerated() {
             if abs(v.pos.x - player.pos.x) > pr || abs(v.pos.y - player.pos.y) > pr { continue }
             // A faulty panel/light doesn't trickle constantly — it sits dark, then
-            // every few seconds throws a SHOWER of sparks, then goes quiet again.
-            if rng.f(0, 1) < 0.045 {
-                for _ in 0..<rng.i(20, 35) {                        // a big, unmistakable shower
-                    particles.append(Particle(pos: v.pos + SIMD2(rng.f(-0.06, 0.06), rng.f(-0.06, 0.06)),
-                                              vel: v.dir * rng.f(0.6, 2.8) + SIMD2(rng.f(-1.6, 1.6), rng.f(-1.6, 1.6)),
-                                              life: rng.f(0.25, 0.75), maxLife: 0.75, color: packRGBA(255, 246, 214),
-                                              size: rng.f(0.9, 2.0), height: rng.f(0.40, 0.82), rise: rng.f(-3.0, -0.5),
-                                              maxAlpha: 1.0, fire: true))        // sharp, energetic glints spraying out
-                }
+            // every few seconds throws a SHOWER. Charge it now (BUZZ), fire a beat
+            // later (sparks + CRACKLE) — unless it's already charging.
+            if rng.f(0, 1) < 0.045 && !sparkCharge.contains(where: { $0.site == i }) {
+                audio.faultBuzz(faultAudible(v.pos))                // buzz only when the fault is in sight
+                sparkCharge.append((site: i, t: faultChargeLead))
             }
             if rng.f(0, 1) < 0.02 {                                 // occasional smoke wisp off a dead panel
                 particles.append(Particle(pos: v.pos, vel: v.dir * 0.1, life: rng.f(0.9, 1.5), maxLife: 1.5,
                                           color: packRGBA(58, 56, 60), size: rng.f(8, 13), height: 0.62,
                                           rise: rng.f(0.4, 0.8), maxAlpha: 0.28))
             }
+        }
+    }
+
+    /// Distance attenuation for a fault's spark audio (buzz/crackle): 1 at the
+    /// panel, fading to 0 by `faultSparkRange`.
+    private func faultVol(_ pos: SIMD2<Float>) -> Float {
+        max(0, 1 - vlen(pos - player.pos) / faultSparkRange)
+    }
+
+    /// As `faultVol`, but silent unless the fault is in the player's line of sight —
+    /// no crackle heard through a wall.
+    private func faultAudible(_ pos: SIMD2<Float>) -> Float {
+        let v = faultVol(pos)
+        return v > 0 && lineOfSight(player.pos, pos) ? v : 0
+    }
+
+    /// The visible spark shower — a big, unmistakable burst of glints from a fault.
+    private func emitSparkShower(_ v: SteamVent) {
+        for _ in 0..<rng.i(20, 35) {
+            particles.append(Particle(pos: v.pos + SIMD2(rng.f(-0.06, 0.06), rng.f(-0.06, 0.06)),
+                                      vel: v.dir * rng.f(0.6, 2.8) + SIMD2(rng.f(-1.6, 1.6), rng.f(-1.6, 1.6)),
+                                      life: rng.f(0.25, 0.75), maxLife: 0.75, color: packRGBA(255, 246, 214),
+                                      size: rng.f(0.9, 2.0), height: rng.f(0.40, 0.82), rise: rng.f(-3.0, -0.5),
+                                      maxAlpha: 1.0, fire: true))        // sharp, energetic glints spraying out
         }
     }
 

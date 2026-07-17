@@ -43,6 +43,7 @@ final class AudioEngine {
         case fault                 // distant electric-shock ambience — occasional crack of a shorting circuit (see distantFault)
         case musicTitle, bedDrone, bedPulse, bedTension, bedSwarm
         case elevatorMove, elevatorDoor, elevatorShut
+        case faultHum, faultBuzz, faultCrackle   // electrical-fault: proximity hum LOOP, pre-spark buzz, spark crackle
 
         var base: String {
             switch self {
@@ -73,13 +74,16 @@ final class AudioEngine {
             case .elevatorMove: return "elevator_move"
             case .elevatorDoor: return "elevator_door"
             case .elevatorShut: return "elevator_shut"
+            case .faultHum: return "fault_hum"
+            case .faultBuzz: return "fault_buzz"
+            case .faultCrackle: return "fault_crackle"
             }
         }
         // bus: 0 music, 1 sfx, 2 ambient.
         var bus: Int {
             switch self {
             case .musicTitle: return 0
-            case .bedDrone, .bedPulse, .bedTension, .bedSwarm, .drip, .fault: return 2
+            case .bedDrone, .bedPulse, .bedTension, .bedSwarm, .drip, .fault, .faultHum, .faultBuzz, .faultCrackle: return 2
             default: return 1
             }
         }
@@ -87,7 +91,7 @@ final class AudioEngine {
         // ambient-bus ONE-SHOTS, so loop is spelled out rather than bus-derived
         var loop: Bool {
             switch self {
-            case .musicTitle, .bedDrone, .bedPulse, .bedTension, .bedSwarm: return true
+            case .musicTitle, .bedDrone, .bedPulse, .bedTension, .bedSwarm, .faultHum: return true
             default: return false
             }
         }
@@ -103,6 +107,9 @@ final class AudioEngine {
             case .wade: return 0.5
             case .drip: return 0.55
             case .fault: return 0.7
+            case .faultHum: return 0.6
+            case .faultBuzz: return 0.75
+            case .faultCrackle: return 0.9
             default: return 0.8
             }
         }
@@ -671,6 +678,22 @@ final class AudioEngine {
         tThreat = threat; tQueen = queen; tHealth = health; tCombat = combat
     }
 
+    // ── electrical-fault audio (World drives the volumes by proximity) ──────────
+    /// Continuous proximity hum on the looped fault_hum stem — World passes `vol`
+    /// 0…1 each frame from the nearest fault's distance (silent past ~2.6 m).
+    func faultHum(_ vol: Float) { setLoopVol(.faultHum, max(0, min(1, vol)) * Sound.faultHum.gain) }
+
+    /// The buzz just before a spark shower — distance-attenuated one-shot.
+    func faultBuzz(_ vol: Float) { playFaultOneShot(.faultBuzz, vol) }
+    /// The crackle as the sparks emit — distance-attenuated one-shot.
+    func faultCrackle(_ vol: Float) { playFaultOneShot(.faultCrackle, vol) }
+
+    private func playFaultOneShot(_ s: Sound, _ vol: Float) {
+        alog("play \(s) vol=\(String(format: "%.2f", vol))")
+        guard vol > 0.02, !isMuted(s), engine.isRunning, let bufs = bank[s] else { return }
+        playOneShot(bufs, gain: s.gain * min(1, vol))
+    }
+
     func startMusic(_ m: MusicMode, depth: Int = 1) {
         alog("startMusic \(m) depth=\(depth)")
         mode = m; levelDepth = depth
@@ -688,6 +711,7 @@ final class AudioEngine {
                 bedLevel = 0; bedStartup = 0
                 for s in [Sound.bedDrone, .bedPulse, .bedTension, .bedSwarm] { _ = startLoop(s, volume: 0) }
             }
+            _ = startLoop(.faultHum, volume: 0)     // electrical-fault proximity hum; World drives its volume each frame
         }
     }
     func stopMusic() { mode = .none; stopAllLoops() }
