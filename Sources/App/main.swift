@@ -28,7 +28,8 @@ import QuartzCore
 // CITADEL_AUDIOPROBE is exempt by construction: it renders offline.
 for key in ["CITADEL_SMOKE", "CITADEL_FITSHOT", "CITADEL_LOADPROBE", "CITADEL_TIMING",
             "CITADEL_SHOTS", "CITADEL_ARTPREVIEW", "CITADEL_CREATURES", "CITADEL_MATERIALS",
-            "CITADEL_BEAUTY", "CITADEL_GPU", "CITADEL_AUTOMAP", "CITADEL_ROOMS", "CITADEL_DISPLAYVID"]
+            "CITADEL_BEAUTY", "CITADEL_GPU", "CITADEL_AUTOMAP", "CITADEL_ROOMS", "CITADEL_DISPLAYVID",
+            "CITADEL_TITLESHOT"]
     where ProcessInfo.processInfo.environment[key] != nil {
     setenv("CITADEL_MUTE", "1", 1)
     break
@@ -503,6 +504,18 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_DISPLAYVID"] {
     let path = v.hasPrefix("fault:") ? String(v.dropFirst(6))
              : (v.isEmpty || v == "1" || v == "fault" ? nil : v)
     DisplayVid.run(outDir: path, fault: fault)
+    exit(0)
+}
+
+// CITADEL_TITLESHOT[=path] → render the title screen to a PNG (default ~/Desktop),
+// then exit. A no-window way to preview the front-end art without launching.
+if let v = ProcessInfo.processInfo.environment["CITADEL_TITLESHOT"] {
+    let out = (v.isEmpty || v == "1") ? NSHomeDirectory() + "/Desktop/citadel-title.png" : v
+    let c = Canvas2D()
+    FrontEnd.title(c, t: 3.0, hs: HighScores(), pad: false)
+    Captures.writePNG(c.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: 1,
+                      to: URL(fileURLWithPath: out))
+    print("Citadel: wrote title screenshot to \(out)")
     exit(0)
 }
 

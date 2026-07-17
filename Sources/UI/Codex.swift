@@ -50,74 +50,67 @@ enum FrontEnd {
     /// The title is an ARC subsurface terminal. Most of it is glyph-rain; the brand
     /// lives in the corner seal and the boot-log, never explained.
     static func title(_ c: Canvas2D, t: Float, hs: HighScores, pad: Bool = false) {
-        c.fillRect(0, 0, W, H, packRGBA(8, 9, 7))          // dead phosphor screen
-        terminalRain(c, t)
-        crtOverlay(c)
+        TitleArt.draw(c, t: t)                              // the animated xenomorph plate
 
-        // ── boot-log: a left-aligned terminal readout in the TOP-LEFT corner ──
-        let bx = uiS(24); var by = uiS(20); let bs = uiSf(10)
-        // recessive readout: small, dim, lighter-weight — it sets tone, never competes.
-        // monospace ⇒ pin the status keywords to a FIXED column; pad each label with a
-        // dotted leader up to it, so LINK LOST / BREACHED / … all left-align.
-        let bootLabel = packRGBA(116, 92, 42)
-        let bootRed = mixRGBA(packRGBA(0, 0, 0), red, 0.6)
-        let bootAmber = mixRGBA(packRGBA(0, 0, 0), amber, 0.62)
-        let cw = c.labelWidth("0", size: bs, weight: .medium, mono: true)
-        let statusCol = bx + 21 * cw
-        func boot(_ label: String, _ status: String, _ sc: UInt32) {
-            var pre = label
-            if !status.isEmpty { pre += " "; while pre.count < 20 { pre += "." } }
-            c.label(pre, bx, by, size: bs, color: bootLabel, weight: .medium, shadow: false, mono: true)
-            if !status.isEmpty { c.label(status, statusCol, by, size: bs, color: sc, weight: .semibold, shadow: false, mono: true) }
-            by += uiS(12)
+        // Legibility scrim: a soft left→right fade so the UI column reads over the
+        // plate's near-black left side (and settles the grain under the text).
+        let scrimW = uiS(330)
+        for x in 0..<scrimW {
+            let a = 0.6 * powf(1 - Float(x) / Float(scrimW), 1.6)
+            if a > 0.012 { c.fillRectBlend(x, 0, 1, H, packRGBA(0, 0, 0), a) }
         }
-        boot("ARC // SUBSURFACE  NODE 0x7F", "", 0)
-        boot("> RELAY STRATARIS", "LINK LOST", bootRed)
-        boot("> POWER", "ON RESERVE", bootAmber)
-        boot("> SECTOR SEAL", "BREACHED", bootRed)
-        boot("> BIOSIGN SWEEP", "ANOMALOUS", bootRed)
-        if Int(t * 1.6) % 2 == 0 { c.label("> \u{2588}", bx, by, size: bs, color: bootAmber, weight: .regular, shadow: false, mono: true) }
 
-        arcSeal(c, cx: W - uiS(52), cy: uiS(46), r: uiS(24), color: coldDim, alpha: 0.72)
+        let lx = uiS(30)
+        let black = packRGBA(0, 0, 0)
 
-        // ── CITADEL — bright core + a SOFT, SYMMETRIC phosphor glow (no hard extrude)
-        //    and a faint 1px chromatic-aberration fringe (crimson right / cyan left) ──
-        let lw = c.labelWidth("CITADEL", size: uiSf(82), weight: .heavy)
-        let lx = (W - lw) / 2, ly = uiS(96)
-        let halo = mixRGBA(packRGBA(0, 0, 0), amber, 0.22)
+        // ── ARC seal + node tag (brand seeding — cold, clinical, unexplained) ──
+        arcSeal(c, cx: lx + uiS(15), cy: uiS(30), r: uiS(14), color: coldDim, alpha: 0.72)
+        let hsLine = hs.entries.first.map { "// High Score: \($0.name) - \(commaSep($0.score))" } ?? "// No scores logged"
+        c.label(hsLine, lx + uiS(38), uiS(25), size: uiSf(11),
+                color: mixRGBA(black, cold, 0.72), weight: .medium, shadow: false, mono: true)
+
+        // ── CITADEL — left-aligned, bright amber core + soft halo + chromatic fringe ──
+        let logoSz = uiSf(78), ly = uiS(88)
+        let lw = c.labelWidth("CITADEL", size: logoSz, weight: .heavy)
+        let halo = mixRGBA(black, amber, 0.22)
         for (ox, oy) in [(-uiS(1), 0), (uiS(1), 0), (0, -uiS(1)), (0, uiS(1)), (-uiS(2), 0), (uiS(2), 0), (0, -uiS(2)), (0, uiS(2))] {
-            c.label("CITADEL", lx + ox, ly + oy, size: uiSf(82), color: halo, weight: .heavy, shadow: false)
+            c.label("CITADEL", lx + ox, ly + oy, size: logoSz, color: halo, weight: .heavy, shadow: false)
         }
-        c.label("CITADEL", lx + uiS(1), ly, size: uiSf(82), color: red,  weight: .heavy, shadow: false)
-        c.label("CITADEL", lx - uiS(1), ly, size: uiSf(82), color: cold, weight: .heavy, shadow: false)
-        c.label("CITADEL", lx,          ly, size: uiSf(82), color: amberHi, weight: .heavy, shadow: false, glow: packRGBA(110, 80, 28))
-        c.labelCentered("A STRATARIS WAR STORY", uiS(188), size: uiSf(17), color: amber, weight: .semibold, shadow: false, mono: true)
+        c.label("CITADEL", lx + uiS(1), ly, size: logoSz, color: red,     weight: .heavy, shadow: false)
+        c.label("CITADEL", lx - uiS(1), ly, size: logoSz, color: cold,    weight: .heavy, shadow: false)
+        c.label("CITADEL", lx,          ly, size: logoSz, color: amberHi, weight: .heavy, shadow: false, glow: packRGBA(110, 80, 28))
+        // subtitle centred under the CITADEL wordmark
+        let subtitle = "A STRATARIS WAR STORY", subSz = uiSf(16)
+        let subW = c.labelWidth(subtitle, size: subSz, weight: .semibold, mono: true)
+        c.label(subtitle, lx + (lw - subW) / 2, uiS(162), size: subSz,
+                color: amber, weight: .semibold, shadow: false, mono: true)
 
-        // ── lower console ──
+        // ── console: descend prompt (blink) + menu ──
         if Int(t * 1.5) % 2 == 0 {
-            c.labelCentered("> PRESS  \(confirmName(pad: pad))  TO  DESCEND", uiS(252), size: uiSf(28), color: amberHi, weight: .bold, glow: packRGBA(60, 44, 0), mono: true)
+            c.label("> PRESS  \(confirmName(pad: pad))  TO  DESCEND", lx, uiS(266), size: uiSf(25),
+                    color: amberHi, weight: .bold, shadow: false, glow: packRGBA(60, 44, 0), mono: true)
         }
-        c.labelCentered("[B]  BRIEFING        [I]  FIELD INTEL", uiS(288), size: uiSf(16), color: amber, weight: .medium, shadow: false, mono: true)
-        // [CMD,] not [⌘,]: the ⌘ glyph falls back out of the mono font and its
-        // clashing metrics wreck the kerning — and a terminal wouldn't own it.
-        // The "]" is hand-kerned into the comma's mono cell (which is mostly
-        // whitespace on the right), or "[CMD,]" gapes before the bracket.
-        let hint1 = "[K]  Keyboard      [C]  Controller      [CMD,"
-        let hint2 = "]  Settings"
-        let hintSz = uiSf(13)
+        c.label("[B] BRIEFING      [I] FIELD INTEL", lx, uiS(298), size: uiSf(15),
+                color: amber, weight: .medium, shadow: false, mono: true)
+        // [CMD,] not [⌘,]: the ⌘ glyph falls out of the mono font and wrecks kerning.
+        let hint1 = "[K] Keyboard   [C] Controller   [CMD,"
+        let hint2 = "] Settings"
+        let hintSz = uiSf(12)
         let hw1 = c.labelWidth(hint1, size: hintSz, weight: .medium, mono: true)
-        let hw2 = c.labelWidth(hint2, size: hintSz, weight: .medium, mono: true)
         let kern = c.labelWidth(",", size: hintSz, weight: .medium, mono: true) * 2 / 5
-        let hx = (W - (hw1 + hw2 - kern)) / 2
-        c.label(hint1, hx, uiS(312), size: hintSz, color: amberDim, weight: .medium, shadow: false, mono: true)
-        c.label(hint2, hx + hw1 - kern, uiS(312), size: hintSz, color: amberDim, weight: .medium, shadow: false, mono: true)
+        c.label(hint1, lx, uiS(320), size: hintSz, color: amberDim, weight: .medium, shadow: false, mono: true)
+        c.label(hint2, lx + hw1 - kern, uiS(320), size: hintSz, color: amberDim, weight: .medium, shadow: false, mono: true)
 
-        // ── bottom status bar: three columns under a thin rule ──
-        let sbY = uiS(356)
-        c.fillRectBlend(uiS(20), sbY, W - uiS(40), uiS(1), amberDim, 0.45)
-        let sy = sbY + uiS(7), sCol = packRGBA(150, 130, 80)
-        c.label(hs.entries.first.map { "TOP \($0.score)  \(short($0.name))" } ?? "TOP --", uiS(26), sy, size: uiSf(12), color: sCol, weight: .medium, shadow: false, mono: true)
-        c.labelRight("A JORVIK SOFTWARE GAME", W - uiS(26), sy, size: uiSf(12), color: packRGBA(120, 104, 66), weight: .medium, shadow: false, mono: true)
+        // ── bottom: top score + studio credit, kept in the clear left column ──
+        // studio credit, bottom-right — two lines, teal with a black outline so it
+        // reads over the alien's lit leg.
+        let crSz = uiSf(12), crRight = W - uiS(24)
+        func credit(_ s: String, _ y: Int) {
+            let w = c.labelWidth(s, size: crSz, weight: .semibold, mono: true)
+            c.label(s, crRight - w, y, size: crSz, color: cold, weight: .semibold, shadow: false, glow: packRGBA(0, 0, 0), mono: true)
+        }
+        credit("Produced by", uiS(356))
+        credit("Jorvik Software", uiS(374))
     }
 
     /// Deterministic digital-rain derived purely from `t` (the front-end keeps no
@@ -532,6 +525,13 @@ enum FrontEnd {
     }
 
     private static func short(_ s: String) -> String { s.count > 16 ? String(s.prefix(16)) : s }
+
+    /// Format an integer with comma thousands separators (109365 → "109,365").
+    private static func commaSep(_ n: Int) -> String {
+        var out = "", c = 0
+        for ch in String(n).reversed() { if c > 0 && c % 3 == 0 { out.append(",") }; out.append(ch); c += 1 }
+        return String(out.reversed())
+    }
 }
 
 private extension String {
