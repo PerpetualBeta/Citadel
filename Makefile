@@ -1,10 +1,11 @@
 # Citadel — first-person retro shooter (a Doom tribute), set in the Strataris
 # universe. The SECOND native game in the Jorvik suite (after Strataris).
 #
-# Built with swiftc + a runtime-compiled Metal blit shader; the world is a
-# CPU raycaster (textured walls + floor/ceiling casting + billboarded sprites)
-# rendered into a 320×200 framebuffer — Doom's native resolution — and upscaled
-# nearest-neighbour, aspect-correct, for the period-correct pixelated look.
+# Built with swiftc + Metal. The shipping renderer is a GPU SDF raymarcher: a
+# Metal compute kernel sphere-traces the level's distance field, floor/ceiling and
+# native SDF creatures, grades the HDR result (bloom / ACES / teal-amber grade /
+# vignette) and reads it back into a framebuffer; only billboard particles are
+# composited over it on the CPU with per-pixel depth occlusion.
 #
 # Graphics are generated in code (no textures, sprites, fonts or models).
 # AUDIO is the deliberate exception: Citadel ships real open-source sample
@@ -98,5 +99,11 @@ EMBEDDED_FRAMEWORKS := Sparkle
 # validates without com.apple.security.cs.disable-library-validation. See the
 # comment in Citadel.entitlements for the pre-release signed-build check.
 ENTITLEMENTS     := Citadel.entitlements
+
+# Test/capture harness entry points (the CITADEL_* env dispatch in main.swift)
+# compile into local / ad-hoc dev builds only; signed, notarised releases strip
+# them, so a shipped Citadel ignores every CITADEL_* variable. See release.mk's
+# DEV_ONLY_DEFINES / DEV_DEFINE_FLAGS (gated on the ad-hoc SIGN_ID "-").
+DEV_ONLY_DEFINES := CITADEL_HARNESS
 
 include ../jorvik-release/release.mk

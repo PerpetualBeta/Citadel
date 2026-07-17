@@ -12,6 +12,15 @@ import Cocoa
 import Metal
 import QuartzCore
 
+// ── Test / capture harness — dev builds only ──────────────────────────────────
+// The entire CITADEL_* env-var dispatch below is compiled ONLY into local / ad-hoc
+// builds: release.mk defines CITADEL_HARNESS when SIGN_ID is the ad-hoc "-", and
+// omits it for a signed, notarised release. So a shipped Citadel ignores every
+// CITADEL_* variable and goes straight to the game window. The harness TYPES stay
+// compiled (CreatureLab and Captures are load-bearing for the renderer); only
+// these entry points are gated out of release.
+#if CITADEL_HARNESS
+
 // EVERY harness run is hard-muted before the first AudioEngine can exist:
 // CITADEL_MUTE stops the engine from ever opening the output device, so a
 // harness is PHYSICALLY incapable of sound — volume-0 approaches proved
@@ -496,6 +505,8 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_DISPLAYVID"] {
     DisplayVid.run(outDir: path, fault: fault)
     exit(0)
 }
+
+#endif  // CITADEL_HARNESS
 
 // Single-instance guard. Two live copies each sphere-trace the scene and contend
 // for the GPU + the per-frame readback — enough stacked instances will drag the

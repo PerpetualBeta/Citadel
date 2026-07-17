@@ -29,32 +29,39 @@ struct SpriteCompositor {
         let planeY = cos(p.dir) * RenderConfig.cameraPlane
         let map = world.map
         let W = viewW
-        c.resetZ()
-        for x in 0..<W {
-            let cameraX = 2 * Float(x) / Float(W) - 1
-            let rayX = dirX + planeX * cameraX, rayY = dirY + planeY * cameraX
-            var mapX = Int(p.pos.x), mapY = Int(p.pos.y)
-            let deltaX = rayX == 0 ? 1e30 : abs(1 / rayX), deltaY = rayY == 0 ? 1e30 : abs(1 / rayY)
-            var stepX = 0, stepY = 0, sideX: Float = 0, sideY: Float = 0
-            if rayX < 0 { stepX = -1; sideX = (p.pos.x - Float(mapX)) * deltaX } else { stepX = 1; sideX = (Float(mapX) + 1 - p.pos.x) * deltaX }
-            if rayY < 0 { stepY = -1; sideY = (p.pos.y - Float(mapY)) * deltaY } else { stepY = 1; sideY = (Float(mapY) + 1 - p.pos.y) * deltaY }
-            var side = 0, iter = 0, dist: Float = 0.0001
-            while iter < 256 {
-                iter += 1
-                if sideX < sideY { sideX += deltaX; mapX += stepX; side = 0 } else { sideY += deltaY; mapY += stepY; side = 1 }
-                let id = map.wallAt(mapX, mapY)
-                if id == 0 { continue }
-                if map.inBounds(mapX, mapY), let d = map.doors[map.idx(mapX, mapY)], d.open > 0 {
-                    if d.open >= GameMap.passThreshold { continue }   // fully retracted
-                    // centre-split: sprites show through the widening slit, are occluded by the panels
-                    let dd = max(0.0001, side == 0 ? (sideX - deltaX) : (sideY - deltaY))
-                    let hu = side == 0 ? (p.pos.y + dd * rayY) : (p.pos.x + dd * rayX)
-                    let s = 0.5 * min(1, d.open / GameMap.passThreshold)
-                    if abs((hu - floor(hu)) - 0.5) < s { continue }
+        // The z-buffer fill below is only consumed on the CPU-fallback path
+        // (depth == nil, i.e. the headless SmokeTest). On the shipping GPU path the
+        // caller passes the read-back GPU depth, which drawThings reads instead — so
+        // skip this whole per-column wall-DDA, which otherwise runs W times a frame
+        // purely to fill a buffer nobody reads.
+        if depth == nil {
+            c.resetZ()
+            for x in 0..<W {
+                let cameraX = 2 * Float(x) / Float(W) - 1
+                let rayX = dirX + planeX * cameraX, rayY = dirY + planeY * cameraX
+                var mapX = Int(p.pos.x), mapY = Int(p.pos.y)
+                let deltaX = rayX == 0 ? 1e30 : abs(1 / rayX), deltaY = rayY == 0 ? 1e30 : abs(1 / rayY)
+                var stepX = 0, stepY = 0, sideX: Float = 0, sideY: Float = 0
+                if rayX < 0 { stepX = -1; sideX = (p.pos.x - Float(mapX)) * deltaX } else { stepX = 1; sideX = (Float(mapX) + 1 - p.pos.x) * deltaX }
+                if rayY < 0 { stepY = -1; sideY = (p.pos.y - Float(mapY)) * deltaY } else { stepY = 1; sideY = (Float(mapY) + 1 - p.pos.y) * deltaY }
+                var side = 0, iter = 0, dist: Float = 0.0001
+                while iter < 256 {
+                    iter += 1
+                    if sideX < sideY { sideX += deltaX; mapX += stepX; side = 0 } else { sideY += deltaY; mapY += stepY; side = 1 }
+                    let id = map.wallAt(mapX, mapY)
+                    if id == 0 { continue }
+                    if map.inBounds(mapX, mapY), let d = map.doors[map.idx(mapX, mapY)], d.open > 0 {
+                        if d.open >= GameMap.passThreshold { continue }   // fully retracted
+                        // centre-split: sprites show through the widening slit, are occluded by the panels
+                        let dd = max(0.0001, side == 0 ? (sideX - deltaX) : (sideY - deltaY))
+                        let hu = side == 0 ? (p.pos.y + dd * rayY) : (p.pos.x + dd * rayX)
+                        let s = 0.5 * min(1, d.open / GameMap.passThreshold)
+                        if abs((hu - floor(hu)) - 0.5) < s { continue }
+                    }
+                    dist = max(0.0001, side == 0 ? (sideX - deltaX) : (sideY - deltaY)); break
                 }
-                dist = max(0.0001, side == 0 ? (sideX - deltaX) : (sideY - deltaY)); break
+                c.zbuffer[x] = dist
             }
-            c.zbuffer[x] = dist
         }
         let t = world.elapsed
         let flick: Float = 1 + 0.035 * sinf(t * 8.7) + 0.025 * sinf(t * 21.3 + 1.7)

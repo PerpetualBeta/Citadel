@@ -31,6 +31,14 @@ final class GPUWorldRenderer {
     private var gpuDoorSig: UInt64 = 0
     private var gpuWorldID: ObjectIdentifier?
     private var gpuReady = false
+    // Grow-only per-frame GPU scratch for the packed creature/shape arrays: reused
+    // across frames (memcpy into .contents()) instead of allocating two fresh
+    // MTLBuffers every frame. Safe because render() waits for GPU completion before
+    // the next frame overwrites them; capacity only grows, never shrinks.
+    private var monScratch: MTLBuffer?
+    private var monScratchCap = 0
+    private var shpScratch: MTLBuffer?
+    private var shpScratchCap = 0
     /// Harness-only: force the kernel's per-ray creature mask fully on. The mask
     /// is a pure optimisation, so flipping this must not change a pixel — the
     /// load probe diffs the two renders to prove it (catches sign/margin/window
@@ -50,6 +58,21 @@ final class GPUWorldRenderer {
         self.queue = q
         self.raymarch = p.raymarch
         self.post = p.post
+    }
+
+    /// Upload `arr` into a reused grow-only shared buffer and return it for the
+    /// encoder — reallocating (doubling) only when the element count outgrows the
+    /// current capacity, otherwise just memcpy'ing into the live buffer. `arr` must
+    /// be non-empty (callers pad to ≥1 so `setBytes`/`setBuffer` never see 0 length).
+    private func uploadScratch<T>(_ arr: [T], _ buf: inout MTLBuffer?, _ cap: inout Int) -> MTLBuffer? {
+        let need = arr.count
+        if buf == nil || cap < need {
+            let grow = max(need, cap * 2)
+            guard let nb = device.makeBuffer(length: MemoryLayout<T>.stride * grow, options: .storageModeShared) else { return nil }
+            buf = nb; cap = grow
+        }
+        arr.withUnsafeBufferPointer { _ = memcpy(buf!.contents(), $0.baseAddress!, MemoryLayout<T>.stride * need) }
+        return buf
     }
 
     /// Draw `world`'s 3-D view into the top viewHeight rows of `canvas`. Returns
@@ -453,8 +476,8 @@ final class GPUWorldRenderer {
         if doorsPack.isEmpty { doorsPack = [SIMD4<Float>(-1, -1, 0, 0)] }             // ≥1 elem; (-1,-1) matches no cell
         if cmons.isEmpty { cmons = [GPURaymarch.GMonster(a: .zero, b: .zero, c: .zero)] }
         if cshapes.isEmpty { cshapes = [GPURaymarch.GShape(a: .zero, b: .zero, col: .zero)] }
-        let monBuf = device.makeBuffer(bytes: cmons, length: MemoryLayout<GPURaymarch.GMonster>.stride * cmons.count, options: .storageModeShared)
-        let shpBuf = device.makeBuffer(bytes: cshapes, length: MemoryLayout<GPURaymarch.GShape>.stride * cshapes.count, options: .storageModeShared)
+        guard let monBuf = uploadScratch(cmons, &monScratch, &monScratchCap),
+              let shpBuf = uploadScratch(cshapes, &shpScratch, &shpScratchCap) else { return false }
         guard let cmd = queue.makeCommandBuffer(), let enc = cmd.makeComputeCommandEncoder() else { return false }
         enc.setComputePipelineState(raymarch)
         enc.setTexture(dt, index: 0); enc.setTexture(li, index: 1); enc.setTexture(hdr, index: 2)
@@ -484,16 +507,19 @@ final class GPUWorldRenderer {
         // read the graded 3-D view straight into the framebuffer's top viewHeight rows
         outT.getBytes(canvas.framebuffer, bytesPerRow: RenderConfig.width * 4,
                       from: MTLRegionMake2D(0, 0, RenderConfig.width, RenderConfig.viewHeight), mipmapLevel: 0)
-        // read back per-pixel scene depth, then composite the sprite things (items /
-        // projectiles / particles) over the GPU view with correct per-pixel occlusion
-        let vh = RenderConfig.viewHeight
-        gpuDepth.withUnsafeMutableBytes {
-            depthT.getBytes($0.baseAddress!, bytesPerRow: RenderConfig.width * 4,
-                            from: MTLRegionMake2D(0, 0, RenderConfig.width, vh), mipmapLevel: 0)
-        }
         // drums + sockets + mines are all SDF now (raymarched above); only particles
-        // remain billboards on the GPU path
-        gpuDepth.withUnsafeBufferPointer { spriteCompositor.overlayThings(world, into: canvas, depth: $0.baseAddress, includeProjectiles: false, includeDrums: false, includeSockets: false, includeMines: false) }
+        // remain billboards on the GPU path — so the ~4 MB depth read-back and the
+        // sprite composite are only needed on frames that actually have particles.
+        // Out of combat there are none, so skip both entirely (the depth texture is
+        // still written by the kernel; we just don't pull it back to the CPU).
+        if !world.particles.isEmpty {
+            let vh = RenderConfig.viewHeight
+            gpuDepth.withUnsafeMutableBytes {
+                depthT.getBytes($0.baseAddress!, bytesPerRow: RenderConfig.width * 4,
+                                from: MTLRegionMake2D(0, 0, RenderConfig.width, vh), mipmapLevel: 0)
+            }
+            gpuDepth.withUnsafeBufferPointer { spriteCompositor.overlayThings(world, into: canvas, depth: $0.baseAddress, includeProjectiles: false, includeDrums: false, includeSockets: false, includeMines: false) }
+        }
         return true
     }
 }
