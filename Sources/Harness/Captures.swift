@@ -236,3 +236,66 @@ enum Captures {
         try? png.write(to: url)
     }
 }
+
+// Citadel — animated computer-display preview (CITADEL_DISPLAYVID[=dir]).
+//
+// Finds a computer-bank wall, stands facing it, and renders a time-sequence of
+// frames (the screens animate off `world.elapsed`, the shader's `time`) as PNGs
+// for ffmpeg to stitch into a silent preview video — a headless, muted "sneak
+// peek" with no game window.
+enum DisplayVid {
+    static func run(outDir: String?) {
+        let dir = URL(fileURLWithPath: outDir ?? NSHomeDirectory() + "/Desktop/Citadel-DisplayVid")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        guard let device = MTLCreateSystemDefaultDevice(), let gpu = GPUWorldRenderer(device: device) else {
+            print("Citadel: no Metal device for display video"); return
+        }
+        let W = RenderConfig.width, H = RenderConfig.viewHeight
+
+        // Find a level/seed with a computer bank + a clear standing spot facing it,
+        // BACKED OFF so the whole bank frames and the headlamp doesn't blow it out.
+        // Levels 1–4 render lit without ticking (the "5+ black" harness quirk).
+        var chosen: (world: World, pos: SIMD2<Float>, dir: Float)?
+        search: for lvl in 1...4 { for seed in UInt64(1)...12 {
+            let world = World(level: lvl, colonyIndex: 0, seed: seed)
+            func openReach(_ c: SIMD2<Float>) -> Bool {
+                let x = Int(c.x), y = Int(c.y)
+                return world.map.inBounds(x, y) && !world.map.blocksMovement(x, y)
+            }
+            for y in 0..<world.map.h { for x in 0..<world.map.w {
+                if world.map.wall[world.map.idx(x, y)] != WallTex.computer.rawValue { continue }
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    guard world.map.inBounds(x + dx, y + dy),
+                          world.map.wall[world.map.idx(x + dx, y + dy)] == 0 else { continue }
+                    let target = SIMD2<Float>(Float(x) + 0.5, Float(y) + 0.5)   // the bank on the wall
+                    let baseAng = atan2(Float(dy), Float(dx))                    // room-ward normal
+                    for back in [Float(3.2), 2.7, 2.2, 1.7] {
+                        for aoff in [Float(0), 0.30, -0.30] {                    // straight back, then a little angle
+                            let cam = target + SIMD2(cos(baseAng + aoff), sin(baseAng + aoff)) * back
+                            if openReach(cam) && openReach((cam + target) * 0.5) {   // cam + the path to it are clear
+                                chosen = (world, cam, atan2(target.y - cam.y, target.x - cam.x))
+                                break search
+                            }
+                        }
+                    }
+                }
+            }}
+        }}
+        guard let c = chosen else { print("Citadel: no computer-bank wall found (levels 1–4, 12 seeds)"); return }
+
+        let world = c.world
+        world.monsters = []; world.items = []; world.props = []   // clean product shot — no actors/pickups/furniture in frame
+        world.drums = []; world.sockets = []
+        world.player.pos = c.pos; world.player.dir = c.dir; world.player.muzzle = 0
+        world.player.dead = true                              // suppress the held weapon (render gates the viewmodel on this, nothing else here)
+        let canvas = Canvas2D()
+        let fps = 30, secs = 6, frames = fps * secs
+        for f in 0..<frames {
+            world.elapsed = Float(f) / Float(fps)             // advance the shader's `time` — the displays animate
+            _ = gpu.render(world, into: canvas)
+            Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1,
+                              to: dir.appendingPathComponent(String(format: "frame-%04d.png", f)))
+        }
+        print("Citadel: wrote \(frames) frames (\(secs)s @ \(fps)fps) to \(dir.path)")
+    }
+}

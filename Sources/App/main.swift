@@ -19,7 +19,7 @@ import QuartzCore
 // CITADEL_AUDIOPROBE is exempt by construction: it renders offline.
 for key in ["CITADEL_SMOKE", "CITADEL_FITSHOT", "CITADEL_LOADPROBE", "CITADEL_TIMING",
             "CITADEL_SHOTS", "CITADEL_ARTPREVIEW", "CITADEL_CREATURES", "CITADEL_MATERIALS",
-            "CITADEL_BEAUTY", "CITADEL_GPU", "CITADEL_AUTOMAP", "CITADEL_ROOMS"]
+            "CITADEL_BEAUTY", "CITADEL_GPU", "CITADEL_AUTOMAP", "CITADEL_ROOMS", "CITADEL_DISPLAYVID"]
     where ProcessInfo.processInfo.environment[key] != nil {
     setenv("CITADEL_MUTE", "1", 1)
     break
@@ -486,6 +486,11 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_AUTOMAP"] {
 
 if let v = ProcessInfo.processInfo.environment["CITADEL_ROOMS"] {
     RoomShots.run(outDir: v.isEmpty || v == "1" ? nil : v)
+    exit(0)
+}
+
+if let v = ProcessInfo.processInfo.environment["CITADEL_DISPLAYVID"] {
+    DisplayVid.run(outDir: v.isEmpty || v == "1" ? nil : v)
     exit(0)
 }
 
