@@ -490,7 +490,10 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_ROOMS"] {
 }
 
 if let v = ProcessInfo.processInfo.environment["CITADEL_DISPLAYVID"] {
-    DisplayVid.run(outDir: v.isEmpty || v == "1" ? nil : v)
+    let fault = v.hasPrefix("fault")                          // "fault" or "fault:<dir>" stages an electrical fault mid-clip
+    let path = v.hasPrefix("fault:") ? String(v.dropFirst(6))
+             : (v.isEmpty || v == "1" || v == "fault" ? nil : v)
+    DisplayVid.run(outDir: path, fault: fault)
     exit(0)
 }
 

@@ -143,7 +143,7 @@ final class World {
     private var faultAmbTimer: Float = 12        // countdown to the next distant electric-shock (damaged-building ambience)
     private var faultFlickerT: Float = 0         // remaining lights-flicker time after a fault fires
     private static let faultFlickerDur: Float = 1.7
-    private(set) var powerDim: Float = 0         // 0 normally; 0…~0.65 as the lights sag/flicker with a fault (renderer reads it → dbg.z)
+    var powerDim: Float = 0                      // 0 normally; 0…~0.65 as the lights sag/flicker with a fault (renderer reads it → dbg.z). Settable so a capture harness can stage a fault.
     // electrical-fault audio: a shower CHARGES (buzz) then EMITs (sparks + crackle) a beat later
     private var sparkCharge: [(site: Int, t: Float)] = []
     private let faultHumRange: Float = 2.6       // metres — proximity hum inaudible beyond this (per spec: only within 2–3 m)

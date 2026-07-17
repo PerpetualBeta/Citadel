@@ -244,7 +244,9 @@ enum Captures {
 // for ffmpeg to stitch into a silent preview video — a headless, muted "sneak
 // peek" with no game window.
 enum DisplayVid {
-    static func run(outDir: String?) {
+    // `fault` stages an electrical fault mid-clip (the lights sag + the screens
+    // stutter, then recover) so the fault-stutter behaviour can be captured.
+    static func run(outDir: String?, fault: Bool = false) {
         let dir = URL(fileURLWithPath: outDir ?? NSHomeDirectory() + "/Desktop/Citadel-DisplayVid")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         guard let device = MTLCreateSystemDefaultDevice(), let gpu = GPUWorldRenderer(device: device) else {
@@ -292,6 +294,15 @@ enum DisplayVid {
         let fps = 30, secs = 6, frames = fps * secs
         for f in 0..<frames {
             world.elapsed = Float(f) / Float(fps)             // advance the shader's `time` — the displays animate
+            if fault {                                        // stage a fault at t≈2s: lights sag + screens stutter, then recover by ~4.4s
+                let fe = world.elapsed - 2.0
+                var dim: Float = 0
+                if fe > 0, fe < 2.4 {
+                    let env = fe < 0.18 ? fe / 0.18 : max(0, 1 - (fe - 0.18) / 2.2)   // fast onset, slow decay
+                    dim = min(0.72, env * (0.55 + 0.45 * abs(sinf(fe * 34) * sinf(fe * 11 + 1.3))))  // erratic flicker on top
+                }
+                world.powerDim = dim
+            }
             _ = gpu.render(world, into: canvas)
             Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1,
                               to: dir.appendingPathComponent(String(format: "frame-%04d.png", f)))
