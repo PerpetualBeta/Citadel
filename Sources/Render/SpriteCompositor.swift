@@ -171,7 +171,7 @@ struct SpriteCompositor {
                 let lit: Float = sk.charge > 0 ? (0.45 + 0.4 * sin(sk.pulse * 4)) : 0.05
                 extraGlow = SIMD3(0.10, 0.40, 0.55) * lit
             default:
-                drawParticle(world.particles[thing.index], into: c, p: p, dirX: dirX, dirY: dirY, planeX: planeX, planeY: planeY, invDet: invDet, scale: particleScale)
+                drawParticle(world.particles[thing.index], into: c, p: p, dirX: dirX, dirY: dirY, planeX: planeX, planeY: planeY, invDet: invDet, scale: particleScale, depthBuf: depthBuf)
                 continue
             }
 
@@ -275,7 +275,8 @@ struct SpriteCompositor {
     private static let fallLUT: [Float] = (0...256).map { let f = 1 - (Float($0) / 256).squareRoot(); return f * f }
 
     private func drawParticle(_ pa: Particle, into c: Canvas2D, p: Player,
-                              dirX: Float, dirY: Float, planeX: Float, planeY: Float, invDet: Float, scale: Float = 1) {
+                              dirX: Float, dirY: Float, planeX: Float, planeY: Float, invDet: Float, scale: Float = 1,
+                              depthBuf: UnsafePointer<Float>? = nil) {
         let rel = pa.pos - p.pos
         let tX = invDet * (dirY * rel.x - dirX * rel.y)
         let tY = invDet * (-planeY * rel.x + planeX * rel.y)
@@ -284,7 +285,12 @@ struct SpriteCompositor {
         let lineFull = Float(RenderConfig.projHeight) / tY
         let screenX = Int(Float(W) / 2 * (1 + tX / tY))
         let screenY = horizon + Int(lineFull * 0.5) - Int(lineFull * pa.height)
-        if screenX < 0 || screenX >= W || tY >= c.zbuffer[screenX] { return }
+        if screenX < 0 || screenX >= W { return }
+        // Occlude against the GPU per-pixel depth (which includes dynamic doors) so a
+        // spark behind the sealed elevator door — or any wall — is culled. Fall back
+        // to the CPU per-column z-buffer (which is wall-only, so it misses doors).
+        let occ = depthBuf.map { $0[min(max(screenY, 0), viewH - 1) * W + screenX] } ?? c.zbuffer[screenX]
+        if tY >= occ { return }
         // CAP + STRIDE: a soft particle right at the camera used to project to a
         // radius of THOUSANDS of pixels, and this loop is O(r²) CPU pixel blends —
         // one close flame could demand tens of millions of read-modify-writes and
