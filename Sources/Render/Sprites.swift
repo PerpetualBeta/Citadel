@@ -120,14 +120,23 @@ final class Sprites {
     private let mGrip = packRGBA(96, 70, 48), mGripL = packRGBA(140, 104, 70), mGripD = packRGBA(58, 42, 28)
 
     private init() {
-        for k in MonsterKind.allCases { monsterCache[k.rawValue] = buildMonsterSet(k) }
         for k in ItemKind.allCases { itemCache[k.rawValue] = buildItem(k) }
         for k in PropKind.allCases { propCache[k.rawValue] = MeshProps.sprite(k) }
         for k in ProjectileKind.allCases { projCache[k.rawValue] = buildProjectile(k) }
         for bracket in 0..<5 { for dir in 0..<3 { faces.append(buildFace(bracket, dir)) } }
     }
 
-    func monster(_ k: MonsterKind) -> MonsterSprites { monsterCache[k.rawValue]! }
+    // Creatures are drawn NATIVELY by the GPU renderer now — SDF drones and the
+    // mesh Queen — so these billboards go unused on the shipping path (the only
+    // drawThings caller passes includeMonsters:false; the CPU raycaster that once
+    // drew them is gone). The offline bake is the expensive one: 5 frames × 8
+    // angles of SDF raymarch PER creature (~3.8 s, and it used to land on the first
+    // gameplay frame as a multi-second freeze the instant you left the lift). Bake
+    // it lazily so it only ever runs if a caller genuinely asks for a billboard.
+    func monster(_ k: MonsterKind) -> MonsterSprites {
+        if let s = monsterCache[k.rawValue] { return s }
+        let s = buildMonsterSet(k); monsterCache[k.rawValue] = s; return s
+    }
     func item(_ k: ItemKind) -> Sprite { itemCache[k.rawValue]! }
     func prop(_ k: PropKind) -> Sprite { propCache[k.rawValue]! }
     func projectile(_ k: ProjectileKind) -> Sprite { projCache[k.rawValue]! }
