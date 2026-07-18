@@ -107,9 +107,9 @@ final class AudioEngine {
             case .wade: return 0.5
             case .drip: return 0.55
             case .fault: return 0.7
-            case .faultHum: return 0.6
-            case .faultBuzz: return 0.75
-            case .faultCrackle: return 0.9
+            case .faultHum: return 0.48       // hum→buzz→crackle chain trimmed 20% (was 0.60/0.75/0.90)
+            case .faultBuzz: return 0.6
+            case .faultCrackle: return 0.72
             default: return 0.8
             }
         }
