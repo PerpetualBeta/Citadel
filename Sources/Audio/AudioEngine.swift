@@ -356,6 +356,15 @@ final class AudioEngine {
         musicMix.outputVolume = (muted || allB || mb.contains("music")) ? 0 : musicGain
         sfxMix.outputVolume   = (muted || allB || mb.contains("sfx"))   ? 0 : sfxGain
         ambMix.outputVolume   = (muted || allB || mb.contains("amb"))   ? 0 : ambientGain
+        // Master mute (the "m" key) is decisive HERE, at the final mixer stage.
+        // Zeroing the three group buses alone leaked audible transients — a player
+        // node wired straight to a bus mixer isn't fully silenced by that bus's
+        // outputVolume=0 (a two-stage-mixer quirk; measured ~-24 dB of leak on
+        // plasma/elevator/static, heard as the residual "clicks and pops"). The
+        // mainMixerNode's outputVolume catches everything downstream, so nothing
+        // reaches the DAC. It ramps smoothly too, so the mute/unmute itself is
+        // click-free. The per-bus zeroing above stays for selective `muteBuses`.
+        engine.mainMixerNode.outputVolume = (muted || allB) ? 0 : 1
     }
 
     // ── sample loading ─────────────────────────────────────────────────────────

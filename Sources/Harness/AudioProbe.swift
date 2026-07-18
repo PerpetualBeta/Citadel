@@ -45,5 +45,29 @@ enum AudioProbe {
         report("static bed at full hold (1.0)", audio.renderOfflineRMS(seconds: 0.5))
         audio.staticBed(0)
         report("static bed off (must be ~silence)", audio.renderOfflineRMS(seconds: 0.5))
+
+        // 6. MUTE invariant: with master mute on, EVERY path must render pure
+        //    silence — no leak through the buses or synth. This caught the "clicks
+        //    and pops while muted" bug: zeroing the group buses alone left player
+        //    nodes wired straight to a bus leaking ~-24 dB of transient; muting the
+        //    mainMixerNode fixed it. Each line below must report -120 dB.
+        audio.muted = true
+        _ = audio.renderOfflineRMS(seconds: 0.4)                 // let live tails die
+        report("MUTED baseline (must be ~silence)", audio.renderOfflineRMS(seconds: 0.5))
+        audio.trigger(wave: AudioEngine.noise, f0: 1, dur: 1.0, amp: 0.55, attack: 0.2)
+        report("MUTED + synth trigger", audio.renderOfflineRMS(seconds: 0.6))
+        func mutedOne(_ label: String, _ fire: () -> Void) {
+            fire(); report("MUTED + " + label, audio.renderOfflineRMS(seconds: 0.6))
+        }
+        mutedOne("weaponFire plasma")   { for _ in 0..<4 { audio.weaponFire(.plasma) } }
+        mutedOne("monsterDeath queen")  { audio.monsterDeath(.queen) }
+        mutedOne("queenFall")           { audio.queenFall() }
+        mutedOne("queenSnarl")          { audio.queenSnarl() }
+        mutedOne("wade")                { audio.wade(0.6, foot: 0) }
+        mutedOne("drip")                { audio.drip(volume: 0.6, pan: 0) }
+        mutedOne("distantFault")        { audio.distantFault() }
+        mutedOne("staticBed 1.0")       { audio.staticBed(1.0) }; audio.staticBed(0)
+        mutedOne("faultCrackle")        { audio.faultCrackle(1.0) }
+        mutedOne("elevatorMove")        { audio.elevatorMove(true) }; audio.elevatorMove(false)
     }
 }
