@@ -22,6 +22,7 @@ enum CreatureLab {
     struct Shape {
         var a: SIMD3<Float>, b: SIMD3<Float>, r1: Float, r2: Float
         var col: SIMD3<Float>, k: Float, sphere: Bool
+        var emissive: Float = 0        // self-lit amber (glowing ova); read by the hero harness
         @inline(__always) func dist(_ p: SIMD3<Float>) -> Float {
             sphere ? simd_length(p - a) - r1 : sdRoundCone(p, a, b, r1, r2)
         }
@@ -883,81 +884,113 @@ enum CreatureLab {
     // her lair. Egg-heavy sac, a hunched head over a gaping maw, an eye cluster,
     // and a ring of slimy tentacles splaying out across the floor.
     static func queen() -> CDef {
-        let carapace = SIMD3<Float>(46, 38, 30), dark = SIMD3<Float>(20, 16, 12)
-        let crestC = SIMD3<Float>(58, 48, 38), bone = SIMD3<Float>(192, 184, 158)
-        let maw = SIMD3<Float>(32, 8, 10), sac = SIMD3<Float>(66, 54, 42)
-        return CDef(name: "QUEEN", role: "HIVE MOTHER", blurb: "Rooted brood-mother — a bulbous birthing sac, a writhing tentacle skirt, a crowned head. Plasma kills; fire ends her.",
-                    viewH: 2.7, groundY: -0.05) { ph, atk in
-            let g = sin(ph * 2 * .pi), breathe = sin(ph * 2 * .pi) * 0.04, lunge = atk * 0.2
-            let hsway = sin(ph * 2 * .pi * 0.7) * 0.09          // idle head roving — rooted, but never still
+        // Bespoke brood-goddess (2026-07). Black-and-gold chitin, a mound of
+        // glowing amber ova for a body, a horned crown over a fanged face, clawed
+        // arms and a writhing tentacle skirt — matches the title-plate design.
+        let obsidian = SIMD3<Float>(26, 22, 19)      // near-black chitin
+        let gold = SIMD3<Float>(150, 112, 44)        // tarnished gold edging
+        let egg = SIMD3<Float>(255, 116, 20)         // glowing amber ovum (deep, saturated)
+        let maw = SIMD3<Float>(46, 10, 10)           // dark inner mouth
+        let bone = SIMD3<Float>(206, 184, 140)       // teeth / claws
+        return CDef(name: "QUEEN", role: "HIVE MOTHER",
+                    blurb: "Rooted brood-goddess — a mound of glowing ova, a horned crown, a fanged maw, a skirt of writhing tentacles. Plasma kills; fire ends her.",
+                    viewH: 2.95, groundY: -0.05) { ph, atk in
+            let bp = sin(ph * 2 * .pi)
+            let breathe = bp * 0.03
+            let glow = 1.9 + 0.5 * (0.5 + 0.5 * bp)           // ova pulse — burns from within
+            let hsway = sin(ph * 2 * .pi * 0.6) * 0.05
+            let lunge = atk * 0.16
             var s = [Shape]()
-            // ── ROOTED BULBOUS EGG-SAC — her body AND base: wider than tall (volume,
-            //    not height), a pulsing birthing mass planted on the floor. No legs. ──
-            s.append(S(SIMD3(0, 0.6 + breathe, 0.22), 0.74, sac))                  // central mass
-            s.append(S(SIMD3(0.52, 0.46 + breathe * 0.6, 0.3), 0.5, sac, 0.45))    // girth right
-            s.append(S(SIMD3(-0.52, 0.46 + breathe * 0.6, 0.3), 0.5, sac, 0.45))   // girth left
-            s.append(S(SIMD3(0, 0.46, 0.82), 0.56, sac, 0.45))                     // swollen rear
-            s.append(S(SIMD3(0, 0.34, 1.32), 0.4, sac, 0.4))                       // ovipositor swell
-            for k in 0..<7 { let a = Float(k) / 7 * 6.2832                          // translucent egg-nodes over the sac
-                s.append(S(SIMD3(cos(a) * 0.58, 0.52 + breathe + sin(a * 1.7) * 0.12, 0.28 + sin(a) * 0.46), 0.12, dark, 0.3)) }
-            // ── A WRITHING SKIRT OF TENTACLES splaying from the sac, each flailing
-            //    on its own phase ──
-            let nt = 11
+
+            // ── EGG-ORB CLUSTER — the body: a mound of glowing ova set in dark chitin ──
+            s.append(S(SIMD3(0, 0.92 + breathe, 0.16), 0.74, obsidian, 0.5))     // under-mass
+            s.append(S(SIMD3(0, 0.6, 0.28), 0.6, obsidian, 0.45))
+            let ova: [(Float, Float, Float, Float)] = [       // x, y, z, radius
+                (0.0, 1.0, -0.52, 0.34),
+                (-0.37, 0.82, -0.44, 0.28), (0.37, 0.82, -0.44, 0.28),
+                (-0.24, 1.32, -0.46, 0.23), (0.24, 1.32, -0.46, 0.23),
+                (0.0, 0.6, -0.5, 0.3),
+                (-0.52, 0.54, -0.26, 0.23), (0.52, 0.54, -0.26, 0.23),
+                (0.0, 1.52, -0.34, 0.19),
+            ]
+            for (x, y, z, r) in ova {
+                s.append(S(SIMD3(x, y + breathe, z + 0.04), r + 0.035, obsidian, 0.12))    // chitin socket rim
+                var e = S(SIMD3(x, y + breathe, z), r, egg, 0.05)                          // the glowing ovum
+                e.emissive = glow
+                s.append(e)
+            }
+
+            // ── central chitin trunk rising through the clutch to the head ──
+            s.append(C(SIMD3(0, 1.25, -0.4), SIMD3(hsway, 1.8, -0.55 - lunge), 0.24, 0.19, obsidian))
+            s.append(C(SIMD3(0, 1.15, -0.6), SIMD3(0, 1.72, -0.68), 0.045, 0.03, gold, 0.02))   // gold spinal vein
+
+            // ── armoured shoulder pauldrons flanking the trunk (clean, uncluttered) ──
+            for sx in [Float(-1), 1] {
+                s.append(S(SIMD3(sx * 0.4, 1.66, -0.46), 0.2, obsidian, 0.2))              // pauldron
+                s.append(C(SIMD3(sx * 0.34, 1.78, -0.52), SIMD3(sx * 0.54, 1.62, -0.42), 0.05, 0.02, gold, 0.02))  // gold ridge
+            }
+
+            // ── two powerful arms held DOWN and IN, clawed hands framing the ova ──
+            for sx in [Float(-1), 1] {
+                let ph3 = ph * 2 * .pi + (sx > 0 ? 0 : 2.6)
+                let shoulder = SIMD3(sx * 0.46, 1.58, -0.44)
+                let elbow = SIMD3(sx * (0.64 + atk * 0.06) + sin(ph3) * 0.03, 1.16, -0.72 - lunge * 0.3)
+                let wrist = SIMD3(sx * 0.46, 0.82 + cos(ph3) * 0.03, -0.92 - lunge * 0.4)
+                s.append(S(shoulder, 0.18, obsidian, 0.16))                                // shoulder
+                s.append(C(shoulder, elbow, 0.14, 0.09, obsidian, 0.06))                   // upper arm
+                s.append(C(elbow, wrist, 0.09, 0.055, obsidian, 0.05))                     // forearm
+                s.append(C(elbow, wrist, 0.04, 0.025, gold, 0.02))                         // gold edge
+                s.append(S(wrist, 0.075, obsidian))                                         // fist
+                for f in 0..<4 { let o = Float(f) - 1.5
+                    let tip = wrist + SIMD3(-sx * 0.04 + o * 0.045, -0.34 - abs(o) * 0.03, -0.1 - abs(o) * 0.02)
+                    s.append(C(wrist, tip, 0.036, 0.0, bone, 0.011)) }                     // talons reaching in over the ova
+            }
+
+            // ── the HERO of the piece: an elongated ARMOURED SKULL — a forward-and-
+            //    down wedge, ridged brow, a forehead blade, deep-set eyes, a wide
+            //    fanged maw. Sharp joins (low k) so it reads as a face, not a ball. ──
+            let hx = hsway
+            s.append(C(SIMD3(0, 1.7, -0.44 - lunge), SIMD3(hx, 1.98, -0.74 - lunge), 0.26, 0.22, obsidian))        // neck
+            s.append(C(SIMD3(hx, 2.04, -0.66 - lunge), SIMD3(hx, 1.66, -1.42 - lunge), 0.26, 0.05, obsidian, 0.06)) // elongated skull wedge
+            for sx in [Float(-1), 1] {                                                                             // angular brow ridges
+                s.append(C(SIMD3(hx, 2.06, -0.82 - lunge), SIMD3(hx + sx * 0.24, 1.96, -1.0 - lunge), 0.07, 0.02, obsidian, 0.02)) }
+            s.append(C(SIMD3(hx, 2.18, -0.72 - lunge), SIMD3(hx, 1.88, -1.14 - lunge), 0.06, 0.015, gold, 0.02))   // central forehead blade
+            for sx in [Float(-1), 1] {                                                                             // gold cheek plates
+                s.append(C(SIMD3(hx + sx * 0.12, 1.92, -1.02 - lunge), SIMD3(hx + sx * 0.06, 1.74, -1.28 - lunge), 0.05, 0.03, gold, 0.02)) }
+            s.append(S(SIMD3(hx, 1.73, -1.22 - lunge), 0.1, maw, 0.02))                                          // dark maw recess, set into the snout
+            s.append(C(SIMD3(hx, 1.64, -1.1 - lunge), SIMD3(hx, 1.56 - atk * 0.08, -1.32 - lunge), 0.12, 0.05, obsidian))  // lower jaw
+            for t in 0..<7 { let x = hx - 0.13 + Float(t) * 0.043                                                 // upper fangs (fewer, bigger, so they read)
+                s.append(C(SIMD3(x, 1.76, -1.28 - lunge), SIMD3(x, 1.6 - atk * 0.05, -1.32 - lunge), 0.024, 0.0, bone, 0.01)) }
+            for t in 0..<6 { let x = hx - 0.11 + Float(t) * 0.044                                                 // lower fangs
+                s.append(C(SIMD3(x, 1.6, -1.28 - lunge), SIMD3(x, 1.72 + atk * 0.05, -1.32 - lunge), 0.02, 0.0, bone, 0.01)) }
+            for sx in [Float(-1), 1] { var eye = S(SIMD3(hx + sx * 0.15, 1.98, -1.06 - lunge), 0.055, egg, 0.02); eye.emissive = 1.8; s.append(eye) }  // deep-set glowing eyes
+
+            // ── the CROWN: a symmetric fan of swept bladed horns across the skull,
+            //    tallest at the centre, sweeping up and out to sharp points ──
+            for cr in 0..<9 {
+                let f = Float(cr) / 8
+                let xo = (f - 0.5) * 2                                       // -1 … 1
+                let base = SIMD3(hx + xo * 0.26, 2.12, -0.62 - lunge)
+                let tip = SIMD3(hx + xo * 1.0, 2.5 + (1 - abs(xo)) * 0.5 + bp * 0.03, -0.34 - abs(xo) * 0.2)
+                let r0 = 0.11 - abs(xo) * 0.028
+                s.append(C(base, tip, r0, 0.0, cr % 2 == 0 ? obsidian : gold, 0.04))
+            }
+
+            // (the crown is the unified swept bladed fan above)
+
+            // ── a thick writhing TENTACLE SKIRT massing at the base ──
+            let nt = 18
             for k in 0..<nt {
                 let a = Float(k) / Float(nt) * 6.2832
-                let ph2 = ph * 2 * .pi + Float(k) * 0.83
-                let writhe = sin(ph2), curl = cos(ph2 * 1.3)
-                let base = SIMD3(cos(a) * 0.64, 0.16, 0.28 + sin(a) * 0.56)
-                let mid  = base + SIMD3(cos(a) * 0.46 + writhe * 0.2, 0.24 + abs(curl) * 0.16, sin(a) * 0.46)
-                let tip  = mid  + SIMD3(cos(a) * 0.42 + writhe * 0.32, 0.06 + curl * 0.24, sin(a) * 0.42)
-                s.append(C(base, mid, 0.075, 0.05, carapace, 0.05))
-                s.append(C(mid, tip, 0.05, 0.0, dark, 0.04))
+                let ring = 0.44 + Float(k % 2) * 0.16                    // two staggered rings for volume
+                let ph2 = ph * 2 * .pi + Float(k) * 0.6
+                let writhe = sin(ph2), curl = cos(ph2 * 1.2)
+                let base = SIMD3(cos(a) * ring, 0.4, 0.12 + sin(a) * ring)
+                let mid  = base + SIMD3(cos(a) * 0.55 + writhe * 0.16, -0.18, sin(a) * 0.55)
+                let tip  = mid  + SIMD3(cos(a) * 0.7 + writhe * 0.3, -0.2 + curl * 0.08, sin(a) * 0.7)
+                s.append(C(base, mid, 0.11, 0.07, obsidian, 0.05))
+                s.append(C(mid, tip, 0.07, 0.0, obsidian, 0.04))
             }
-            // ── huge egg-sac abdomen trailing back and down ──
-            s.append(S(SIMD3(0, 0.7 + breathe, 0.5), 0.42, sac))
-            s.append(S(SIMD3(0, 0.56, 1.0), 0.4, sac, 0.3))
-            s.append(S(SIMD3(0, 0.46, 1.5), 0.34, sac, 0.3))
-            s.append(S(SIMD3(0, 0.4, 1.95), 0.26, sac, 0.3))
-            for tt in 0..<5 { let x = -0.28 + Float(tt) * 0.14; let sw = sin(ph * 2 * .pi + Float(tt)) * 0.06
-                s.append(C(SIMD3(x, 0.34, 1.9), SIMD3(x + sw, 0.04, 2.2 + sw), 0.05, 0.0, dark, 0.04)) }   // ovipositor tendrils
-            // ── upper torso rising from the FRONT of the sac, forward-leaning, ribbed ──
-            s.append(C(SIMD3(0, 0.78, -0.2), SIMD3(hsway * 0.5, 1.5, -0.42 - lunge * 0.3), 0.34, 0.22, carapace))
-            for ri in 0..<3 { let y = 1.04 + Float(ri) * 0.16; for sx in [Float(-1), 1] { s.append(C(SIMD3(0, y, -0.36), SIMD3(sx * 0.3, y - 0.04, -0.12), 0.05, 0.02, dark, 0.02)) } }
-            // ── two raised TENTACLE-ARMS that flail by the head, not rigid limbs ──
-            for sx in [Float(-1), 1] {
-                let ph3 = ph * 2 * .pi + (sx > 0 ? 0 : 3.0)
-                let shoulder = SIMD3(sx * 0.4, 1.18, -0.2)
-                let mid = SIMD3(sx * 0.64 + sin(ph3) * 0.2, 1.5 + cos(ph3) * 0.24, -0.34 - lunge * 0.4)
-                let tip = SIMD3(sx * 0.72 + sin(ph3 * 1.4) * 0.36, 1.16 + sin(ph3) * 0.36, -0.66 - lunge)
-                s.append(S(shoulder, 0.12, carapace))
-                s.append(C(shoulder, mid, 0.09, 0.06, carapace, 0.05))
-                s.append(C(mid, tip, 0.06, 0.02, dark, 0.04))
-                for f in 0..<3 { let o = Float(f - 1); s.append(C(tip, tip + SIMD3(sx * 0.02 + o * 0.04, -0.14, -0.12), 0.02, 0.0, bone, 0.014)) }   // grasping claws
-            }
-            // ── long neck + elongated head thrust forward, swaying (rooted, but her
-            //    head roves and snaps) ──
-            let hx = hsway
-            s.append(C(SIMD3(0, 1.5, -0.42 - lunge), SIMD3(hx, 1.56, -0.62 - lunge), 0.17, 0.13, carapace))
-            s.append(S(SIMD3(hx, 1.54, -0.66 - lunge), 0.19, carapace))                                   // skull
-            s.append(C(SIMD3(hx, 1.46, -0.66 - lunge), SIMD3(hx, 1.32, -1.04 - lunge), 0.14, 0.07, carapace))   // long jaw
-            s.append(S(SIMD3(hx, 1.4, -0.96 - lunge), 0.1 + atk * 0.06, maw, 0.04))                        // gaping maw
-            for tt in 0..<8 { let x = hx - 0.1 + Float(tt) * 0.026; s.append(C(SIMD3(x, 1.46, -0.98 - lunge), SIMD3(x, 1.34 - atk * 0.04, -1.02 - lunge), 0.014, 0.0, bone, 0.01)) }
-            let ij = -1.02 - lunge - atk * 0.2                                                            // inner jaw
-            s.append(C(SIMD3(hx, 1.4, -0.96 - lunge), SIMD3(hx, 1.39, ij), 0.04, 0.025, maw, 0.02))
-            for c in 0..<3 { let x = hx + Float(c - 1) * 0.025; s.append(C(SIMD3(x, 1.4, ij), SIMD3(x, 1.38, ij - 0.06), 0.012, 0.0, bone, 0.01)) }
-            // (no drool — strands hanging off the front of the face read as "snot",
-            //  not menace; a dry fanged maw is more frightening)
-            // ── THE CROWN CREST — a big flat shield, ribs fused into one plate,
-            //    swept wide and back over the body (the Queen's signature) ──
-            let cbase = SIMD3<Float>(hx, 1.66, -0.5 - lunge)
-            for cr in 0..<9 {
-                let f = Float(cr) / 8, xo = (f - 0.5) * 1.6            // spread ±0.8
-                let tip = SIMD3(hx + xo, 2.0 + 0.42 * (1 - abs(f - 0.5) * 2) + g * 0.04, 0.2 - abs(xo) * 0.16)
-                s.append(C(cbase + SIMD3(xo * 0.34, 0, 0), tip, 0.085, 0.025, crestC, 0.12))   // high k → fuses into a shield
-            }
-            for sx in [Float(-1), 1] { s.append(C(SIMD3(hx + sx * 0.16, 1.78, -0.48 - lunge), SIMD3(hx + sx * 0.42, 2.1, -0.34 - lunge), 0.05, 0.0, bone, 0.02)) }   // flanking horns
-            // Rooted: no walk gait and no dragging tail — the mass is planted; only the
-            // head, crown and the tentacle skirt/arms move (plus a slow breathing swell).
             return s
         }
     }

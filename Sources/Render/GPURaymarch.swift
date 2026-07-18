@@ -170,8 +170,8 @@ enum GPURaymarch {
     // camera that alone collapsed the frame rate. A masked-out monster is
     // > the mask margin from every point on the ray, so it can neither be
     // hit nor win a material contest: skipping it is exact.
-    static inline float4 creatureField(float3 p, int nMon, constant GMonster* mons, constant GShape* shapes, ulong cmask, thread float& mat) {
-        float best = 1e9; float3 bestCol = float3(0.5, 0.2, 0.18); mat = 0.0;
+    static inline float4 creatureField(float3 p, int nMon, constant GMonster* mons, constant GShape* shapes, ulong cmask, thread float& mat, thread float& emOut) {
+        float best = 1e9; float3 bestCol = float3(0.5, 0.2, 0.18); mat = 0.0; float bestEm = 0.0; emOut = 0.0;
         for (int mi = 0; mi < nMon; mi++) {
             if (mi < 64 && ((cmask >> mi) & 1) == 0) continue;
             GMonster m = mons[mi];
@@ -183,7 +183,7 @@ enum GPURaymarch {
             if (bd > 0.25) { best = min(best, bd * scale); continue; }
             int start = int(m.b.x), n = int(m.b.y);
             int G = (n + 7) / 8, sBase = start + G;               // [G group spheres][n shapes] — packShapeGroups layout
-            float dd = 1e9; float3 col = float3(0.5, 0.2, 0.18);
+            float dd = 1e9; float3 col = float3(0.5, 0.2, 0.18); float em = 0.0;
             for (int gi = 0; gi < G; gi++) {
                 // Group enclosing sphere: if the whole 8-shape run is provably
                 // ≥ its max k beyond the running blend, every member is an
@@ -213,17 +213,20 @@ enum GPURaymarch {
                     } else {                                      // round cone
                         sd = sdRoundCone(lp, sh.a.xyz, sh.b.xyz, sh.a.w, sh.b.w);
                     }
-                    if (dd > 1e8) { dd = sd; col = sh.col.rgb; }
+                    float shEm = (sh.b.w < 0.0 && sh.b.w > -1.5) ? sh.b.x : 0.0;   // sphere-only emissive (ova / eyes)
+                    if (dd > 1e8) { dd = sd; col = sh.col.rgb; em = shEm; }
                     else {
                         float h = clamp(0.5 + 0.5 * (sd - dd) / k, 0.0, 1.0);
                         dd = mix(sd, dd, h) - k * h * (1.0 - h);
                         col = mix(sh.col.rgb, col, h);
+                        em = mix(shEm, em, h);
                     }
                 }
             }
             dd *= scale;
-            if (dd < best) { best = dd; bestCol = col; mat = m.c.z; }   // c.z = material (1 = pickup)
+            if (dd < best) { best = dd; bestCol = col; mat = m.c.z; bestEm = em; }   // c.z = material (1 = pickup)
         }
+        emOut = bestEm;
         return float4(bestCol, best);
     }
     // March/normal variant: distance ONLY. Identical smin arithmetic (rays must
@@ -681,8 +684,8 @@ enum GPURaymarch {
             float2 ddp = dt.sample(s, p.xz / mapWH).rg;        // .r wall distance · .g pipe-routing enable
             float dWp = ddp.x, peP = ddp.y;
             float gd = min(min(dWp, min(p.y, ceilH - p.y)), wallPipes(p, dWp, ceilH, peP));   // grid incl. routed pipe
-            float itemMat = 0.0;
-            float4 cf = (nMon > 0 && cmask != 0) ? creatureField(p, nMon, mons, shapes, cmask, itemMat) : float4(0.0, 0.0, 0.0, 1e9);
+            float itemMat = 0.0; float creatureEmis = 0.0;
+            float4 cf = (nMon > 0 && cmask != 0) ? creatureField(p, nMon, mons, shapes, cmask, itemMat, creatureEmis) : float4(0.0, 0.0, 0.0, 1e9);
             float3 alb; float emis = 0.0; bool reflective = false; bool isItem = false; bool isProj = false; bool isCreature = false; bool isProp = false; bool isDrum = false; bool isSocket = false; bool isMine = false;
             float rough = 0.7, metal = 0.0;   // PBR surface params, set per surface below
             if (cf.w < gd) {                                     // a creature / pickup / projectile / prop surface
@@ -695,6 +698,7 @@ enum GPURaymarch {
                 isSocket = itemMat > 4.5 && itemMat < 5.5;       // c.z = 5 → recharge socket
                 isMine = itemMat > 5.5;                          // c.z = 6 → deployed mine
                 isCreature = itemMat < 0.5;                      // c.z = 0 → living flesh
+                if (isCreature) emis = creatureEmis;             // glowing ova / eyes (per-shape emissive)
                 if (isProp) {                                    // MATTE battle-worn steel (low spec → not shiny plastic); a powered screen self-glows
                     rough = 0.82; metal = 0.12;
                     bool screen = dot(alb, float3(0.299, 0.587, 0.114)) > 0.95;   // the lit terminal stays clean + bright
@@ -1358,6 +1362,7 @@ enum GPURaymarch {
         // shaded by the same rig — sector fill, ceiling-lamp pools, dynamic
         // lights, headlamp — so the weapon sits IN the scene, not on top of it.
         float volT = hit ? t : 28.0;
+        float vmDepth = -1.0;   // >0 where the gun draws → the gun owns the depth, so nothing (mesh/particles) composites over it
         int vmN = int(U.env.w);
         if (vmN > 0) {
             int vmStart = int(U.env.z);
@@ -1454,6 +1459,7 @@ enum GPURaymarch {
                     lit += alb * emv;                    // the energy core / pilot flame glow
                     col = lit;
                     volT = tv;                           // haze only between eye and weapon (≈ none)
+                    vmDepth = tv * dot(rd, U.fwd.xyz);    // the gun's perp depth → owns these pixels
                 }
             }
         }
@@ -1461,7 +1467,7 @@ enum GPURaymarch {
         float jit = fract(sin(dot(float2(gid), float2(12.9898, 78.233))) * 43758.5453);
         col += volumetric(ro, rd, volT, dt, s, mapWH, lightTex, int(U.grid.w), lights, jit);
         outTex.write(float4(col, 1.0), gid);   // LINEAR HDR — the post pass tonemaps + blooms
-        depthTex.write(float4(hit ? t * dot(rd, U.fwd.xyz) : 1e9, 0, 0, 0), gid);  // perp depth for sprite occlusion
+        depthTex.write(float4(vmDepth > 0.0 ? vmDepth : (hit ? t * dot(rd, U.fwd.xyz) : 1e9), 0, 0, 0), gid);  // perp depth for sprite/mesh occlusion (gun wins where it drew)
     }
 
     // ── post: bloom (bright-pass gather) + exposure + ACES + gamma + vignette ──
@@ -1826,7 +1832,7 @@ enum GPURaymarch {
             for sh in sl {
                 shapes.append(GShape(
                     a: SIMD4(sh.a.x, sh.a.y, sh.a.z, sh.r1),
-                    b: SIMD4(sh.b.x, sh.b.y, sh.b.z, sh.sphere ? -1 : sh.r2),
+                    b: SIMD4(sh.sphere ? sh.emissive * darks : sh.b.x, sh.b.y, sh.b.z, sh.sphere ? -1 : sh.r2),  // sphere b.x free → carry ova glow
                     col: SIMD4(sh.col.x / 255 * darks, sh.col.y / 255 * darks, sh.col.z / 255 * darks, sh.k)))
             }
             mons.append(GMonster(

@@ -75,6 +75,7 @@ struct Monster {
     var painFlash: Float = 0
     var dir: Float = 0            // facing (for future 8-rotation views)
     var burn: Float = 0          // corpse burn-away progress 0→1 (flamethrower)
+    var ashed: Float = 0         // charred remains crumble to an ash pile 0→1 when trodden through
     var gibbed = false           // obliterated by a blast — chunks fly, no corpse remains
     var smolder: Float = 0       // seconds of smoke/embers left after a corpse burns out
     var dissolving = false       // died on a toxic pool — the body sinks and dissolves

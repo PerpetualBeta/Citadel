@@ -71,6 +71,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Render/Sprites.swift \
                     Sources/Render/Mesh3D.swift \
                     Sources/Render/MonsterBake.swift \
+                    Sources/Render/MeshCreature.swift \
                     Sources/Render/StaticFX.swift \
                     Sources/Render/Viewmodel.swift \
                     Sources/UI/HUD.swift \
@@ -88,7 +89,10 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Harness/ArtPreview.swift \
                     Sources/Harness/CreatureLab.swift \
                     Sources/Harness/MaterialPreview.swift \
-                    Sources/Harness/BeautyProof.swift
+                    Sources/Harness/BeautyProof.swift \
+                    Sources/Harness/QueenHero.swift \
+                    Sources/Harness/QueenMock.swift \
+                    Sources/Harness/QueenMeshTest.swift
 
 PACKAGE_TYPE     := zip
 ALSO_SHIP_PKG    := true

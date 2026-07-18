@@ -28,6 +28,12 @@ enum FeatureFlags {
     static var revealMap: Bool  { d.bool(forKey: "RevealMap") }   // automap fully revealed
     static var fastMonsters: Bool { d.bool(forKey: "FastMonsters") } // -nightmare- speed
 
+    /// Render the Queen as a textured 3D mesh (Resources/queen.usdz) instead of
+    /// the native SDF sculpt. ON by default while we evaluate the 3D-asset
+    /// direction; set false to A/B against the SDF queen:
+    ///   defaults write cc.jorviksoftware.Citadel MeshQueen -bool false
+    static var meshQueen: Bool { d.object(forKey: "MeshQueen") == nil ? true : d.bool(forKey: "MeshQueen") }
+
     /// Force a specific level seed for testing (0 = off, use the run's seed).
     static var fixedSeed: UInt64 {
         let v = d.integer(forKey: "FixedSeed")

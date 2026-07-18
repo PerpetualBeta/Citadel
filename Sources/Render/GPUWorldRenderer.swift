@@ -21,6 +21,9 @@ final class GPUWorldRenderer {
     private let raymarch: MTLComputePipelineState
     private let post: MTLComputePipelineState
     private let spriteCompositor = SpriteCompositor()
+    /// Optional textured-mesh renderer for the Queen (dev 3D-asset direction).
+    /// nil when the flag is off or the asset/GPU setup is missing → SDF queen.
+    private let meshCreature: MeshCreature?
 
     private var dtTex, liTex, gpuViewTex, gpuHDRTex, gpuDepthTex: MTLTexture?
     private var gpuDepth = [Float]()   // per-pixel scene depth, read back for sprite occlusion
@@ -58,6 +61,7 @@ final class GPUWorldRenderer {
         self.queue = q
         self.raymarch = p.raymarch
         self.post = p.post
+        self.meshCreature = FeatureFlags.meshQueen ? MeshCreature(device: device) : nil
     }
 
     /// Upload `arr` into a reused grow-only shared buffer and return it for the
@@ -410,7 +414,15 @@ final class GPUWorldRenderer {
         u.grid.w = Float(dyn.count)
         u.extra.z = Float(eshadow)                                                   // leading emitter keys cast shadows
         if dyn.isEmpty { dyn = [GPURaymarch.GPULight(posR: .zero, colI: .zero)] }   // ≥1 elem for setBytes
-        var (cmons, cshapes) = GPURaymarch.packCreatures(visibleCreatures(world))
+        // When the mesh Queen is active she's drawn by MeshCreature (rasterised
+        // after the kernel) through ALL states — including death, which deforms the
+        // SAME mesh (slump/topple/extinguish) rather than popping to an SDF corpse —
+        // so keep every queen out of the SDF creature pack (else she'd render twice).
+        let allCreatures = visibleCreatures(world)
+        func isMeshQueen(_ m: Monster) -> Bool { m.kind == .queen }
+        let meshQueens = meshCreature != nil ? allCreatures.filter(isMeshQueen) : []
+        let sdfCreatures = meshCreature != nil ? allCreatures.filter { !isMeshQueen($0) } : allCreatures
+        var (cmons, cshapes) = GPURaymarch.packCreatures(sdfCreatures)
         let (imons, ishapes) = GPURaymarch.packItems(visibleItems(world), time: world.elapsed)
         let ibase = cshapes.count
         for im0 in imons { var im = im0; im.b.x += Float(ibase); cmons.append(im) }   // offset shape range
@@ -512,12 +524,45 @@ final class GPUWorldRenderer {
         // sprite composite are only needed on frames that actually have particles.
         // Out of combat there are none, so skip both entirely (the depth texture is
         // still written by the kernel; we just don't pull it back to the CPU).
-        if !world.particles.isEmpty {
+        // Draw only queens ahead of the camera and in range — skips the cost (and
+        // any near-plane edge cases) when she's behind you or across the level.
+        let fwd2 = SIMD2<Float>(cos(p.dir), sin(p.dir))
+        let liveQueens = meshQueens.filter { q in
+            let rel = q.pos - p.pos
+            let ahead = rel.x * fwd2.x + rel.y * fwd2.y
+            return ahead > 0.15 && (rel.x * rel.x + rel.y * rel.y) < 22 * 22
+        }
+        // Depth is needed by the mesh Queen (occlusion + writing her own depth) and
+        // by the particle compositor — pull it back if either is in play this frame.
+        let needDepth = !world.particles.isEmpty || !liveQueens.isEmpty
+        if needDepth {
             let vh = RenderConfig.viewHeight
             gpuDepth.withUnsafeMutableBytes {
                 depthT.getBytes($0.baseAddress!, bytesPerRow: RenderConfig.width * 4,
                                 from: MTLRegionMake2D(0, 0, RenderConfig.width, vh), mipmapLevel: 0)
             }
+        }
+        // the 3-D mesh Queen — rasterised into the frame, and her perp-depth written
+        // back so particles composited afterwards occlude against her
+        if let mc = meshCreature, !liveQueens.isEmpty {
+            gpuDepth.withUnsafeMutableBufferPointer { dp in
+                for q in liveQueens {
+                    let sector = WorldLight.lightAt(world.map, q.pos.x, q.pos.y)
+                    // topple accelerates into the CRASH at queenImpactT (0.78·deathTime)
+                    // so the mesh's landing lines up with World's floor-thump/tremor.
+                    let death: Float
+                    if q.state == .dead { death = 1 }
+                    else if q.state == .dying {
+                        let f = min(1, (q.stateTime / World.queenDeathTime) / CreatureLab.queenImpactT)
+                        death = f * f
+                    } else { death = 0 }
+                    mc.composite(into: canvas, depth: dp.baseAddress!, eye: eye, dir: p.dir,
+                                 pos: q.pos, faceTarget: p.pos, sector: sector, time: world.elapsed,
+                                 map: world.map, death: death, burn: q.burn, ashed: q.ashed)
+                }
+            }
+        }
+        if !world.particles.isEmpty {
             gpuDepth.withUnsafeBufferPointer { spriteCompositor.overlayThings(world, into: canvas, depth: $0.baseAddress, includeProjectiles: false, includeDrums: false, includeSockets: false, includeMines: false) }
         }
         return true

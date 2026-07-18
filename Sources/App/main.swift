@@ -29,7 +29,8 @@ import QuartzCore
 for key in ["CITADEL_SMOKE", "CITADEL_FITSHOT", "CITADEL_LOADPROBE", "CITADEL_TIMING",
             "CITADEL_SHOTS", "CITADEL_ARTPREVIEW", "CITADEL_CREATURES", "CITADEL_MATERIALS",
             "CITADEL_BEAUTY", "CITADEL_GPU", "CITADEL_AUTOMAP", "CITADEL_ROOMS", "CITADEL_DISPLAYVID",
-            "CITADEL_TITLESHOT"]
+            "CITADEL_TITLESHOT", "CITADEL_QUEENHERO", "CITADEL_QUEENMOCK", "CITADEL_QUEENMESH",
+            "CITADEL_MESHVERIFY"]
     where ProcessInfo.processInfo.environment[key] != nil {
     setenv("CITADEL_MUTE", "1", 1)
     break
@@ -484,8 +485,36 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_BEAUTY"] {
     exit(0)
 }
 
+// CITADEL_QUEENHERO[=path|"k=v ..."] → render the QUEEN as an original title
+// hero plate (our creature, cinematic finish), then exit. Title-art R&D only.
+if let v = ProcessInfo.processInfo.environment["CITADEL_QUEENHERO"] {
+    QueenHero.run(outDir: v.isEmpty ? nil : v)
+    exit(0)
+}
+
 if let v = ProcessInfo.processInfo.environment["CITADEL_GPU"] {
     GPURaymarch.run(outDir: v.isEmpty || v == "1" ? nil : v)
+    exit(0)
+}
+
+// CITADEL_QUEENMOCK[=src.png] → mock the QUEEN as a flux-art billboard in the
+// live lair render (env + real WorldLight), to judge the billboard direction.
+if let v = ProcessInfo.processInfo.environment["CITADEL_QUEENMOCK"] {
+    QueenMock.run(src: (v.isEmpty || v == "1") ? nil : v, outDir: nil)
+    exit(0)
+}
+
+// CITADEL_QUEENMESH[=mesh.usdz] → rasterise the 3D queen mesh into the live lair
+// (matched pinhole + perp-depth composite + per-pixel lighting), to judge 3D.
+if let v = ProcessInfo.processInfo.environment["CITADEL_QUEENMESH"] {
+    QueenMeshTest.run(meshPath: (v.isEmpty || v == "1") ? nil : v, outDir: nil)
+    exit(0)
+}
+
+// CITADEL_MESHVERIFY → drive the REAL live renderer with a queen in view + dump
+// one frame, to verify the in-game mesh-Queen wire-in headlessly.
+if ProcessInfo.processInfo.environment["CITADEL_MESHVERIFY"] != nil {
+    QueenMeshTest.verifyLive(outDir: nil)
     exit(0)
 }
 
