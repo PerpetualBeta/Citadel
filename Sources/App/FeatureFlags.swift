@@ -41,8 +41,14 @@ enum FeatureFlags {
     }
 
     /// Warp new runs to a specific floor for testing (0 = off, start on floor 1).
+    /// Clamped to the campaign's full content span — every distinct floor (the six
+    /// planets × floorsPerBuilding), after which the structure only repeats with
+    /// deeper scaling. Bounding it here keeps the level-scaled world-gen arithmetic
+    /// (e.g. MapGen's `40 + level*2`) from overflowing or spawning a pathological
+    /// monster count if StartLevel is set absurdly high via `defaults write`.
     static var startLevel: Int {
         let v = d.integer(forKey: "StartLevel")
-        return v > 0 ? v : 0
+        guard v > 0 else { return 0 }
+        return min(v, Progression.planets.count * Progression.floorsPerBuilding)
     }
 }

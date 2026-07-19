@@ -68,9 +68,46 @@ enum MapGen {
                 return g
             }
         }
-        // Guaranteed-solvable fallback: no locked doors.
-        return attemptGen(level: level, colonyIndex: colonyIndex, seed: seed, allowLocks: false)
-            ?? attemptGen(level: level, colonyIndex: colonyIndex, seed: seed &+ 999, allowLocks: false)!
+        // Guaranteed-solvable fallback: no locked doors. attemptGen fails only on
+        // placement/connectivity LUCK (never a structural impossibility for a valid
+        // level), and for any real level the map is big enough that a no-locks layout
+        // lands on the first try — so sweep a generous bounded set of seeds rather
+        // than force-unwrap a single retry (the old `!` was the one crash trap in
+        // generation). 256 independent placement failures sits far below hardware-
+        // fault probability; emergencyChamber() is the final, can't-fail net.
+        for k in 0..<256 {
+            if let g = attemptGen(level: level, colonyIndex: colonyIndex,
+                                  seed: seed &+ 0x9E3779B97F4A7C15 &* UInt64(k + 1), allowLocks: false) {
+                return g
+            }
+        }
+        return emergencyChamber(level: level, colonyIndex: colonyIndex)
+    }
+
+    /// The absolute last resort — statistically unreachable (see generate). A single
+    /// open chamber that is ALWAYS valid and solvable: the marine at the west end, the
+    /// Queen and the exit elevator at the east. No procedural placement, so it can
+    /// never fail to build — the point being that generation has no crash path at all.
+    private static func emergencyChamber(level: Int, colonyIndex: Int) -> GeneratedLevel {
+        let th = theme(colonyIndex, level: level)
+        let size = min(58, 40 + level * 2)            // mirror attemptGen's sizing
+        let map = GameMap(w: size, h: size)
+        for y in 1..<(size - 1) { for x in 1..<(size - 1) {
+            let i = map.idx(x, y)
+            map.wall[i] = 0; map.floor[i] = th.floor.rawValue; map.ceil[i] = th.ceil.rawValue
+        } }
+        let ey = size / 2
+        map.playerStart = SIMD2<Float>(2.5, Float(ey) + 0.5)
+        map.playerDir = 0
+        let exit = map.idx(size - 1, ey)              // exit elevator sits IN the east wall
+        map.wall[exit] = WallTex.elevatorSealed.rawValue
+        map.doors[exit] = DoorState()
+        map.exitCell = exit
+        let queen = MonsterSpawn(kind: .queen, pos: SIMD2<Float>(Float(size) - 2.5, Float(ey) + 0.5))
+        return GeneratedLevel(map: map, monsters: [queen], items: [], drums: [],
+                              sockets: [], props: [],
+                              colonyName: Progression.planets[colonyIndex % Progression.planets.count],
+                              secretCount: 0)
     }
 
     private static func attemptGen(level: Int, colonyIndex: Int, seed: UInt64, allowLocks: Bool) -> GeneratedLevel? {

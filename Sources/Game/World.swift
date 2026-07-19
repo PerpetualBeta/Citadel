@@ -478,7 +478,11 @@ final class World {
             let f = 0.5 + 0.5 * sinf(elapsed * 52), g = 0.5 + 0.5 * sinf(elapsed * 33 + 1.3)
             powerDim = env * (0.22 + 0.6 * f * g)                                   // a deep, ragged sag + fast stutter, like a failing circuit
         } else { powerDim = 0 }
-        map.visited[map.idx(Int(player.pos.x), Int(player.pos.y))] = true
+        // inBounds guard: the NoClip cheat can walk the marine off the grid — a raw
+        // idx() would then index out of the visited array and crash.
+        if map.inBounds(Int(player.pos.x), Int(player.pos.y)) {
+            map.visited[map.idx(Int(player.pos.x), Int(player.pos.y))] = true
+        }
     }
 
     // ── movement ───────────────────────────────────────────────────────────
@@ -2006,7 +2010,9 @@ final class World {
 
     private func hazardTick(dt: Float, audio: AudioEngine) {
         hazardTimer -= dt
-        let onHazard = map.hazard[map.idx(Int(player.pos.x), Int(player.pos.y))]
+        // inBounds guard: NoClip can put the marine outside the grid (see update()).
+        let onHazard = map.inBounds(Int(player.pos.x), Int(player.pos.y))
+            && map.hazard[map.idx(Int(player.pos.x), Int(player.pos.y))]
         if onHazard && hazardTimer <= 0 {
             hazardTimer = 0.45
             damagePlayer(5, audio: audio, armorBypass: true)
