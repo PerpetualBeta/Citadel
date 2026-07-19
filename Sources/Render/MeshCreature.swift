@@ -208,26 +208,25 @@ final class MeshCreature {
         if (dth > 0.001) {
             float slump = smoothstep(0.05, 1.0, dth);
             float seed = C.misc.y;                              // frozen per-corpse (0…1)
-            float v1 = fract(seed + 0.13), v2 = fract(seed * 7.3 + 0.37), v3 = fract(seed * 3.1 + 0.71);
-            // COMPACT the footprint INWARD as it collapses, so the carcass settles into
-            // the cleared collision radius and can't lie inside a wall/door — a creature
-            // is a solid with volume, as are they. Mass keeps its 3-D volume (leg-fold).
-            lp.xy *= (1.0 - 0.44 * slump);                     // draw nose / tail / flanks toward centre
-            // per-corpse collapse DEPTH — some flatten right down, some stay hunched
-            float fold = (0.60 + 0.32 * v2) * slump;
-            float legTop = 0.32 * H;
-            if (lp.z < legTop) { lp.z *= (1.0 - fold); }       // legs + low snout fold to the deck
-            else { lp.z -= legTop * fold; }                    // body + tail sink with them
-            // per-corpse TAIL HEIGHT — arcs high or droops low (vertical, so the compact
-            // footprint stays put); the tail is the signature, so this reads clearly
-            float tailW = smoothstep(0.5, 1.0, Zn);
-            lp.z += tailW * (v3 - 0.5) * 0.55 * H * slump;
-            // per-corpse HEAD droop — the skull lolls down more or less
-            float headW = smoothstep(0.2, 0.46, lp.x);
-            lp.z -= headW * (0.25 + 0.6 * v1) * 0.14 * H * slump;
-            // (no yaw twist here — animating a rotation during the collapse read as the
-            // whole corpse doing a "weird turn"; variety comes from depth/tail/head +
-            // the direction it was facing when it fell)
+            float v1 = fract(seed + 0.13), v2 = fract(seed * 7.3 + 0.37);
+            float legTop = 0.34 * H;
+            float tailW = smoothstep(0.50, 1.0, Zn);                            // the high arcing tail
+            float headW = smoothstep(0.20, 0.46, lp.x) * smoothstep(0.30, 0.75, Zn);  // the raised head
+
+            // COLLAPSE IN PLACE — the beast crumples where it stood. Its FOOTPRINT and
+            // CENTRE are untouched (no shrink, no roll, no lateral shift): the corpse stays
+            // over m.pos so blood / flames / ash land ON it, and it reaches no further into
+            // walls or furniture than the LIVE drone did (the wall-clip trims walls, as it
+            // did before). The LEGS fold flat (scaled toward the deck) while the BODY + TAIL
+            // DROP by a bounded translate — keeping their full 3-D thickness, so it's a
+            // lower heap, never a flattened plane. The head and arcing tail loll the rest of
+            // the way down. Per-corpse fold depth for variety; nothing crosses the floor.
+            float fold = (0.62 + 0.26 * v2) * slump;
+            if (lp.z < legTop) { lp.z *= (1.0 - fold); }       // legs splay flat to the deck
+            else { lp.z -= legTop * fold; }                    // body + tail drop, keeping thickness
+            lp.z -= tailW * (0.16 + 0.14 * v1) * H * slump;    // the arcing tail flops down onto the deck
+            lp.z -= headW * (0.12 + 0.14 * v1) * H * slump;    // the head lolls down
+            lp.z  = max(0.0, lp.z);                            // guard: never below the deck
         }
         // DISSOLVE — died in the toxic pool: the carcass sinks into the acid and shrivels
         // away (parts that drop below the floor are occluded by it — eaten by the pool).
