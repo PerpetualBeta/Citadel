@@ -59,6 +59,7 @@ final class MeshCreature {
         float H = C.misc.x;
         float Zn = lp.z / max(H, 1e-4);
         float dth = C.tune.y;
+        float howl = smoothstep(0.03, 0.20, dth) * (1.0 - smoothstep(0.40, 0.62, dth));  // rapid death-throe thrash, before the slump
 
         // head: yaw + pitch around a neck pivot; fades out + droops as she dies
         float headW = smoothstep(0.60, 0.80, Zn);
@@ -74,26 +75,40 @@ final class MeshCreature {
         // torso breathing
         float torsoW = smoothstep(0.28, 0.44, Zn) * (1.0 - smoothstep(0.58, 0.72, Zn));
         lp.xy *= (1.0 + torsoW * C.anim.z);
-        // tentacle undulation
+        // tentacle undulation — a gentle living sway; a RAPID thrash as she howls
         float tentW = 1.0 - smoothstep(0.0, 0.34, Zn);
         if (tentW > 0.001) {
             float pa = atan2(lp.y, lp.x);
-            float ph = C.anim.w + lp.z * 9.0 + pa * 2.0;
-            lp.x += tentW * C.misc.y * sin(ph);
-            lp.y += tentW * C.misc.y * cos(ph * 0.9);
+            float ph  = C.anim.w + lp.z * 9.0 + pa * 2.0;      // slow, alive
+            float phH = C.misc.w + lp.z * 9.0 + pa * 2.0;      // fast, howling (C.misc.w = rapid thrash phase)
+            float ampH = 0.12 * howl;
+            lp.x += tentW * (C.misc.y * sin(ph)       + ampH * sin(phH));
+            lp.y += tentW * (C.misc.y * cos(ph * 0.9) + ampH * cos(phH * 0.9));
         }
-        // arm sway
+        // arm sway — gentle alive; frantic thrash as she howls
         float armW = smoothstep(0.46, 0.58, Zn) * (1.0 - smoothstep(0.74, 0.84, Zn)) * smoothstep(0.24, 0.40, abs(lp.x));
-        lp.x += armW * C.misc.z * sin(C.anim.w * 0.7);
-        lp.z += armW * C.misc.z * 0.5 * sin(C.anim.w * 0.7 + 1.3);
+        float armH = 0.14 * howl;
+        lp.x += armW * (C.misc.z * sin(C.anim.w * 0.7)             + armH * sin(C.misc.w));
+        lp.z += armW * (C.misc.z * 0.5 * sin(C.anim.w * 0.7 + 1.3) + armH * 0.6 * sin(C.misc.w * 1.1 + 1.3));
 
-        // death: slump + topple forward about the base
+        // death: she HOWLS (limbs thrash, above) then SLUMPS — the upper body FOLDS
+        // forward+down about a WAIST hinge. A hinge is a rotation, so the torso keeps
+        // its volume (a vertical crush flattened her into a plane); the lower body +
+        // tentacle skirt stay ROOTED to the floor, so she folds over in place. Gentler
+        // than a full base-topple, which swung her hollow underside toward the camera
+        // and let the player circle behind and see inside the mesh.
         if (dth > 0.001) {
-            lp.z *= (1.0 - 0.4 * dth);
-            float tp = dth * 1.15;
-            float c = cos(tp), s = sin(tp);
-            lp  = float3(lp.x,  c*lp.y  - s*lp.z,  s*lp.y  + c*lp.z);
-            nrm = float3(nrm.x, c*nrm.y - s*nrm.z, s*nrm.y + c*nrm.z);
+            float slump = smoothstep(0.32, 1.0, dth);
+            float waist = 0.40 * H;                              // hinge height
+            if (lp.z > waist) {
+                float fold = slump * 0.95;                       // bow angle (below the old 1.15 topple)
+                float c = cos(fold), s = sin(fold);
+                float3 rel = lp - float3(0.0, 0.0, waist);
+                rel = float3(rel.x, c * rel.y - s * rel.z, s * rel.y + c * rel.z);   // tip forward + down
+                lp  = float3(0.0, 0.0, waist) + rel;
+                nrm = float3(nrm.x, c * nrm.y - s * nrm.z, s * nrm.y + c * nrm.z);
+            }
+            lp.z *= (1.0 - 0.10 * slump);                        // a slight overall settle onto the floor
         }
         // ash: charred remains crumble INWARD + DOWN into a compact 3-D dust mound
         // (not a flat splat) — gather every vertex toward a small low dome, with a
@@ -148,9 +163,10 @@ final class MeshCreature {
         float3 amb = float3(0.20, 0.22, 0.28) * ((0.5 + 0.5 * N.y) * g);
         float3 sector = C.sector.rgb * 0.5;
         float death = C.tune.y;
+        float slump = smoothstep(0.32, 1.0, death);   // ova blaze through the howl, then die as she slumps
         float warm = max(0.0, alb.r - alb.b);
         float val = max(alb.r, max(alb.g, alb.b));
-        float emis = smoothstep(0.22, 0.55, warm) * smoothstep(0.4, 0.8, val) * (1.0 - death);
+        float emis = smoothstep(0.22, 0.55, warm) * smoothstep(0.4, 0.8, val) * (1.0 - slump);
         float3 col = alb * (amb + lamp + sector) + alb * emis * float3(1.0, 0.55, 0.22) * 1.3;
         col *= (1.0 - 0.4 * death);               // darken as she dies
         float burn = C.tune.z;                    // charred remains: kill the glow, desaturate to ash
@@ -393,7 +409,7 @@ final class MeshCreature {
         var cam = Cam(model: model, mvp: mvp,
                       eye: SIMD4(eye, 0), fwd: SIMD4(fwd, 0), sector: SIMD4(sector, 0),
                       anim: SIMD4(headYaw, headPitch, breathe, sway),
-                      misc: SIMD4(localHeight, 0.03 * aliveF, 0.02 * aliveF, 0),
+                      misc: SIMD4(localHeight, 0.03 * aliveF, 0.02 * aliveF, time * 8.0 * animSpeed),   // .w = rapid howl-thrash phase
                       tune: SIMD4(lightGain, deathC, max(0, min(1, burn)), max(0, min(2, ashed))))
 
         let rp = MTLRenderPassDescriptor()

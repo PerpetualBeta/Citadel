@@ -304,6 +304,11 @@ enum QueenMeshTest {
             shot("mesh-live-dying.png", stand, ang + .pi)
             world.monsters[qi].state = .dead
             shot("mesh-live-death.png", stand, ang + .pi)
+            // circle BEHIND the slumped corpse — the old topple let you see inside the
+            // mesh from here; the slump-in-place must keep her closed to the camera.
+            if let (backSp, backAng) = findOpen(near: ang + .pi) {
+                shot("mesh-live-death-behind.png", backSp, backAng + .pi)
+            }
             world.monsters[qi].burn = 1.0
             shot("mesh-live-burnt.png", stand, ang + .pi)
             world.monsters[qi].ashed = 1.0
