@@ -79,6 +79,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/UI/TitleArt.swift \
                     Sources/UI/IntelPortraits.swift \
                     Sources/UI/Automap.swift \
+                    Sources/UI/Automap3D.swift \
                     Sources/UI/Font.swift \
                     Sources/UI/TextImage.swift \
                     Sources/Audio/AudioEngine.swift \

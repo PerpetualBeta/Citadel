@@ -12,6 +12,7 @@
 
 import Foundation
 import Metal
+import simd
 
 enum Automap {
     static let W = RenderConfig.width
@@ -26,12 +27,76 @@ enum Automap {
     private static let player = packRGBA(120, 240, 150)
     private static let exitCol = packRGBA(96, 226, 120)
 
-    static func draw(_ world: World, into c: Canvas2D, t: Float) {
+    // persistent free-orbit camera state (survives while the map is open)
+    private static var orbitAz: Float = 0.85
+    private static var orbitEl: Float = 0.62
+    private static var orbitZoom: Float = 1.0
+    private static var am3dTried = false
+    private static var am3d: Automap3D?
+
+    static func draw(_ world: World, into c: Canvas2D, t: Float, input: InputState? = nil, dt: Float = 0) {
+        // dim the live view to a near-black plate so the map reads cleanly over it
+        c.fillRectBlend(0, 0, W, H, packRGBA(6, 8, 14), 0.88)
+
+        if !am3dTried { am3dTried = true; am3d = MTLCreateSystemDefaultDevice().flatMap { Automap3D(device: $0) } }
+        if let renderer = am3d {
+            advanceOrbit(input, dt)
+            let mvp = renderer.render(world, into: c, azimuth: orbitAz, elevation: orbitEl, zoom: orbitZoom)
+            drawExitLabel(c, world, mvp)
+        } else {
+            draw2DFallback(world, into: c)             // no Metal device — flat top-down
+        }
+        drawChrome(c, world, t)
+    }
+
+    /// Spin / tilt / zoom the orbit from held movement input while the map is open:
+    /// left/right (arrows) orbit, up/down tilt, A/D (strafe) zoom — plus the sticks.
+    private static func advanceOrbit(_ input: InputState?, _ dt: Float) {
+        guard let input = input, dt > 0 else { return }
+        orbitAz += (Float(input.turnRight ? 1 : 0) - Float(input.turnLeft ? 1 : 0) + input.lookX) * 1.7 * dt
+        orbitEl += (Float(input.forward ? 1 : 0) - Float(input.back ? 1 : 0) + input.moveY) * 1.2 * dt
+        orbitEl = max(0.12, min(1.40, orbitEl))
+        orbitZoom += (Float(input.strafeRight ? 1 : 0) - Float(input.strafeLeft ? 1 : 0)) * 1.3 * dt
+        orbitZoom = max(0.45, min(3.0, orbitZoom))
+    }
+
+    /// Float the EXIT caption over the exit pillar, projected through the live camera.
+    private static func drawExitLabel(_ c: Canvas2D, _ world: World, _ mvp: simd_float4x4) {
         let map = world.map
+        guard map.exitCell >= 0 else { return }
+        let ex = map.exitCell % map.w, ey = map.exitCell / map.w
+        let seen = [(1, 0), (-1, 0), (0, 1), (0, -1)].contains {
+            map.inBounds(ex + $0.0, ey + $0.1) && map.visited[map.idx(ex + $0.0, ey + $0.1)]
+        }
+        let top = SIMD3<Float>(Float(ex) + 0.5, 1.75, Float(ey) + 0.5)
+        guard seen, let (sx, sy) = Automap3D.project(top, mvp, W, H) else { return }
+        c.labelCentered2("EXIT", sx - uiS(26), uiS(52), sy - uiS(22), size: uiSf(13), color: exitCol, weight: .bold)
+    }
 
-        // dim the live view to a near-black plate so the lines read cleanly
-        c.fillRectBlend(0, 0, W, H, packRGBA(6, 8, 14), 0.84)
+    /// Header, explored %, key legend, close hint — drawn over whichever map renders.
+    private static func drawChrome(_ c: Canvas2D, _ world: World, _ t: Float) {
+        let map = world.map
+        var explored = 0, totalFloor = 0
+        for i in 0..<(map.w * map.h) where map.wall[i] == 0 { totalFloor += 1; if map.visited[i] { explored += 1 } }
+        c.labelCentered("AUTOMAP", uiS(16), size: uiSf(30), color: amber, weight: .heavy)
+        c.labelCentered("\(world.colonyName) · FLOOR \(Progression.floorInBuilding(world.level))", uiS(50), size: uiSf(16), color: dim, weight: .semibold)
+        let pct = totalFloor > 0 ? Int((Float(explored) / Float(totalFloor) * 100).rounded()) : 0
+        c.labelRight("EXPLORED \(pct)%", W - uiS(40), uiS(22), size: uiSf(15), color: dim, weight: .medium)
+        // legend shows only the key colours THIS level actually uses (a locked door,
+        // a key on the floor, or one already held) — not a fixed red/blue/yellow row,
+        // so an unused colour never appears as a phantom pip.
+        var levelKeys = world.player.keys
+        for it in world.items { if let kc = keyColorOf(it.kind) { levelKeys.insert(kc) } }
+        for (_, d) in map.doors { if let lk = d.locked { levelKeys.insert(lk) } }
+        keyLegend(c, held: world.player.keys, present: levelKeys, uiS(40), uiS(22))
+        if Int(t * 2) % 2 == 0 {
+            c.labelCentered("ARROWS ORBIT · A/D ZOOM · TAB/ESC CLOSE", H - uiS(30), size: uiSf(16), color: ink, weight: .semibold)
+        }
+    }
 
+    /// Flat top-down map — the fallback when no Metal device is available.
+    private static func draw2DFallback(_ world: World, into c: Canvas2D) {
+        let map = world.map
         // fit the whole grid (square cells) into the area between header & footer
         let top = uiS(72), bottom = uiS(46), side = uiS(40)
         let availW = W - 2 * side, availH = H - top - bottom
@@ -51,14 +116,11 @@ enum Automap {
         }
 
         // explored floor wash + the walls that border explored floor (fog-of-war)
-        var explored = 0, totalFloor = 0
         let th = max(1, uiS(2))
         for y in 0..<map.h {
             for x in 0..<map.w {
                 let i = map.idx(x, y)
-                if map.wall[i] == 0 { totalFloor += 1 }
                 guard map.visited[i], map.wall[i] == 0 else { continue }
-                explored += 1
                 let x0 = SX(Float(x)), x1 = SX(Float(x + 1)), y0 = SY(Float(y)), y1 = SY(Float(y + 1))
                 c.fillRectBlend(x0, y0, x1 - x0, y1 - y0, floorCol, 0.55)
                 if isSolid(x + 1, y) { c.fillRect(x1 - th / 2, y0, th, y1 - y0, edgeColor(x + 1, y)) }   // east
@@ -91,16 +153,6 @@ enum Automap {
 
         // player arrow — points the way the camera faces
         drawArrow(c, sxF(world.player.pos.x), syF(world.player.pos.y), world.player.dir, s * 0.62)
-
-        // header + footer
-        c.labelCentered("AUTOMAP", uiS(16), size: uiSf(30), color: amber, weight: .heavy)
-        c.labelCentered("\(world.colonyName) · FLOOR \(Progression.floorInBuilding(world.level))", uiS(50), size: uiSf(16), color: dim, weight: .semibold)
-        let pct = totalFloor > 0 ? Int((Float(explored) / Float(totalFloor) * 100).rounded()) : 0
-        c.labelRight("EXPLORED \(pct)%", W - side, uiS(22), size: uiSf(15), color: dim, weight: .medium)
-        keyLegend(c, world.player.keys, side, uiS(22))
-        if Int(t * 2) % 2 == 0 {
-            c.labelCentered("TAB OR ESC  ·  CLOSE", H - uiS(30), size: uiSf(18), color: ink, weight: .semibold)
-        }
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
@@ -142,10 +194,11 @@ enum Automap {
         }
     }
 
-    /// Held-key pips, top-left, matching the status-bar order.
-    private static func keyLegend(_ c: Canvas2D, _ held: Set<KeyColor>, _ x: Int, _ y: Int) {
+    /// Key pips, top-left, in the status-bar order — but only for colours this level
+    /// uses (`present`); a pip lights when the key is `held`, dim until then.
+    private static func keyLegend(_ c: Canvas2D, held: Set<KeyColor>, present: Set<KeyColor>, _ x: Int, _ y: Int) {
         var kx = x
-        for kc in [KeyColor.red, .blue, .yellow] {
+        for kc in [KeyColor.red, .blue, .yellow] where present.contains(kc) {
             let col = keyTint(kc)
             c.fillRect(kx, y, uiS(12), uiS(15), held.contains(kc) ? col : shade(col, 0.20))
             if held.contains(kc) { c.strokeRect(kx, y, uiS(12), uiS(15), packRGBA(255, 255, 255)) }

@@ -313,7 +313,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private func tickAutomap(_ dt: Float) {
         guard let world = world else { state = .title; return }
         renderWorld(world)                         // dimmed world stays as backdrop; no HUD clutter
-        Automap.draw(world, into: canvas, t: screenT)
+        Automap.draw(world, into: canvas, t: screenT, input: input, dt: dt)
         if rising(input.map, pMap) || rising(input.esc, pEsc) { state = .playing }
     }
 
