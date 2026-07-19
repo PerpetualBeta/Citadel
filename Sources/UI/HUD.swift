@@ -158,11 +158,16 @@ struct HUD {
         c.labelRight("\(world.colonyName) · FLOOR \(Progression.floorInBuilding(world.level))",
                      rx, y, size: uiSf(12), color: HUD.vMid, weight: .semibold, shadow: false, mono: true)
         y += uiS(15)
-        // the counter is a true clear-meter (births are counted): at n/n every
-        // alien this floor ever held is dead — the line goes clear-green
-        let cleared = world.monsterTotal > 0 && world.killCount >= world.monsterTotal
-        c.labelRight(cleared ? "KILLS \(world.killCount)/\(world.monsterTotal) · CLEAR"
-                             : "KILLS \(world.killCount)/\(world.monsterTotal)", rx, y,
+        // A true clear-meter, derived from LIVE state (not killCount, which the
+        // Queen's death double-counts across a revive → a false CLEAR while a bred
+        // drone still lived). killed = every alien this floor ever held (spawned AND
+        // Queen-bred) minus those still alive; CLEAR only when NONE are left. (The
+        // exit itself is Queen-gated, not clear-gated — see objectiveStatus.)
+        let aliveCount = world.monsters.reduce(0) { $0 + ($1.alive ? 1 : 0) }
+        let killed = max(0, world.monsterTotal - aliveCount)
+        let cleared = world.monsterTotal > 0 && aliveCount == 0
+        c.labelRight(cleared ? "KILLS \(killed)/\(world.monsterTotal) · CLEAR"
+                             : "KILLS \(killed)/\(world.monsterTotal)", rx, y,
                      size: uiSf(11), color: cleared ? HUD.good : HUD.vDim,
                      weight: cleared ? .bold : .medium, shadow: false, mono: true)
         y += uiS(15)
