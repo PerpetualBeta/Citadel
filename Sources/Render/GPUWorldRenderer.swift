@@ -406,6 +406,7 @@ final class GPUWorldRenderer {
         u.dbg.x = disableCreatureMask ? 1 : 0   // harness invariant: mask off must be pixel-identical
         u.dbg.y = disableWindowClamp ? 1 : 0    // harness calibration: reintroduce the window-leap bug
         u.dbg.z = world.powerDim                // scene dim 0…1 — the lights sag + flicker with a distant electrical fault
+        u.tune.x = FeatureFlags.overheadLight   // overhead-lamp brightness (OverheadLight default; 1 = as-authored)
         // dramatic lighting = the level's fixtures (warm keys shadow, colour fills
         // don't) culled to the player, plus the player's own muzzle/projectile glows
         // appended after — so extra.z gates the few shadow-casters to the emitter keys.
@@ -602,6 +603,9 @@ final class GPUWorldRenderer {
                 // gait is distance-matched (animTime accrues travel), so the stride
                 // tracks movement instead of sliding; naturally desynced per-drone
                 let dissolve: Float = m.dissolving ? min(1, m.dissolveT / 1.8) : 0
+                // the corpse renders EXACTLY where it died (m.pos) — never displaced —
+                // so flames, ash and blood always land on it (a render-only settle slid
+                // the body off its own fire).
                 return MeshCreature.DroneInst(
                     pos: m.pos, dir: m.dir, gait: m.animTime * 5.0, move: move, rear: m.rearAmt,
                     dissolve: dissolve, seed: m.deathSeed, death: death, burn: m.burn, ashed: m.ashed,

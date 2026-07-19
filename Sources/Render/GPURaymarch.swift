@@ -27,7 +27,7 @@ enum GPURaymarch {
     #include <metal_stdlib>
     using namespace metal;
 
-    struct Uniforms { float4 ro, fwd, right, up, params, grid, extra, env, vmA, vmB, dbg; };  // extra.x = decalCount · env.xy = water-table offset (puddle field) · env.zw = viewmodel shape start/count · vmA = gun anchor.xyz + bound r · vmB = gun-local bound centre · dbg.x = disable creature mask
+    struct Uniforms { float4 ro, fwd, right, up, params, grid, extra, env, vmA, vmB, dbg, tune; };  // extra.x = decalCount · env.xy = water-table offset (puddle field) · env.zw = viewmodel shape start/count · vmA = gun anchor.xyz + bound r · vmB = gun-local bound centre · dbg.x = disable creature mask · tune.x = overhead-lamp brightness gain
     struct GPULight { float4 posR; float4 colI; };   // posR=(x,y,z,1/r²)  colI=(r,g,b,intensity)
     struct GShape   { float4 a, b, col, bnd; };  // a.xyz,a.w=r1 ; b.xyz,b.w=r2(<0 → sphere) ; col.rgb,col.w=k ; bnd = enclosing sphere (CPU-filled)
     struct GMonster { float4 a, b, c; };    // a=(x,z,yaw,scale) b=(shapeStart,shapeCount,boundR,boundCY) c=(minY,…)
@@ -1198,7 +1198,7 @@ enum GPURaymarch {
                         if (m < LAMP_HALF) {
                             float face = 1.0 - smoothstep(LAMP_HALF * 0.42, LAMP_HALF, m);   // long soft edge, not a hard square
                             alb = mix(float3(0.06, 0.06, 0.08), LAMP_WARM, face);   // dark housing → warm face
-                            emis = 7.5 * face * fixtureFlicker(float2(c), time);   // HDR — blooms + mirrors in the wet floor
+                            emis = 7.5 * U.tune.x * face * fixtureFlicker(float2(c), time);   // HDR — blooms + mirrors in the wet floor (tune.x = overhead dimmer)
                         }
                     }
                 }
@@ -1295,7 +1295,7 @@ enum GPURaymarch {
                         poolSpec += specBP(n, V, Ld, rough, f0) * LAMP_WARM * (atn * fdrop);   // metallic glints under the lamps
                     }
                 }
-                lit += (diffAlb * pool + poolSpec) * ao * 0.42;   // warm pools + spec; the colored sector field leads
+                lit += (diffAlb * pool + poolSpec) * ao * 0.42 * U.tune.x;   // warm pools + spec (tune.x dims the overheads); the colored sector field leads
             }
             // dynamic + emitter lights — the dramatic shaded point lights raking
             // the walls (warm keys, teal/red fills) plus muzzle flash + projectiles.
@@ -1440,7 +1440,7 @@ enum GPURaymarch {
                                 poolSpec += specBP(n, V, Ld, rough, f0) * LAMP_WARM * (atn * fdrop);
                             }
                         }
-                        lit += (diffAlb * pool + poolSpec) * 0.42;
+                        lit += (diffAlb * pool + poolSpec) * 0.42 * U.tune.x;   // overheads splash the gun; dims with the room (tune.x)
                     }
                     // dynamic + emitter lights — the muzzle flash and passing plasma
                     // bolts splash off the weapon's top surfaces
@@ -1639,7 +1639,8 @@ enum GPURaymarch {
                       var env: SIMD4<Float> = SIMD4(0, 0, 0, 0)     // extra.x = decalCount · env.xy = water-table offset · env.zw = viewmodel shape start/count
                       var vmA: SIMD4<Float> = SIMD4(0, 0, 0, 0)     // viewmodel: gun anchor.xyz + local bound radius
                       var vmB: SIMD4<Float> = SIMD4(0, 0, 0, 0)     // viewmodel: gun-local bound centre
-                      var dbg: SIMD4<Float> = SIMD4(0, 0, 0, 0) }   // dbg.x = 1 → disable the per-ray creature mask (harness invariant checks)
+                      var dbg: SIMD4<Float> = SIMD4(0, 0, 0, 0)     // dbg.x = 1 → disable the per-ray creature mask (harness invariant checks)
+                      var tune: SIMD4<Float> = SIMD4(1, 0, 0, 0) }  // tune.x = overhead-lamp brightness gain (1 = as-authored; harnesses keep the default)
     struct GPULight { var posR, colI: SIMD4<Float> }   // posR=(x,y,z,1/r²)  colI=(r,g,b,intensity)
     struct GShape { var a, b, col: SIMD4<Float>; var bnd: SIMD4<Float> = .zero }   // a.xyz/r1 ; b.xyz/r2(<0 sphere) ; col.rgb/k ; bnd = enclosing sphere
     struct GMonster { var a, b, c: SIMD4<Float> }      // a=(x,z,yaw,scale) b=(start,count,boundR,boundCY) c=(minY,…)

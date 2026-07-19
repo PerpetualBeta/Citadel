@@ -37,6 +37,16 @@ enum FeatureFlags {
     ///   defaults write cc.jorviksoftware.Citadel MeshDrone -bool false   to A/B vs SDF.
     static var meshDrone: Bool { d.object(forKey: "MeshDrone") == nil ? true : d.bool(forKey: "MeshDrone") }
 
+    /// Overhead-lamp brightness. Scales the ceiling lamps as a UNIT — their
+    /// emissive glow AND the warm pools they cast onto the world and the weapon —
+    /// leaving the headlamp, the ambient sector fill, and the dramatic point
+    /// lights alone. 1.0 = as-authored; lower it to darken the early floors, which
+    /// light brighter than this game wants. Read live (next frame):
+    ///   defaults write cc.jorviksoftware.Citadel OverheadLight -float 0.7
+    static var overheadLight: Float {
+        (d.object(forKey: "OverheadLight") as? Double).map { Float($0) } ?? 1.0
+    }
+
     /// Force a specific level seed for testing (0 = off, use the run's seed).
     static var fixedSeed: UInt64 {
         let v = d.integer(forKey: "FixedSeed")
