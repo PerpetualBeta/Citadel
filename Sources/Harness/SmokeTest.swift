@@ -587,6 +587,23 @@ enum SmokeTest {
             if !w.sockets.isEmpty { socketLevels += 1 }
         }
         check(socketLevels == 6, "every level places recharge sockets (\(socketLevels)/6)")
+        // a wall-mounted socket must back onto PLAIN structural wall — never a surface
+        // FEATURE (an amber ARC display bank, backlit glass, or hazard plating): a
+        // recharge panel bolted over a screen reads as a placement bug.
+        var socketOnFeature = 0, socketsChecked = 0
+        let badBacking: Set<Int> = [WallTex.computer.rawValue, WallTex.glass.rawValue, WallTex.hazard.rawValue]
+        for lv in 1...8 {
+            for s in 0..<6 {
+                let w = World(level: lv, colonyIndex: (lv - 1) % 6, seed: UInt64(lv) &* 131 &+ UInt64(s) &* 17 &+ 5)
+                for sk in w.sockets {
+                    socketsChecked += 1
+                    let ix = Int((-sin(sk.yaw)).rounded()), iy = Int(cos(sk.yaw).rounded())   // inward (room-facing) axis
+                    let bx = Int(floor(sk.pos.x)) - ix, by = Int(floor(sk.pos.y)) - iy         // the wall cell behind
+                    if w.map.inBounds(bx, by), badBacking.contains(w.map.wall[w.map.idx(bx, by)]) { socketOnFeature += 1 }
+                }
+            }
+        }
+        check(socketOnFeature == 0, "no recharge socket backs onto a display/glass/hazard wall (\(socketOnFeature)/\(socketsChecked))")
         // standing in a socket pumps cells into a dry plasma rifle, draining the socket
         let cw = World(level: 1, colonyIndex: 0, seed: 1234)
         cw.sockets = [Socket(pos: cw.player.pos, charge: 135)]

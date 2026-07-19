@@ -942,6 +942,16 @@ enum MapGen {
             for y in r.y..<(r.y + r.h) { consider(r.x + r.w - 1, y, SIMD2(-1, 0)) }      // right wall
             return out
         }
+        // A wall-mounted recharge socket must back onto PLAIN structural wall —
+        // never over a surface FEATURE (the amber ARC display banks, backlit glass,
+        // or the fuel-store hazard plating), where a bolted-on panel reads as a
+        // mistake. These are all feature-only textures — never a theme's base wall —
+        // so rejecting them can't starve placement (litPanel/pipework stay valid).
+        let socketBadBacking: Set<Int> = [WallTex.computer.rawValue, WallTex.glass.rawValue, WallTex.hazard.rawValue]
+        func featureBacked(_ s: Slot) -> Bool {
+            let bx = s.x - Int(s.inward.x), by = s.y - Int(s.inward.y)
+            return map.inBounds(bx, by) && socketBadBacking.contains(map.wall[map.idx(bx, by)])
+        }
         func roomHasHazard(_ r: Room) -> Bool {
             for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) where map.hazard[map.idx(xx, yy)] { return true } }
             return false
@@ -1011,14 +1021,21 @@ enum MapGen {
         if rooms.count > 1 {
             var nSock = 0
             for (ri, r) in rooms.enumerated().dropFirst() where nSock < 2 {
-                for s in wallSlots(r, ri) where freeCell(s.pos, 1.0) && !sockets.contains(where: { vlen($0.pos - s.pos) < 3 }) {
+                for s in wallSlots(r, ri) where freeCell(s.pos, 1.0) && !featureBacked(s) && !sockets.contains(where: { vlen($0.pos - s.pos) < 3 }) {
                     sockets.append((pos: s.pos, yaw: yawFor(s.inward))); placed.append(s.pos); nSock += 1; break
                 }
             }
             if sockets.isEmpty {                                 // belt-and-braces: every level must carry one
                 outer: for (ri, r) in rooms.enumerated().dropFirst() {
-                    for s in wallSlots(r, ri) where freeCell(s.pos, 0.6) {
+                    for s in wallSlots(r, ri) where freeCell(s.pos, 0.6) && !featureBacked(s) {
                         sockets.append((pos: s.pos, yaw: yawFor(s.inward))); placed.append(s.pos); break outer
+                    }
+                }
+            }
+            if sockets.isEmpty {                                 // last resort: guarantee one even if only feature walls remain
+                outer2: for (ri, r) in rooms.enumerated().dropFirst() {
+                    for s in wallSlots(r, ri) where freeCell(s.pos, 0.6) {
+                        sockets.append((pos: s.pos, yaw: yawFor(s.inward))); placed.append(s.pos); break outer2
                     }
                 }
             }
