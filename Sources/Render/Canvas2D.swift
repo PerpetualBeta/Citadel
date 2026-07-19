@@ -211,7 +211,7 @@ final class Canvas2D {
     /// / weapon viewmodel). `tint` multiplies RGB if given (pain flash, etc.).
     func blitBitmap(_ pixels: [UInt32], _ pw: Int, _ ph: Int, _ dx: Int, _ dy: Int,
                     scale: Int = 1, tint: Float = 1) {
-        if pw <= 0 || ph <= 0 { return }
+        if pw <= 0 || ph <= 0 || pixels.count < pw * ph { return }   // src is read up to pw*ph-1
         pixels.withUnsafeBufferPointer { src in
             for sy in 0..<ph {
                 let row = sy * pw
@@ -241,7 +241,7 @@ final class Canvas2D {
     /// viewmodel and other fixed sprites that must track the framebuffer scale.
     func blitBitmapF(_ pixels: [UInt32], _ pw: Int, _ ph: Int, _ dx: Int, _ dy: Int, scale: Float) {
         let dw = Int(Float(pw) * scale), dh = Int(Float(ph) * scale)
-        if dw <= 0 || dh <= 0 { return }
+        if dw <= 0 || dh <= 0 || pixels.count < pw * ph { return }   // src is read up to pw*ph-1
         pixels.withUnsafeBufferPointer { src in
             for oy in 0..<dh {
                 let yy = dy + oy

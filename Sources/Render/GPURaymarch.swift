@@ -2414,6 +2414,11 @@ enum GPURaymarch {
         d.usage = .shaderRead; d.storageMode = .shared
         guard let tex = device.makeTexture(descriptor: d) else { return nil }
         for (i, t) in texs.enumerated() {
+            // The array assumes a uniform tile size (every Texture is `size` today).
+            // A mismatched tile would make replace() read past its pixel buffer —
+            // assert in dev, and skip the slice in release rather than read OOB.
+            assert(t.size == sz && t.pixels.count >= sz * sz, "makeTextureArray: non-uniform tile (\(t.size) vs \(sz))")
+            guard t.size == sz, t.pixels.count >= sz * sz else { continue }
             t.pixels.withUnsafeBytes {
                 tex.replace(region: MTLRegionMake2D(0, 0, sz, sz), mipmapLevel: 0, slice: i,
                             withBytes: $0.baseAddress!, bytesPerRow: sz * 4, bytesPerImage: sz * sz * 4)

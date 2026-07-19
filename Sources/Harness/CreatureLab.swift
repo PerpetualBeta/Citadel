@@ -250,7 +250,7 @@ enum CreatureLab {
             }
         }
         // gory chunks for an overkill gib
-        if gib && d > 0.1 {
+        if gib && d > 0.1 && !base.isEmpty {                          // base.count-1 = -1 on empty → index crash
             for n in 0..<7 {
                 let a = Float(n) / 7 * 2 * .pi, rr = 0.2 + d * (0.4 + Float(n % 3) * 0.15)
                 let bc = base[min(n, base.count - 1)].col
