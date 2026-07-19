@@ -170,10 +170,10 @@ enum GPURaymarch {
     // camera that alone collapsed the frame rate. A masked-out monster is
     // > the mask margin from every point on the ray, so it can neither be
     // hit nor win a material contest: skipping it is exact.
-    static inline float4 creatureField(float3 p, int nMon, constant GMonster* mons, constant GShape* shapes, ulong cmask, thread float& mat, thread float& emOut) {
+    static inline float4 creatureField(float3 p, int nMon, constant GMonster* mons, constant GShape* shapes, ulong2 cmask, thread float& mat, thread float& emOut) {
         float best = 1e9; float3 bestCol = float3(0.5, 0.2, 0.18); mat = 0.0; float bestEm = 0.0; emOut = 0.0;
         for (int mi = 0; mi < nMon; mi++) {
-            if (mi < 64 && ((cmask >> mi) & 1) == 0) continue;
+            if (mi < 128 && (((mi < 64 ? cmask.x >> mi : cmask.y >> (mi - 64)) & 1) == 0)) continue;
             GMonster m = mons[mi];
             float scale = m.a.w;
             float2 d = p.xz - m.a.xy;
@@ -233,10 +233,10 @@ enum GPURaymarch {
     // see the exact field the shading pass sees) minus the colour blends, plus
     // the same exact enclosing-sphere skip — this loop runs per STEP per PIXEL
     // and dominates the frame when a creature fills the screen.
-    static inline float4 creatureField(float3 p, int nMon, constant GMonster* mons, constant GShape* shapes, ulong cmask) {
+    static inline float4 creatureField(float3 p, int nMon, constant GMonster* mons, constant GShape* shapes, ulong2 cmask) {
         float best = 1e9;
         for (int mi = 0; mi < nMon; mi++) {
-            if (mi < 64 && ((cmask >> mi) & 1) == 0) continue;
+            if (mi < 128 && (((mi < 64 ? cmask.x >> mi : cmask.y >> (mi - 64)) & 1) == 0)) continue;
             GMonster m = mons[mi];
             float scale = m.a.w;
             float2 d = p.xz - m.a.xy;
@@ -334,18 +334,18 @@ enum GPURaymarch {
     // full field: grid + creatures + pipe fittings — the primary march + normals
     static inline float sceneSDF(float3 p, texture2d<float> dt, sampler s, float2 mapWH, float ceilH,
                                  int nMon, constant GMonster* mons, constant GShape* shapes,
-                                 constant float4* fits, int nFits, ulong cmask) {
+                                 constant float4* fits, int nFits, ulong2 cmask) {
         float2 dd = dt.sample(s, p.xz / mapWH).rg;           // .r wall distance · .g pipe-routing enable
         float dW = dd.x;
         float g = min(dW, min(p.y, ceilH - p.y));
         g = min(g, wallPipes(p, dW, ceilH, dd.y));           // baked routed pipework (marched + normals; not AO/shadow)
         if (nFits > 0) g = min(g, fittingsField(p, fits, nFits, ceilH));
-        if (nMon > 0 && cmask != 0) g = min(g, creatureField(p, nMon, mons, shapes, cmask).w);
+        if (nMon > 0 && (cmask.x | cmask.y) != 0) g = min(g, creatureField(p, nMon, mons, shapes, cmask).w);
         return g;
     }
     static inline float3 calcNormal(float3 p, texture2d<float> dt, sampler s, float2 mapWH, float ceilH,
                                     int nMon, constant GMonster* mons, constant GShape* shapes,
-                                    constant float4* fits, int nFits, ulong cmask) {
+                                    constant float4* fits, int nFits, ulong2 cmask) {
         float2 e = float2(0.004, 0.0);
         float dx = sceneSDF(p + e.xyy, dt, s, mapWH, ceilH, nMon, mons, shapes, fits, nFits, cmask) - sceneSDF(p - e.xyy, dt, s, mapWH, ceilH, nMon, mons, shapes, fits, nFits, cmask);
         float dy = sceneSDF(p + e.yxy, dt, s, mapWH, ceilH, nMon, mons, shapes, fits, nFits, cmask) - sceneSDF(p - e.yxy, dt, s, mapWH, ceilH, nMon, mons, shapes, fits, nFits, cmask);
@@ -632,7 +632,7 @@ enum GPURaymarch {
         // the creature field is skipped wholesale — so when a biter fills the
         // screen, rays pointing at the floor stop paying for it after a step or
         // two instead of on all ~190.
-        ulong cmask = 0;
+        ulong2 cmask = ulong2(0);                            // 128-instance budget (two ulongs): the summed SDF caps peak ~78
         float cNear = 1e9, cFar = -1e9;
         for (int mi = 0; mi < nMon; mi++) {
             GMonster m = mons[mi];
@@ -651,16 +651,17 @@ enum GPURaymarch {
             float sq = sqrt(hq);
             float tEnter = -bq - sq, tExit = -bq + sq;           // roots of t^2 + 2*bq*t + c = 0
             if (tEnter > 64.0 || tExit < 0.0) continue;          // beyond march range / fully behind
-            if (mi < 64) cmask |= (ulong(1) << ulong(mi));
+            if (mi < 64) cmask.x |= (ulong(1) << ulong(mi));
+            else if (mi < 128) cmask.y |= (ulong(1) << ulong(mi - 64));
             cNear = min(cNear, max(0.0, tEnter));
             cFar = max(cFar, tExit);
         }
-        if (nMon > 64) { cmask = ~ulong(0); cNear = 0.0; cFar = 64.0; }   // over the mask budget: evaluate everything
-        if (U.dbg.x > 0.5) { cmask = ~ulong(0); cNear = 0.0; cFar = 64.0; }   // harness ground truth: the mask is a pure optimisation, so forcing it off must not change a pixel
+        if (nMon > 128) { cmask = ulong2(~ulong(0)); cNear = 0.0; cFar = 64.0; }   // over the 128-instance mask budget: evaluate everything
+        if (U.dbg.x > 0.5) { cmask = ulong2(~ulong(0)); cNear = 0.0; cFar = 64.0; }   // harness ground truth: the mask is a pure optimisation, so forcing it off must not change a pixel
         float t = 0.02; bool hit = false;
         for (int i = 0; i < 190; i++) {
             float3 p = ro + rd * t;
-            ulong cm = (t >= cNear - 0.05 && t <= cFar + 0.05) ? cmask : ulong(0);
+            ulong2 cm = (t >= cNear - 0.05 && t <= cFar + 0.05) ? cmask : ulong2(0);
             float d = sceneSDF(p, dt, s, mapWH, ceilH, nMon, mons, shapes, fits, nFits, cm);
             if (d < 0.0015) { hit = true; break; }
             float adv = d * 0.85;
@@ -685,7 +686,7 @@ enum GPURaymarch {
             float dWp = ddp.x, peP = ddp.y;
             float gd = min(min(dWp, min(p.y, ceilH - p.y)), wallPipes(p, dWp, ceilH, peP));   // grid incl. routed pipe
             float itemMat = 0.0; float creatureEmis = 0.0;
-            float4 cf = (nMon > 0 && cmask != 0) ? creatureField(p, nMon, mons, shapes, cmask, itemMat, creatureEmis) : float4(0.0, 0.0, 0.0, 1e9);
+            float4 cf = (nMon > 0 && (cmask.x | cmask.y) != 0) ? creatureField(p, nMon, mons, shapes, cmask, itemMat, creatureEmis) : float4(0.0, 0.0, 0.0, 1e9);
             float3 alb; float emis = 0.0; bool reflective = false; bool isItem = false; bool isProj = false; bool isCreature = false; bool isProp = false; bool isDrum = false; bool isSocket = false; bool isMine = false;
             float rough = 0.7, metal = 0.0;   // PBR surface params, set per surface below
             if (cf.w < gd) {                                     // a creature / pickup / projectile / prop surface

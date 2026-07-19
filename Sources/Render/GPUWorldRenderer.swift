@@ -422,32 +422,40 @@ final class GPUWorldRenderer {
         func isMeshQueen(_ m: Monster) -> Bool { m.kind == .queen }
         let meshQueens = meshCreature != nil ? allCreatures.filter(isMeshQueen) : []
         let sdfCreatures = meshCreature != nil ? allCreatures.filter { !isMeshQueen($0) } : allCreatures
+        // Pack every SDF instance group up front (each is independent of cmons/cshapes),
+        // then reserve the EXACT final capacity from the real counts before appending —
+        // this kills the incremental array reallocations as the eight groups accumulate
+        // (O4). The running shape-range base offsets below still read cshapes.count in
+        // sequence, so they stay correct.
         var (cmons, cshapes) = GPURaymarch.packCreatures(sdfCreatures)
         let (imons, ishapes) = GPURaymarch.packItems(visibleItems(world), time: world.elapsed)
+        let (dmons, dshapes) = GPURaymarch.packDebris(visibleDebris(world))            // static rubble piles
+        let (fmons, fshapes) = GPURaymarch.packProps(visibleProps(world))              // furniture & fixtures
+        let (umons, ushapes) = GPURaymarch.packDrums(visibleDrums(world))              // fuel barrels (SDF — were sprites)
+        let (smons, sshapes) = GPURaymarch.packSockets(visibleSockets(world))          // recharge panels (SDF — were sprites)
+        let (nmons, nshapes) = GPURaymarch.packMines(visibleMines(world))              // deployed mines (SDF — were sprites)
+        let (pmons, pshapes) = GPURaymarch.packProjectiles(world.projectiles)          // glowing energy orbs
+        cmons.reserveCapacity(cmons.count + imons.count + dmons.count + fmons.count + umons.count + smons.count + nmons.count + pmons.count)
+        cshapes.reserveCapacity(cshapes.count + ishapes.count + dshapes.count + fshapes.count + ushapes.count + sshapes.count + nshapes.count + pshapes.count)
+
         let ibase = cshapes.count
         for im0 in imons { var im = im0; im.b.x += Float(ibase); cmons.append(im) }   // offset shape range
         cshapes.append(contentsOf: ishapes)
-        let (dmons, dshapes) = GPURaymarch.packDebris(visibleDebris(world))            // static rubble piles
         let dbase = cshapes.count
         for dm0 in dmons { var dm = dm0; dm.b.x += Float(dbase); cmons.append(dm) }
         cshapes.append(contentsOf: dshapes)
-        let (fmons, fshapes) = GPURaymarch.packProps(visibleProps(world))              // furniture & fixtures
         let fbase = cshapes.count
         for fm0 in fmons { var fm = fm0; fm.b.x += Float(fbase); cmons.append(fm) }
         cshapes.append(contentsOf: fshapes)
-        let (umons, ushapes) = GPURaymarch.packDrums(visibleDrums(world))              // fuel barrels (SDF — were sprites)
         let ubase = cshapes.count
         for um0 in umons { var um = um0; um.b.x += Float(ubase); cmons.append(um) }
         cshapes.append(contentsOf: ushapes)
-        let (smons, sshapes) = GPURaymarch.packSockets(visibleSockets(world))          // recharge panels (SDF — were sprites)
         let sbase = cshapes.count
         for sm0 in smons { var sm = sm0; sm.b.x += Float(sbase); cmons.append(sm) }
         cshapes.append(contentsOf: sshapes)
-        let (nmons, nshapes) = GPURaymarch.packMines(visibleMines(world))              // deployed mines (SDF — were sprites)
         let nbase = cshapes.count
         for nm0 in nmons { var nm = nm0; nm.b.x += Float(nbase); cmons.append(nm) }
         cshapes.append(contentsOf: nshapes)
-        let (pmons, pshapes) = GPURaymarch.packProjectiles(world.projectiles)          // glowing energy orbs
         let pbase = cshapes.count
         for pm0 in pmons { var pm = pm0; pm.b.x += Float(pbase); cmons.append(pm) }
         cshapes.append(contentsOf: pshapes)
