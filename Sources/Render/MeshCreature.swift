@@ -225,10 +225,9 @@ final class MeshCreature {
             // per-corpse HEAD droop — the skull lolls down more or less
             float headW = smoothstep(0.2, 0.46, lp.x);
             lp.z -= headW * (0.25 + 0.6 * v1) * 0.14 * H * slump;
-            // and a VARIED yaw — a rotation, so the compact footprint never widens
-            float tw = (v1 - 0.5) * 1.7 * slump;
-            float ct = cos(tw), st = sin(tw);
-            lp.xy = float2(ct * lp.x - st * lp.y, st * lp.x + ct * lp.y);
+            // (no yaw twist here — animating a rotation during the collapse read as the
+            // whole corpse doing a "weird turn"; variety comes from depth/tail/head +
+            // the direction it was facing when it fell)
         }
         // DISSOLVE — died in the toxic pool: the carcass sinks into the acid and shrivels
         // away (parts that drop below the floor are occluded by it — eaten by the pool).
@@ -273,12 +272,12 @@ final class MeshCreature {
                         texture2d<float> albedo [[texture(0)]],
                         texture2d<float> wallField [[texture(1)]],
                         constant Cam& C [[buffer(1)]]) {
-        // WALL CLIP — discard fragments inside a wall so a LIVE creature's extremity is
-        // cut at the surface instead of poking through as it moves. Skipped once it's
-        // dying/dead (tune.y ≥ 0.05): a collapsed carcass that settles against a wall
-        // must keep its whole body, not get sliced by the wall plane. (eye.w = map
-        // width, fwd.w = map height; 0 in the warm pass → clip disabled there.)
-        if (C.eye.w > 0.5 && C.tune.y < 0.05) {
+        // WALL CLIP — discard fragments inside a wall so an extremity is cut at the
+        // surface instead of poking through (a live drone's reach, or a corpse's head
+        // near a door). Safe for corpses now they collapse COMPACT within the cleared
+        // radius, so this only trims a small intrusion — it can't slice a whole body.
+        // (eye.w = map width, fwd.w = map height; 0 in the warm pass → clip disabled.)
+        if (C.eye.w > 0.5) {
             constexpr sampler ws(filter::linear, address::clamp_to_edge);
             float wd = wallField.sample(ws, in.wpos.xz / float2(C.eye.w, C.fwd.w)).r;
             if (wd < 0.06) discard_fragment();

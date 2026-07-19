@@ -457,12 +457,15 @@ final class World {
         // ashed 1→2: tread ON the mound and it flattens out to a dust smear.
         for i in monsters.indices where monsters[i].state == .dead && monsters[i].burn >= 0.85 && monsters[i].ashed < 2 {
             let cp = monsters[i].pos
-            let rad: Float = monsters[i].ashed < 1 ? monsters[i].def.radius * 0.9 : 0.45
+            // stage 1 (corpse → mound) triggers as you APPROACH, not just when you're
+            // on top of it — so a charred corpse crumbles to dust before you walk into
+            // it and it swallows the weapon. stage 2 (flatten) needs a tread ON the mound.
+            let rad: Float = monsters[i].ashed < 1 ? monsters[i].def.radius * 1.7 : 0.45
             var trodden = vlen(player.pos - cp) < rad
             if !trodden {
                 for j in monsters.indices where j != i && monsters[j].alive && vlen(monsters[j].pos - cp) < rad { trodden = true; break }
             }
-            if trodden { monsters[i].ashed = min(2, monsters[i].ashed + dt / 0.5) }   // ~0.5s per stage
+            if trodden { monsters[i].ashed = min(2, monsters[i].ashed + dt / 0.4) }   // ~0.4s per stage
         }
         for bi in blasts.indices { blasts[bi].t -= dt }
         blasts.removeAll { $0.t <= 0 }
