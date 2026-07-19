@@ -53,7 +53,7 @@ enum MonsterTable {
     static let defs: [MonsterDef] = [
         // DRONE — slow, durable pack hunter. No ranged attack; closes and bites.
         MonsterDef(maxHealth: 55, speed: 1.55, melee: 12, ranged: false, projectile: .fireball, projDamage: 0,
-                   attackInterval: 0.9, points: 100, radius: 0.34, billboardH: 1.05, painChance: 0.30, flying: false, sight: 24),
+                   attackInterval: 0.9, points: 100, radius: 0.40, billboardH: 1.05, painChance: 0.30, flying: false, sight: 24),
         // QUEEN — vast, ponderous, immensely tough (and only plasma even scratches
         // her). Lairs in the dark and breeds. The level objective.
         MonsterDef(maxHealth: 900, speed: 0.45, melee: 40, ranged: false, projectile: .fireball, projDamage: 0,
@@ -76,6 +76,8 @@ struct Monster {
     var dir: Float = 0            // facing (for future 8-rotation views)
     var burn: Float = 0          // corpse burn-away progress 0→1 (flamethrower)
     var ashed: Float = 0         // charred remains crumble to an ash pile 0→1 when trodden through
+    var rearAmt: Float = 0       // DRONE mesh: eased 0→1 rear-up onto the hind legs when it strikes
+    var deathSeed: Float = 0     // frozen 0…1 per-corpse seed → varies the death-collapse posture
     var gibbed = false           // obliterated by a blast — chunks fly, no corpse remains
     var smolder: Float = 0       // seconds of smoke/embers left after a corpse burns out
     var dissolving = false       // died on a toxic pool — the body sinks and dissolves

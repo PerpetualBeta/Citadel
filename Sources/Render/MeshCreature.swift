@@ -144,10 +144,145 @@ final class MeshCreature {
         return o;
     }
 
+    // ── DRONE — a low pack-hunter that PROWLS (rigless, region-weighted). Local
+    // space is Z-up (pre-Rx): +x = nose/forward, −x = tail, ±y = lateral, +z = up.
+    // anim.x = gait phase (distance-matched) · anim.y = locomotion 0..1 ·
+    // anim.z = rear-up 0..1 · tune = (light, death, burn, ash).
+    vertex VOut vmainDrone(VIn in [[stage_in]], constant Cam& C [[buffer(1)]]) {
+        float3 lp = in.pos;
+        float3 nrm = in.nrm;
+        float H = C.misc.x;
+        float Zn = lp.z / max(H, 1e-4);
+        float gait = C.anim.x;
+        float move = C.anim.y;
+        float rear = C.anim.z;
+        float dth = C.tune.y;
+        float aliveF = 1.0 - smoothstep(0.0, 0.3, dth);
+        float g = move * aliveF * (1.0 - rear);           // stride only while alive, moving, not reared
+
+        // NARROW the stance — the raw mesh stands crab-wide; draw the feet toward the
+        // centreline so it reads as a lean prowler, not a splay-legged crab.
+        float footW = 1.0 - smoothstep(0.0, 0.32, Zn);
+        lp.xy *= mix(1.0, 0.58, footW);
+
+        // prowl gait — LEG-driven and low; no whole-body bounce
+        float legW = 1.0 - smoothstep(0.12, 0.46, Zn);
+        if (legW > 0.001) {
+            float diag = (lp.x * lp.y > 0.0) ? 0.0 : 3.14159265;   // diagonal pairs, trot
+            float ph = gait + diag;
+            lp.x += legW * 0.10 * g * sin(ph);            // fore/aft reach (matches travel)
+            lp.z += legW * 0.03 * g * max(0.0, sin(ph));  // a small lift on the forward swing
+        }
+        // body — a lateral weight-shift + only a whisper of vertical (NOT a bounce)
+        float bodyW = smoothstep(0.20, 0.55, Zn);
+        lp.y += bodyW * 0.035 * g * sin(gait);
+        lp.z += bodyW * 0.010 * g * sin(gait * 2.0);
+        // head — a small nod (nose +x, mid height)
+        float headW = smoothstep(0.20, 0.45, lp.x) * smoothstep(0.20, 0.55, Zn);
+        lp.z += headW * 0.02 * g * sin(gait * 2.0 + 1.4);
+        // tail — the high arcing tail (the TOP of the mesh) lashes side to side, and
+        // curls; it lives even at rest, so it's only lightly gated by movement.
+        float tailW = smoothstep(0.52, 1.0, Zn);
+        if (tailW > 0.001) {
+            float ts = (0.35 + 0.65 * move) * aliveF;
+            lp.y += tailW * 0.20 * ts * sin(gait * 0.9 + 0.6);
+            lp.x += tailW * 0.06 * ts * sin(gait * 0.9 + 2.1);
+        }
+
+        // REAR UP — on the strike it pivots its front up onto the hind legs
+        if (rear > 0.001) {
+            float3 pivot = float3(-0.30, 0.0, 0.12 * H);      // the hind-leg line
+            float a = rear * 1.15;                            // ~66° up
+            float c = cos(a), s = sin(a);
+            float3 rel = lp - pivot;
+            rel = float3(c * rel.x - s * rel.z, rel.y, s * rel.x + c * rel.z);   // nose (+x) swings up (+z)
+            lp = pivot + rel;
+            nrm = float3(c * nrm.x - s * nrm.z, nrm.y, s * nrm.x + c * nrm.z);
+        }
+
+        // DEATH — it collapses onto the deck. The THIN legs (and the low snout) fold
+        // flat beneath it — natural for a downed beast — while the upper body + tail
+        // SINK with them keeping their full volume (a translate, not a crush). By
+        // construction every vertex stays at or above the floor, so nothing merges into
+        // it and nothing gets clamped flat. Head ends down, tail arcing up.
+        if (dth > 0.001) {
+            float slump = smoothstep(0.05, 1.0, dth);
+            float seed = C.misc.y;                              // frozen per-corpse (0…1)
+            float v1 = fract(seed + 0.13), v2 = fract(seed * 7.3 + 0.37), v3 = fract(seed * 3.1 + 0.71);
+            // COMPACT the footprint INWARD as it collapses, so the carcass settles into
+            // the cleared collision radius and can't lie inside a wall/door — a creature
+            // is a solid with volume, as are they. Mass keeps its 3-D volume (leg-fold).
+            lp.xy *= (1.0 - 0.44 * slump);                     // draw nose / tail / flanks toward centre
+            // per-corpse collapse DEPTH — some flatten right down, some stay hunched
+            float fold = (0.60 + 0.32 * v2) * slump;
+            float legTop = 0.32 * H;
+            if (lp.z < legTop) { lp.z *= (1.0 - fold); }       // legs + low snout fold to the deck
+            else { lp.z -= legTop * fold; }                    // body + tail sink with them
+            // per-corpse TAIL HEIGHT — arcs high or droops low (vertical, so the compact
+            // footprint stays put); the tail is the signature, so this reads clearly
+            float tailW = smoothstep(0.5, 1.0, Zn);
+            lp.z += tailW * (v3 - 0.5) * 0.55 * H * slump;
+            // per-corpse HEAD droop — the skull lolls down more or less
+            float headW = smoothstep(0.2, 0.46, lp.x);
+            lp.z -= headW * (0.25 + 0.6 * v1) * 0.14 * H * slump;
+            // and a VARIED yaw — a rotation, so the compact footprint never widens
+            float tw = (v1 - 0.5) * 1.7 * slump;
+            float ct = cos(tw), st = sin(tw);
+            lp.xy = float2(ct * lp.x - st * lp.y, st * lp.x + ct * lp.y);
+        }
+        // DISSOLVE — died in the toxic pool: the carcass sinks into the acid and shrivels
+        // away (parts that drop below the floor are occluded by it — eaten by the pool).
+        float diss = C.anim.w;
+        if (diss > 0.001) {
+            lp.z  -= diss * 0.55 * H;              // sink into the pool
+            lp.xy *= (1.0 - 0.45 * diss);         // shrivel inward
+            lp.z  *= (1.0 - 0.50 * diss);         // and down as it's consumed
+        }
+        // ASH — crumble to a compact grainy MOUND (as the queen does), then a flat smear
+        float ash = C.tune.w;
+        if (ash > 0.001) {
+            float mound = min(ash, 1.0), flat = clamp(ash - 1.0, 0.0, 1.0);
+            float r = length(lp.xy);
+            float2 dd = r > 1e-4 ? lp.xy / r : float2(1.0, 0.0);
+            float heapR = 0.26;
+            float grit = fract(sin(dot(in.pos.xy, float2(91.7, 47.3))) * 4137.1);
+            float tr = min(r, heapR) * 0.6;
+            float td = clamp(1.0 - tr / heapR, 0.0, 1.0);
+            float2 tgt = dd * tr + (grit - 0.5) * 0.05;
+            float tz = 0.18 * td * td + grit * 0.06;
+            lp.xy = mix(lp.xy, tgt, mound);
+            lp.z  = mix(lp.z, tz, mound);
+            lp.z  *= (1.0 - 0.82 * flat);
+            lp.xy *= (1.0 + 1.3 * flat);
+        }
+
+        float4 lpp = float4(lp, 1.0);
+        float4 wp = C.model * lpp;
+        VOut o;
+        o.clip = C.mvp * lpp;
+        float3x3 nm = float3x3(C.model[0].xyz, C.model[1].xyz, C.model[2].xyz);
+        o.wnrm = normalize(nm * nrm);
+        o.wpos = wp.xyz;
+        o.uv = in.uv;
+        o.fdepth = dot(wp.xyz - C.eye.xyz, C.fwd.xyz);
+        return o;
+    }
+
     struct FOut { float4 color [[color(0)]]; float depth [[color(1)]]; };
     fragment FOut fmain(VOut in [[stage_in]],
                         texture2d<float> albedo [[texture(0)]],
+                        texture2d<float> wallField [[texture(1)]],
                         constant Cam& C [[buffer(1)]]) {
+        // WALL CLIP — discard fragments inside a wall so a LIVE creature's extremity is
+        // cut at the surface instead of poking through as it moves. Skipped once it's
+        // dying/dead (tune.y ≥ 0.05): a collapsed carcass that settles against a wall
+        // must keep its whole body, not get sliced by the wall plane. (eye.w = map
+        // width, fwd.w = map height; 0 in the warm pass → clip disabled there.)
+        if (C.eye.w > 0.5 && C.tune.y < 0.05) {
+            constexpr sampler ws(filter::linear, address::clamp_to_edge);
+            float wd = wallField.sample(ws, in.wpos.xz / float2(C.eye.w, C.fwd.w)).r;
+            if (wd < 0.06) discard_fragment();
+        }
         constexpr sampler s(filter::linear, address::repeat);
         float3 alb = albedo.sample(s, in.uv).rgb;
         float3 N = normalize(in.wnrm);
@@ -182,6 +317,10 @@ final class MeshCreature {
             col = mix(col, dust, min(1.0, ash));
             col *= (1.0 - 0.4 * clamp(ash - 1.0, 0.0, 1.0));   // flattened smear thins/dims
         }
+        // Reduce contrast so the creatures SIT in the world rather than reading as
+        // high-contrast cut-outs — lift the shadows + ease the highlights around a dark
+        // room-mid pivot (shared by queen + drone).
+        col = (col - 0.17) * 0.80 + 0.17;
         FOut o; o.color = float4(col, 1.0); o.depth = in.fdepth; return o;
     }
     """
@@ -216,15 +355,21 @@ final class MeshCreature {
     /// (instant tracking reads as "locked on", not "turning").
     private var headState: [Int: (yaw: Float, pitch: Float, t: Float)] = [:]
 
-    init?(device: MTLDevice) {
+    enum Kind { case queen, drone }
+    let kind: Kind
+
+    init?(device: MTLDevice, kind: Kind = .queen) {
         self.device = device
+        self.kind = kind
         guard let q = device.makeCommandQueue() else { return nil }
         self.queue = q
         let vw = RenderConfig.width, vh = RenderConfig.viewHeight
         self.W = vw; self.H = vh
 
-        guard let meshURL = Bundle.main.url(forResource: "queen", withExtension: "usdz") else { return nil }
-        let texURL = Bundle.main.url(forResource: "queen_basecolor", withExtension: "jpg")
+        let meshName = kind == .queen ? "queen" : "drone"
+        let texName  = kind == .queen ? "queen_basecolor" : "drone_basecolor"
+        guard let meshURL = Bundle.main.url(forResource: meshName, withExtension: "usdz") else { return nil }
+        let texURL = Bundle.main.url(forResource: texName, withExtension: "jpg")
 
         let allocator = MTKMeshBufferAllocator(device: device)
         let vdesc = MDLVertexDescriptor()
@@ -249,7 +394,7 @@ final class MeshCreature {
 
         guard let lib = try? device.makeLibrary(source: Self.shaderSrc, options: nil) else { return nil }
         let pd = MTLRenderPipelineDescriptor()
-        pd.vertexFunction = lib.makeFunction(name: "vmain")
+        pd.vertexFunction = lib.makeFunction(name: kind == .queen ? "vmain" : "vmainDrone")
         pd.fragmentFunction = lib.makeFunction(name: "fmain")
         pd.vertexDescriptor = MTKMetalVertexDescriptorFromModelIO(vdesc)
         pd.colorAttachments[0].pixelFormat = .rgba8Unorm
@@ -270,8 +415,9 @@ final class MeshCreature {
         self.mcol = [UInt32](repeating: 0, count: vw * vh)
         self.mdep = [Float](repeating: 0, count: vw * vh)
 
-        let baked: Float = 1.5707963
-        if let v = UserDefaults.standard.object(forKey: "MeshQueenFront0") as? Double { self.front0 = Float(v) }
+        let baked: Float = kind == .queen ? 1.5707963 : 0.0
+        let f0key = kind == .queen ? "MeshQueenFront0" : "MeshDroneFront0"
+        if let v = UserDefaults.standard.object(forKey: f0key) as? Double { self.front0 = Float(v) }
         else { self.front0 = baked }
 
         warm()
@@ -367,7 +513,8 @@ final class MeshCreature {
     func composite(into canvas: Canvas2D, depth: UnsafeMutablePointer<Float>,
                    eye: SIMD3<Float>, dir: Float, pos: SIMD2<Float>,
                    faceTarget: SIMD2<Float>, sector: SIMD3<Float>, time: Float,
-                   map: GameMap, death: Float, burn: Float, ashed: Float) {
+                   map: GameMap, death: Float, burn: Float, ashed: Float,
+                   wallField: MTLTexture?, mapW: Float, mapH: Float) {
         let height = Self.f("MeshQueenHeight", 1.0)
         let lightGain = Self.f("MeshQueenLight", 1.75)
         let animSpeed = Self.f("MeshQueenAnimSpeed", 1.4)
@@ -407,7 +554,7 @@ final class MeshCreature {
                           W: Float(W), H: Float(H), near: 0.05, far: 64)
         let mvp = P * V * model
         var cam = Cam(model: model, mvp: mvp,
-                      eye: SIMD4(eye, 0), fwd: SIMD4(fwd, 0), sector: SIMD4(sector, 0),
+                      eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(sector, 0),
                       anim: SIMD4(headYaw, headPitch, breathe, sway),
                       misc: SIMD4(localHeight, 0.03 * aliveF, 0.02 * aliveF, time * 8.0 * animSpeed),   // .w = rapid howl-thrash phase
                       tune: SIMD4(lightGain, deathC, max(0, min(1, burn)), max(0, min(2, ashed))))
@@ -430,6 +577,7 @@ final class MeshCreature {
         enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
         enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
         enc.setFragmentTexture(albedo, index: 0)
+        enc.setFragmentTexture(wallField, index: 1)
         for (i, vb) in mtk.vertexBuffers.enumerated() { enc.setVertexBuffer(vb.buffer, offset: vb.offset, index: i) }
         for sm in mtk.submeshes {
             enc.drawIndexedPrimitives(type: sm.primitiveType, indexCount: sm.indexCount,
@@ -442,6 +590,85 @@ final class MeshCreature {
         mcol.withUnsafeMutableBytes { colTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0) }
         mdep.withUnsafeMutableBytes { depTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0) }
 
+        let fb = canvas.framebuffer
+        for i in 0..<W * H {
+            if alphaOf(mcol[i]) > 2 && mdep[i] < depth[i] {
+                fb[i] = mcol[i] | 0xFF00_0000
+                depth[i] = mdep[i]
+            }
+        }
+    }
+
+    /// One in-view drone to draw this frame.
+    struct DroneInst {
+        var pos: SIMD2<Float>
+        var dir: Float          // world facing (it turns its whole body toward the player)
+        var gait: Float         // stride phase (per-drone, distance-matched from Monster.animTime)
+        var move: Float         // 0…1 locomotion intensity (idle → running)
+        var rear: Float         // 0…1 eased rear-up on the strike
+        var dissolve: Float     // 0…1 melting into a toxic pool
+        var seed: Float         // frozen per-corpse 0…1 → varies the death posture
+        var death: Float, burn: Float, ashed: Float
+        var sector: SIMD3<Float>
+    }
+
+    /// Draw a whole PACK of drones in ONE offscreen pass + ONE readback + ONE
+    /// composite (drones spawn in numbers — per-instance readback would be brutal).
+    /// The shared depth buffer resolves inter-drone occlusion; each drone writes its
+    /// perp-depth so the composite occludes correctly against the world + particles.
+    func compositeDrones(into canvas: Canvas2D, depth: UnsafeMutablePointer<Float>,
+                         eye: SIMD3<Float>, camDir: Float, instances: [DroneInst],
+                         wallField: MTLTexture?, mapW: Float, mapH: Float) {
+        guard !instances.isEmpty else { return }
+        let height = Self.f("MeshDroneHeight", 1.0)
+        let lightGain = Self.f("MeshDroneLight", 1.9)
+        let scale = height / localHeight
+        let fwd = SIMD3<Float>(cos(camDir), 0, sin(camDir))
+        let right = SIMD3<Float>(-sin(camDir), 0, cos(camDir))
+        let up = SIMD3<Float>(0, 1, 0)
+        let V = Self.view(eye, right, up, fwd)
+        let P = Self.proj(plane: RenderConfig.cameraPlane, horizon: Float(RenderConfig.horizon),
+                          W: Float(W), H: Float(H), near: 0.05, far: 64)
+
+        let rp = MTLRenderPassDescriptor()
+        rp.colorAttachments[0].texture = colTex
+        rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .store
+        rp.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        rp.colorAttachments[1].texture = depTex
+        rp.colorAttachments[1].loadAction = .clear; rp.colorAttachments[1].storeAction = .store
+        rp.colorAttachments[1].clearColor = MTLClearColor(red: 1e9, green: 0, blue: 0, alpha: 0)
+        rp.depthAttachment.texture = zTex
+        rp.depthAttachment.loadAction = .clear; rp.depthAttachment.storeAction = .dontCare
+        rp.depthAttachment.clearDepth = 1.0
+
+        guard let cmd = queue.makeCommandBuffer(), let enc = cmd.makeRenderCommandEncoder(descriptor: rp) else { return }
+        enc.setRenderPipelineState(pipe)
+        enc.setDepthStencilState(dss)
+        enc.setCullMode(.none)
+        enc.setFragmentTexture(albedo, index: 0)
+        enc.setFragmentTexture(wallField, index: 1)
+        for (i, vb) in mtk.vertexBuffers.enumerated() { enc.setVertexBuffer(vb.buffer, offset: vb.offset, index: i) }
+        for inst in instances {
+            let model = Self.T(inst.pos.x, 0, inst.pos.y) * Self.Ry(front0 - inst.dir) * Self.S(scale) * Self.Rx(-Float.pi / 2)
+            let mvp = P * V * model
+            var cam = Cam(model: model, mvp: mvp,
+                          eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(inst.sector, 0),
+                          anim: SIMD4(inst.gait, inst.move, inst.rear, inst.dissolve),
+                          misc: SIMD4(localHeight, inst.seed, 0, 0),
+                          tune: SIMD4(lightGain, max(0, min(1, inst.death)), max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))))
+            enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+            enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+            for sm in mtk.submeshes {
+                enc.drawIndexedPrimitives(type: sm.primitiveType, indexCount: sm.indexCount,
+                                          indexType: sm.indexType, indexBuffer: sm.indexBuffer.buffer,
+                                          indexBufferOffset: sm.indexBuffer.offset)
+            }
+        }
+        enc.endEncoding()
+        cmd.commit(); cmd.waitUntilCompleted()
+
+        mcol.withUnsafeMutableBytes { colTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0) }
+        mdep.withUnsafeMutableBytes { depTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0) }
         let fb = canvas.framebuffer
         for i in 0..<W * H {
             if alphaOf(mcol[i]) > 2 && mdep[i] < depth[i] {

@@ -111,10 +111,11 @@ enum QueenMeshTest {
         return simd_float4x4(SIMD4(c, 0, -s, 0), SIMD4(0, 1, 0, 0), SIMD4(s, 0, c, 0), SIMD4(0, 0, 0, 1))
     }
 
-    static func run(meshPath: String?, outDir: String?) {
+    static func run(meshPath: String?, texPath: String? = nil, height: Float = 2.7,
+                    tag: String = "mesh-lair", outDir: String?) {
         guard let device = MTLCreateSystemDefaultDevice() else { print("Citadel: no Metal device"); return }
         let mesh = meshPath ?? (NSHomeDirectory() + "/Desktop/Citadel-QueenMock/demonic+creature+3d+model.usdz")
-        let texPath = NSHomeDirectory() + "/Desktop/Citadel-QueenMock/_tex/textures/demonic_creature_3d_model_basecolor.JPEG"
+        let texFile = texPath ?? (NSHomeDirectory() + "/Desktop/Citadel-QueenMock/_tex/textures/demonic_creature_3d_model_basecolor.JPEG")
         let dir = URL(fileURLWithPath: outDir ?? NSHomeDirectory() + "/Desktop/Citadel-QueenMock")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
@@ -127,12 +128,14 @@ enum QueenMeshTest {
         (vdesc.layouts[0] as? MDLVertexBufferLayout)?.stride = 32
         let asset = MDLAsset(url: URL(fileURLWithPath: mesh), vertexDescriptor: nil, bufferAllocator: allocator)
         guard let mdl = asset.childObjects(of: MDLMesh.self).first as? MDLMesh else { print("Citadel: no MDLMesh in \(mesh)"); return }
+        let bb0 = mdl.boundingBox
+        let zext = max(0.001, bb0.maxBounds.z - bb0.minBounds.z)     // local Z extent → world scale
         mdl.addNormals(withAttributeNamed: MDLVertexAttributeNormal, creaseThreshold: 0.4)
         mdl.vertexDescriptor = vdesc
         guard let mtk = try? MTKMesh(mesh: mdl, device: device) else { print("Citadel: MTKMesh build failed"); return }
 
         let loader = MTKTextureLoader(device: device)
-        let albedo = try? loader.newTexture(URL: URL(fileURLWithPath: texPath),
+        let albedo = try? loader.newTexture(URL: URL(fileURLWithPath: texFile),
                                             options: [.SRGB: true, .generateMipmaps: true, .origin: MTKTextureLoader.Origin.flippedVertically])
 
         // ── render pipeline ──────────────────────────────────────────────────────
@@ -174,8 +177,7 @@ enum QueenMeshTest {
         // place her down the corridor, standing on the floor, facing the camera
         let fwd2 = SIMD2<Float>(cos(camDir), sin(camDir))
         let qpos = camPos + fwd2 * 4.2
-        let height: Float = 2.7                                   // world units tall (ceilH is 3.2)
-        let scale = height / 0.99                                 // her mesh is ~0.99 tall in local Z
+        let scale = height / zext                                 // fit the requested world height to the mesh's local Z extent
         let sector = WorldLight.lightAt(plate.world.map, qpos.x, qpos.y)
 
         func render(_ name: String, yaw: Float) {
@@ -231,11 +233,11 @@ enum QueenMeshTest {
         }
 
         // a few yaws so we can pick the facing that reads best
-        render("mesh-lair-a.png", yaw: 0)
-        render("mesh-lair-b.png", yaw: Float.pi)
-        render("mesh-lair-c.png", yaw: Float.pi * 0.5)
-        render("mesh-lair-d.png", yaw: -Float.pi * 0.5)
-        print("Citadel: queen MESH look-test — wrote 4 facings to \(dir.path)")
+        render("\(tag)-a.png", yaw: 0)
+        render("\(tag)-b.png", yaw: Float.pi)
+        render("\(tag)-c.png", yaw: Float.pi * 0.5)
+        render("\(tag)-d.png", yaw: -Float.pi * 0.5)
+        print("Citadel: MESH look-test [\(tag)] — wrote 4 facings to \(dir.path)")
     }
 
     /// Drive the REAL live renderer (GPUWorldRenderer + the mesh hook) headlessly:
@@ -316,6 +318,32 @@ enum QueenMeshTest {
             world.monsters[qi].ashed = 2.0
             shot("mesh-live-ashflat.png", qpos + d * 1.9, ang + .pi)
             world.monsters[qi].state = .idle; world.monsters[qi].burn = 0; world.monsters[qi].ashed = 0
+        }
+        // 5b) DRONE mesh — find a live drone, stand off with a clear line, and look at
+        // it (orientation, scale, lighting, whole-body facing). meshDrone is ON by default.
+        if let di = world.monsters.firstIndex(where: { $0.kind == .alien && $0.alive }) {
+            let dp = world.monsters[di].pos
+            var dstand = dp + SIMD2<Float>(3, 0), dang: Float = 0, dfound = false
+            for k in 0..<24 where !dfound {
+                let a = Float(k) / 24 * 2 * .pi, dd = SIMD2<Float>(cos(a), sin(a))
+                for r: Float in [3.0, 3.5, 4.0, 4.5] {
+                    let sp = dp + dd * r
+                    if !open(sp) { continue }
+                    var clear = true; let steps = max(2, Int(r * 4))
+                    for s in 1...steps { if !open(dp + dd * (r * Float(s) / Float(steps))) { clear = false; break } }
+                    if clear { dstand = sp; dang = a; dfound = true; break }
+                }
+            }
+            world.monsters[di].state = .chase
+            world.monsters[di].dir = atan2(dstand.y - dp.y, dstand.x - dp.x)   // face the camera
+            shot("drone-live.png", dstand, dang + .pi)
+            world.monsters[di].dir += 1.3                                       // turned away — check whole-body facing
+            shot("drone-live-turn.png", dstand, dang + .pi)
+            world.monsters[di].dir = atan2(dstand.y - dp.y, dstand.x - dp.x)
+            world.monsters[di].state = .dead; world.monsters[di].stateTime = 1.0
+            shot("drone-live-dead.png", dstand, dang + .pi)
+            world.monsters[di].state = .chase
+            print("  drone at \(dp) (found standpoint=\(dfound))")
         }
         // 5) head-deform test — force the head yaw left/right from a fixed FRONT camera
         let closeFront = qpos + d * 1.7

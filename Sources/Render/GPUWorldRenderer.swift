@@ -24,6 +24,7 @@ final class GPUWorldRenderer {
     /// Optional textured-mesh renderer for the Queen (dev 3D-asset direction).
     /// nil when the flag is off or the asset/GPU setup is missing → SDF queen.
     private let meshCreature: MeshCreature?
+    private let meshDrone: MeshCreature?
 
     private var dtTex, liTex, gpuViewTex, gpuHDRTex, gpuDepthTex: MTLTexture?
     private var gpuDepth = [Float]()   // per-pixel scene depth, read back for sprite occlusion
@@ -62,6 +63,7 @@ final class GPUWorldRenderer {
         self.raymarch = p.raymarch
         self.post = p.post
         self.meshCreature = FeatureFlags.meshQueen ? MeshCreature(device: device) : nil
+        self.meshDrone = FeatureFlags.meshDrone ? MeshCreature(device: device, kind: .drone) : nil
     }
 
     /// Upload `arr` into a reused grow-only shared buffer and return it for the
@@ -158,7 +160,7 @@ final class GPUWorldRenderer {
         for m in world.monsters {
             let rel = m.pos - p.pos
             let d = simd_length(rel)
-            if d > 26 { continue }
+            if d > 32 { continue }                               // render distance (was 26 — creatures popped in too close)
             if d > 2 && simd_dot(rel, fwd) < -0.5 { continue }   // clearly behind the camera
             cand.append((m, d))
         }
@@ -419,9 +421,13 @@ final class GPUWorldRenderer {
         // SAME mesh (slump/topple/extinguish) rather than popping to an SDF corpse —
         // so keep every queen out of the SDF creature pack (else she'd render twice).
         let allCreatures = visibleCreatures(world)
-        func isMeshQueen(_ m: Monster) -> Bool { m.kind == .queen }
-        let meshQueens = meshCreature != nil ? allCreatures.filter(isMeshQueen) : []
-        let sdfCreatures = meshCreature != nil ? allCreatures.filter { !isMeshQueen($0) } : allCreatures
+        func isMeshQueen(_ m: Monster) -> Bool { m.kind == .queen && meshCreature != nil }
+        // gibbed drones (rocket / mine) leave NO corpse — only the gore splatter; route
+        // them to the SDF path, which emits nothing for a gibbed creature (as before).
+        func isMeshDrone(_ m: Monster) -> Bool { m.kind == .alien && meshDrone != nil && !m.gibbed }
+        let meshQueens = allCreatures.filter(isMeshQueen)
+        let meshDrones = allCreatures.filter(isMeshDrone)
+        let sdfCreatures = allCreatures.filter { !isMeshQueen($0) && !isMeshDrone($0) }
         // Pack every SDF instance group up front (each is independent of cmons/cshapes),
         // then reserve the EXACT final capacity from the real counts before appending —
         // this kills the incremental array reallocations as the eight groups accumulate
@@ -535,14 +541,20 @@ final class GPUWorldRenderer {
         // Draw only queens ahead of the camera and in range — skips the cost (and
         // any near-plane edge cases) when she's behind you or across the level.
         let fwd2 = SIMD2<Float>(cos(p.dir), sin(p.dir))
-        let liveQueens = meshQueens.filter { q in
-            let rel = q.pos - p.pos
+        func inView(_ m: Monster) -> Bool {
+            let rel = m.pos - p.pos
             let ahead = rel.x * fwd2.x + rel.y * fwd2.y
             return ahead > 0.15 && (rel.x * rel.x + rel.y * rel.y) < 22 * 22
         }
-        // Depth is needed by the mesh Queen (occlusion + writing her own depth) and
-        // by the particle compositor — pull it back if either is in play this frame.
-        let needDepth = !world.particles.isEmpty || !liveQueens.isEmpty
+        let liveQueens = meshQueens.filter(inView)
+        // Drones use the visibleCreatures set DIRECTLY — it already drops behind-camera
+        // ones, caps range + count. No extra range/LoS gate: those made alive/dead/dust
+        // drones vanish until you closed in. Off-screen ones clip away for free, and the
+        // depth composite occludes whatever's behind a wall per-pixel.
+        let liveDrones = meshDrones
+        // Depth is needed by the mesh creatures (occlusion + writing their own depth)
+        // and by the particle compositor — pull it back if any is in play this frame.
+        let needDepth = !world.particles.isEmpty || !liveQueens.isEmpty || !liveDrones.isEmpty
         if needDepth {
             let vh = RenderConfig.viewHeight
             gpuDepth.withUnsafeMutableBytes {
@@ -566,8 +578,38 @@ final class GPUWorldRenderer {
                     } else { death = 0 }
                     mc.composite(into: canvas, depth: dp.baseAddress!, eye: eye, dir: p.dir,
                                  pos: q.pos, faceTarget: p.pos, sector: sector, time: world.elapsed,
-                                 map: world.map, death: death, burn: q.burn, ashed: q.ashed)
+                                 map: world.map, death: death, burn: q.burn, ashed: q.ashed,
+                                 wallField: dtTex, mapW: Float(gpuMapW), mapH: Float(gpuMapH))
                 }
+            }
+        }
+        // the 3-D mesh DRONES — a whole pack in ONE batched pass; each writes its
+        // perp-depth so particles + one another occlude correctly (composited over
+        // the queen's pixels, so ordering against her is right too)
+        if let md = meshDrone, !liveDrones.isEmpty {
+            let insts: [MeshCreature.DroneInst] = liveDrones.map { m in
+                let death: Float
+                if m.state == .dead { death = 1 }
+                else if m.state == .dying { death = min(1, m.stateTime / World.droneDeathTime) }
+                else { death = 0 }
+                let move: Float
+                switch m.state {
+                case .chase: move = 1
+                case .pain:  move = 0.5
+                case .attack: move = 0.35
+                default:     move = 0
+                }
+                // gait is distance-matched (animTime accrues travel), so the stride
+                // tracks movement instead of sliding; naturally desynced per-drone
+                let dissolve: Float = m.dissolving ? min(1, m.dissolveT / 1.8) : 0
+                return MeshCreature.DroneInst(
+                    pos: m.pos, dir: m.dir, gait: m.animTime * 5.0, move: move, rear: m.rearAmt,
+                    dissolve: dissolve, seed: m.deathSeed, death: death, burn: m.burn, ashed: m.ashed,
+                    sector: WorldLight.lightAt(world.map, m.pos.x, m.pos.y))
+            }
+            gpuDepth.withUnsafeMutableBufferPointer { dp in
+                md.compositeDrones(into: canvas, depth: dp.baseAddress!, eye: eye, camDir: p.dir, instances: insts,
+                                   wallField: dtTex, mapW: Float(gpuMapW), mapH: Float(gpuMapH))
             }
         }
         if !world.particles.isEmpty {

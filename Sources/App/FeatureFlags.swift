@@ -33,6 +33,9 @@ enum FeatureFlags {
     /// direction; set false to A/B against the SDF queen:
     ///   defaults write cc.jorviksoftware.Citadel MeshQueen -bool false
     static var meshQueen: Bool { d.object(forKey: "MeshQueen") == nil ? true : d.bool(forKey: "MeshQueen") }
+    /// Drones drawn as 3-D textured meshes (Tripo) instead of SDF. Default ON;
+    ///   defaults write cc.jorviksoftware.Citadel MeshDrone -bool false   to A/B vs SDF.
+    static var meshDrone: Bool { d.object(forKey: "MeshDrone") == nil ? true : d.bool(forKey: "MeshDrone") }
 
     /// Force a specific level seed for testing (0 = off, use the run's seed).
     static var fixedSeed: UInt64 {

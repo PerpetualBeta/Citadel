@@ -1125,6 +1125,7 @@ final class World {
         m.painFlash = 0.12
         if m.health <= 0 {
             m.state = .dying; m.stateTime = 0
+            m.deathSeed = rng.f(0, 1)          // frozen now → a stable, varied death posture
             score += m.def.points
             killCount += 1
             spawnParticles(at: m.pos, n: 14, color: packRGBA(200, 20, 20), spread: 3.2, life: 0.5)
@@ -1142,26 +1143,27 @@ final class World {
                 // there is no corpse left to burn; the way is already clear.
                 m.gibbed = true
                 m.burn = 1
-                spawnParticles(at: m.pos, n: 80, color: packRGBA(160, 18, 16), spread: 6.5, life: 0.8)
-                spawnParticles(at: m.pos, n: 32, color: packRGBA(96, 12, 12), spread: 4.2, life: 1.1)
-                for _ in 0..<10 {                              // heavier chunks arcing out
-                    let a = rng.f(0, 6.2832), sp = rng.f(1.5, 4.5)
+                spawnParticles(at: m.pos, n: 150, color: packRGBA(160, 18, 16), spread: 7.5, life: 0.85)
+                spawnParticles(at: m.pos, n: 70, color: packRGBA(96, 12, 12), spread: 5.0, life: 1.2)
+                spawnParticles(at: m.pos, n: 44, color: packRGBA(200, 40, 30), spread: 8.5, life: 0.6)   // a brighter arterial spray
+                for _ in 0..<22 {                              // heavier chunks arcing out
+                    let a = rng.f(0, 6.2832), sp = rng.f(1.5, 5.5)
                     particles.append(Particle(pos: m.pos, vel: SIMD2(cos(a) * sp, sin(a) * sp),
-                                              life: rng.f(0.5, 0.9), maxLife: 0.9, color: packRGBA(120, 16, 14),
-                                              size: rng.f(3.5, 6.5), height: rng.f(0.2, 0.5), rise: rng.f(-0.8, -0.3),
+                                              life: rng.f(0.5, 1.0), maxLife: 1.0, color: packRGBA(120, 16, 14),
+                                              size: rng.f(3.5, 7.5), height: rng.f(0.2, 0.6), rise: rng.f(-0.9, -0.3),
                                               maxAlpha: 1))
                 }
-                for _ in 0..<6 {
-                    let a = rng.f(0, 6.2832), r = rng.f(0.4, 1.8)
-                    addDecal(m.pos + SIMD2(cos(a) * r, sin(a) * r), radius: rng.f(0.3, 0.65), w: -0.7)
+                for _ in 0..<12 {
+                    let a = rng.f(0, 6.2832), r = rng.f(0.4, 2.4)
+                    addDecal(m.pos + SIMD2(cos(a) * r, sin(a) * r), radius: rng.f(0.3, 0.75), w: -0.7)
                 }
                 // entrails as OFFAL DECALS (w < -2): chunky strewn-meat masks on
                 // the deck — flat, so they read right at any scale (solids for
                 // gore rendered as glossy furniture)
-                addDecal(m.pos, radius: rng.f(0.6, 0.9), w: -2.85)
-                for _ in 0..<4 {
-                    let a = rng.f(0, 6.2832), r = rng.f(0.35, 1.2)
-                    addDecal(m.pos + SIMD2(cos(a) * r, sin(a) * r), radius: rng.f(0.3, 0.55), w: -rng.f(2.5, 2.9))
+                addDecal(m.pos, radius: rng.f(0.7, 1.1), w: -2.85)
+                for _ in 0..<9 {
+                    let a = rng.f(0, 6.2832), r = rng.f(0.35, 1.7)
+                    addDecal(m.pos + SIMD2(cos(a) * r, sin(a) * r), radius: rng.f(0.3, 0.6), w: -rng.f(2.5, 2.9))
                 }
             } else if !m.gibbed && map.hazard[map.idx(Int(m.pos.x), Int(m.pos.y))] {
                 // it died IN the acid: the pool takes the body — it sinks and
@@ -1250,6 +1252,8 @@ final class World {
             // idle breathe. The rooted Queen keeps full-rate animation — her idle
             // writhe IS her menace.
             m.animTime += dt * (m.kind == .queen ? 1.0 : 0.15)
+            // ease the drone's rear-up: it rises onto its hind legs to strike, then drops back
+            m.rearAmt += ((m.state == .attack ? 1 : 0) - m.rearAmt) * min(1, dt * 9)
             m.painFlash = max(0, m.painFlash - dt)
             if m.state == .dead {
                 if m.dissolving {                                    // the pool eats the body

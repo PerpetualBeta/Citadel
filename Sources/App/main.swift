@@ -30,7 +30,7 @@ for key in ["CITADEL_SMOKE", "CITADEL_FITSHOT", "CITADEL_LOADPROBE", "CITADEL_TI
             "CITADEL_SHOTS", "CITADEL_ARTPREVIEW", "CITADEL_CREATURES", "CITADEL_MATERIALS",
             "CITADEL_BEAUTY", "CITADEL_GPU", "CITADEL_AUTOMAP", "CITADEL_ROOMS", "CITADEL_DISPLAYVID",
             "CITADEL_TITLESHOT", "CITADEL_QUEENHERO", "CITADEL_QUEENMOCK", "CITADEL_QUEENMESH",
-            "CITADEL_MESHVERIFY"]
+            "CITADEL_MESHVERIFY", "CITADEL_DRONEMESH"]
     where ProcessInfo.processInfo.environment[key] != nil {
     setenv("CITADEL_MUTE", "1", 1)
     break
@@ -515,6 +515,14 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_QUEENMESH"] {
 // one frame, to verify the in-game mesh-Queen wire-in headlessly.
 if ProcessInfo.processInfo.environment["CITADEL_MESHVERIFY"] != nil {
     QueenMeshTest.verifyLive(outDir: nil)
+    exit(0)
+}
+
+// CITADEL_DRONEMESH → look-test the DRONE mesh in the lair (4 facings), like QUEENMESH.
+if ProcessInfo.processInfo.environment["CITADEL_DRONEMESH"] != nil {
+    let m = Bundle.main.url(forResource: "drone", withExtension: "usdz")?.path
+    let t = Bundle.main.url(forResource: "drone_basecolor", withExtension: "jpg")?.path
+    QueenMeshTest.run(meshPath: m, texPath: t, height: 1.4, tag: "drone-lair", outDir: nil)
     exit(0)
 }
 
