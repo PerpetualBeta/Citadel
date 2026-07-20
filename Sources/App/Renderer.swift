@@ -66,6 +66,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     private var qualifies = false
     private var lastRank = -1
+    private var scoresReturn: GameState = .title   // where the Hall returns to (menu view → prior screen; post-game → title)
 
     // edge tracking
     private var pConfirm = false, pEsc = false, pBrief = false, pIntel = false
@@ -340,16 +341,29 @@ final class Renderer: NSObject, MTKViewDelegate {
         guard let world = world else { state = .title; return }
         FrontEnd.gameOver(canvas, world: world, input: input, qualifies: qualifies, t: screenT, pad: gamepad.connected)
         if qualifies && input.nameEntryActive {
-            if input.nameCommitted { recordScore(world); state = .highScores; screenT = 0 }
+            if input.nameCommitted { recordScore(world); scoresReturn = .title; state = .highScores; screenT = 0 }
         } else if rising(input.restart, pConfirm) && screenT > 0.4 {
-            state = .highScores; screenT = 0
+            scoresReturn = .title; state = .highScores; screenT = 0
         }
+    }
+
+    /// Show the Hall of the Fallen on demand (the menu item), returning to whatever
+    /// screen it was opened from so it never abandons a run in progress.
+    func viewHighScores() {
+        guard state != .highScores else { return }
+        scoresReturn = state
+        lastRank = -1
+        state = .highScores; screenT = 0
     }
 
     private func tickHighScores(_ dt: Float) {
         FrontEnd.highScores(canvas, hs: highScores, t: screenT, highlight: lastRank, pad: gamepad.connected)
-        if rising(input.restart, pConfirm) && screenT > 0.4 {
-            lastRank = -1; state = .title; screenT = 0; audio.startMusic(.title)
+        if (rising(input.restart, pConfirm) || rising(input.esc, pEsc)) && screenT > 0.4 {
+            lastRank = -1
+            let ret = scoresReturn; scoresReturn = .title
+            state = ret; screenT = 0
+            if ret == .title { audio.startMusic(.title) }
+            if ret == .paused { pausedDrawn = false }       // the Hall overwrote the frozen frame — redraw it
         }
     }
 

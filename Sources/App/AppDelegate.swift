@@ -78,6 +78,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         about.target = self; appMenu.addItem(about)
         appMenu.addItem(.separator())
 
+        let scores = NSMenuItem(title: "Hall of the Fallen", action: #selector(viewHighScores), keyEquivalent: "")
+        scores.target = self; appMenu.addItem(scores)
+        appMenu.addItem(.separator())
+
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self; appMenu.addItem(settings)
         let kb = NSMenuItem(title: "Keyboard Setup…", action: #selector(openKeyboard), keyEquivalent: "")
@@ -126,6 +130,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openSettings() {
         guard let win = window, !gamepad.configuring else { return }
         OptionsSheet.present(over: win, audio: audio, gamepad: gamepad, highScores: highScores)
+    }
+    @objc private func viewHighScores() {
+        renderer.viewHighScores()
+        window?.makeFirstResponder(view)                    // return focus so [FIRE]/[ESC] dismiss it
     }
     @objc private func openKeyboard() {
         guard let win = window, !gamepad.configuring else { return }
