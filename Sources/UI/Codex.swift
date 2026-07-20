@@ -87,19 +87,12 @@ enum FrontEnd {
 
         // ── console: descend prompt (blink) + menu ──
         if Int(t * 1.5) % 2 == 0 {
-            c.label("> PRESS  \(confirmName(pad: pad))  TO  DESCEND", lx, uiS(266), size: uiSf(25),
+            c.label("> PRESS \(confirmName(pad: pad)) TO DESCEND", lx, uiS(266), size: uiSf(25),
                     color: amberHi, weight: .bold, shadow: false, glow: packRGBA(60, 44, 0), mono: true)
         }
         c.label("[B] BRIEFING      [I] FIELD INTEL", lx, uiS(298), size: uiSf(15),
                 color: amber, weight: .medium, shadow: false, mono: true)
-        // [CMD,] not [⌘,]: the ⌘ glyph falls out of the mono font and wrecks kerning.
-        let hint1 = "[K] Keyboard   [C] Controller   [CMD,"
-        let hint2 = "] Settings"
-        let hintSz = uiSf(12)
-        let hw1 = c.labelWidth(hint1, size: hintSz, weight: .medium, mono: true)
-        let kern = c.labelWidth(",", size: hintSz, weight: .medium, mono: true) * 2 / 5
-        c.label(hint1, lx, uiS(320), size: hintSz, color: amberDim, weight: .medium, shadow: false, mono: true)
-        c.label(hint2, lx + hw1 - kern, uiS(320), size: hintSz, color: amberDim, weight: .medium, shadow: false, mono: true)
+        // Keyboard / Controller / Settings live in the app menu now, not on the title.
 
         // ── bottom: top score + studio credit, kept in the clear left column ──
         // studio credit, bottom-right — two lines, teal with a black outline so it
@@ -174,30 +167,62 @@ enum FrontEnd {
     }
 
     static let briefingLines = [
-        "We held the skies over the colony cluster for as",
+        "We held the skies over the Strataris cluster for as",
         "long as we could. We did not hold them long enough.",
+        "The fleet we fought did not withdraw. It landed.",
+        "Demeter went dark, then Tantalus, Boreas, Pandora,",
+        "Vulcan, and Vesper.",
         "",
-        "The fleet you fought at Strataris did not withdraw.",
-        "It landed. Demeter went dark, then Tantalus, Boreas,",
-        "Pandora, Vulcan, and Vesper. The citadels are occupied.",
+        "The citadels are occupied.",
         "",
         "Whatever the landings carried has nested. Every floor",
-        "is crawling, and each brood keeps a Queen — kill her",
+        "is crawling, and each brood keeps a Queen - kill her",
         "and BURN her, or she rises again behind you.",
         "",
         "You are going in on foot. Alone. Clear each citadel,",
         "floor by floor. Find the exit. Descend. Do not stop.",
-        "",
         "Corporate has withdrawn its channels. There is no",
         "evacuation order — only how deep you get.",
     ]
     static func briefing(_ c: Canvas2D, t: Float) {
-        backdrop(c, t, top: packRGBA(8, 14, 20), bottom: packRGBA(12, 26, 32))
-        c.labelCentered("MISSION BRIEFING", uiS(26), size: uiSf(40), color: packRGBA(110, 200, 240), weight: .heavy, shadow: true, glow: packRGBA(10, 40, 60))
-        c.labelCentered("// incoming transmission", uiS(76), size: uiSf(17), color: packRGBA(120, 200, 150), weight: .medium)
-        var y = uiS(106)
-        for line in briefingLines { c.labelCentered(line, y, size: uiSf(16), color: ink, weight: .medium); y += uiS(16) }
-        if Int(t * 1.5) % 2 == 0 { c.labelCentered("Good hunting, marine.    [ESC]", H - uiS(24), size: uiSf(17), color: amber, weight: .semibold) }
+        HallArt.draw(c, t: t)                               // the drone concept plate — mirrors the title / Hall
+
+        // left→right legibility scrim so the transmission reads over the dark flank
+        let scrimW = uiS(376)
+        for x in 0..<scrimW {
+            let a = 0.66 * powf(1 - Float(x) / Float(scrimW), 1.4)
+            if a > 0.012 { c.fillRectBlend(x, 0, 1, H, packRGBA(0, 0, 0), a) }
+        }
+
+        let lx = uiS(30)
+        let black = packRGBA(0, 0, 0)
+        let cyan = packRGBA(150, 214, 244)                  // the briefing's "transmission" identity
+
+        // ── masthead: MISSION / BRIEFING — the wordmark treatment (halo + glow), in the
+        //    transmission cyan rather than the title's amber ──
+        func head(_ s: String, _ y: Int) {
+            let sz = uiSf(40)
+            let halo = mixRGBA(black, cyan, 0.22)
+            for (ox, oy) in [(-uiS(1), 0), (uiS(1), 0), (0, -uiS(1)), (0, uiS(1)), (-uiS(2), 0), (uiS(2), 0)] {
+                c.label(s, lx + ox, y + oy, size: sz, color: halo, weight: .heavy, shadow: false)
+            }
+            c.label(s, lx, y, size: sz, color: cyan, weight: .heavy, shadow: false, glow: packRGBA(10, 44, 64))
+        }
+        head("MISSION", uiS(22))
+        head("BRIEFING", uiS(58))
+        c.label("// incoming transmission", lx, uiS(102), size: uiSf(14),
+                color: packRGBA(120, 200, 150), weight: .medium, shadow: false, mono: true)
+
+        // ── transmission body — left-aligned in the dark column ──
+        var y = uiS(128)
+        for line in briefingLines {
+            if line.isEmpty { y += uiS(8) }
+            else { c.label(line, lx, y, size: uiSf(13), color: ink, weight: .medium, shadow: false); y += uiS(15) }
+        }
+        if Int(t * 1.5) % 2 == 0 {
+            c.label("> Good hunting, marine.   [ESC]", lx, H - uiS(30), size: uiSf(15),
+                    color: amberHi, weight: .semibold, shadow: false, glow: packRGBA(60, 44, 0), mono: true)
+        }
     }
 
     // ── FIELD INTEL — a paged dossier ────────────────────────────────────────
@@ -499,19 +524,60 @@ enum FrontEnd {
     }
 
     static func highScores(_ c: Canvas2D, hs: HighScores, t: Float, highlight: Int = -1, pad: Bool = false) {
-        backdrop(c, t, top: packRGBA(10, 10, 22), bottom: packRGBA(16, 16, 36))
-        c.labelCentered("HALL OF THE FALLEN", uiS(30), size: uiSf(42), color: packRGBA(200, 204, 244), weight: .heavy, shadow: true, glow: packRGBA(12, 12, 50))
-        var y = uiS(90)
-        if hs.entries.isEmpty { c.labelCentered("No records yet — be the first.", uiS(190), size: uiSf(22), color: dim, weight: .medium) }
-        for (i, e) in hs.entries.enumerated() {
-            let col = i == highlight ? amber : (i == 0 ? packRGBA(230, 230, 240) : ink)
-            c.label("\(i + 1).", uiS(72), y, size: uiSf(21), color: col, weight: .bold)
-            c.label(short(e.name), uiS(116), y, size: uiSf(21), color: col, weight: i == highlight ? .bold : .medium)
-            c.labelRight("\(e.colony) D\(e.depth)", W - uiS(180), y, size: uiSf(18), color: dim, weight: .regular)
-            c.labelRight("\(e.score)", W - uiS(72), y, size: uiSf(21), color: col, weight: .bold)
-            y += uiS(27)
+        HallArt.draw(c, t: t)                                // the drone concept plate — mirrors the title screen
+
+        // Legibility scrim: a soft left→right fade so the table reads over the plate's
+        // dark left flank (and settles the grain under the text).
+        let scrimW = uiS(372)
+        for x in 0..<scrimW {
+            let a = 0.64 * powf(1 - Float(x) / Float(scrimW), 1.45)
+            if a > 0.012 { c.fillRectBlend(x, 0, 1, H, packRGBA(0, 0, 0), a) }
         }
-        if Int(t * 2) % 2 == 0 { c.labelCentered("PRESS  \(confirmName(pad: pad))", H - uiS(32), size: uiSf(24), color: amber, weight: .bold) }
+
+        let lx = uiS(30)
+        let black = packRGBA(0, 0, 0)
+
+        // ── masthead: HALL OF / THE FALLEN — the CITADEL wordmark treatment (amber core,
+        //    soft halo, chromatic fringe), left-aligned over the dark flank ──
+        func masthead(_ s: String, _ y: Int) {
+            let sz = uiSf(44)
+            let halo = mixRGBA(black, amber, 0.22)
+            for (ox, oy) in [(-uiS(1), 0), (uiS(1), 0), (0, -uiS(1)), (0, uiS(1)), (-uiS(2), 0), (uiS(2), 0)] {
+                c.label(s, lx + ox, y + oy, size: sz, color: halo, weight: .heavy, shadow: false)
+            }
+            c.label(s, lx + uiS(1), y, size: sz, color: red,     weight: .heavy, shadow: false)
+            c.label(s, lx - uiS(1), y, size: sz, color: cold,    weight: .heavy, shadow: false)
+            c.label(s, lx,          y, size: sz, color: amberHi, weight: .heavy, shadow: false, glow: packRGBA(110, 80, 28))
+        }
+        masthead("HALL OF",    uiS(24))
+        masthead("THE FALLEN", uiS(63))
+
+        // ── score table — left column, over the beast's dark flank. Fixed slots with
+        //    clear gaps: rank · name (left) | colony·depth (dim) | score (right). ──
+        let colR = uiS(214)                                 // colony/depth right edge
+        let scoreR = uiS(346)                               // score right edge
+        var y = uiS(132)
+        if hs.entries.isEmpty {
+            c.label("No records logged —", lx, y, size: uiSf(20), color: dim, weight: .medium)
+            c.label("be the first to fall.", lx, y + uiS(26), size: uiSf(20), color: dim, weight: .medium)
+        }
+        for (i, e) in hs.entries.enumerated() {
+            let lead = i == 0 || i == highlight                    // the record holder + a fresh entry stand out
+            let col = i == highlight ? amberHi : (i == 0 ? packRGBA(236, 236, 246) : ink)
+            let name = e.name.count > 10 ? String(e.name.prefix(9)) + "…" : e.name   // keep the name in its slot
+            c.label("\(i + 1).", lx, y, size: uiSf(18), color: lead ? amber : dim, weight: .bold)
+            c.label(name, lx + uiS(30), y, size: uiSf(18), color: col, weight: lead ? .bold : .medium)
+            c.labelRight("\(e.colony) D\(e.depth)", colR, y + uiS(3), size: uiSf(11), color: coldDim, weight: .regular, mono: true)
+            c.labelRight(commaSep(e.score), scoreR, y, size: uiSf(18), color: col, weight: .bold, mono: true)
+            y += uiS(25)
+        }
+
+        if Int(t * 2) % 2 == 0 {
+            let prompt = "> PRESS \(confirmName(pad: pad))"
+            let pw = c.labelWidth(prompt, size: uiSf(22), weight: .bold, mono: true)
+            c.label(prompt, W - uiS(30) - pw, H - uiS(34), size: uiSf(22),         // bottom-right, under the beast
+                    color: amberHi, weight: .bold, shadow: true, glow: packRGBA(60, 44, 0), mono: true)
+        }
     }
 
     static func paused(_ c: Canvas2D) {

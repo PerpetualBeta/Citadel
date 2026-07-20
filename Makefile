@@ -77,6 +77,8 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/UI/HUD.swift \
                     Sources/UI/Codex.swift \
                     Sources/UI/TitleArt.swift \
+                    Sources/UI/CinematicPlate.swift \
+                    Sources/UI/HallArt.swift \
                     Sources/UI/IntelPortraits.swift \
                     Sources/UI/Automap.swift \
                     Sources/UI/Automap3D.swift \
