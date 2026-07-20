@@ -115,6 +115,21 @@ final class GPUWorldRenderer {
         if flatArrTex == nil { flatArrTex = GPURaymarch.makeTextureArray(device, Textures.shared.flats) }
     }
 
+    /// Render the Field Intel dossier busts from the SAME mesh instances the game
+    /// draws, and cache them in MeshPortraits — so the codex shows the actual
+    /// creatures, not the SDF sculpts. Only for the castes whose mesh flag is on
+    /// (else the codex falls back to IntelPortraits). Synchronous; call once.
+    func renderPortraits() {
+        if let q = meshCreature { MeshPortraits.store(.queen, q.portrait(spin: MeshPortraits.spin(.queen), gain: MeshPortraits.gain(.queen))) }
+        if let d = meshDrone   { MeshPortraits.store(.alien, d.portrait(spin: MeshPortraits.spin(.alien), gain: MeshPortraits.gain(.alien))) }
+    }
+
+    /// Non-blocking variant for launch: the codex is rarely the first screen
+    /// reached, and it degrades gracefully (SDF fallback) until this lands.
+    func warmPortraits() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in self?.renderPortraits() }
+    }
+
     private func prepareLevel(_ world: World) {
         let map = world.map
         gpuReady = false

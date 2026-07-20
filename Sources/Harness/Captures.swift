@@ -123,7 +123,9 @@ enum Captures {
         print("  wrote 12-door.png")
 
         // intel (every page of the codex) + briefing + the in-car floor report + high scores
-        IntelPortraits.ensureRendered()
+        IntelPortraits.ensureRendered()          // SDF fallback plates
+        gpu?.renderPortraits()                    // the mesh dossier busts the codex shows
+        ItemIcons.ensureRendered()               // the SDF pickup icons (match in-world geometry)
         for page in 0..<FrontEnd.intelPages {
             let intel = Canvas2D(); FrontEnd.intel(intel, t: 5.0, page: page); save(intel, "intel-\(page + 1)")
         }

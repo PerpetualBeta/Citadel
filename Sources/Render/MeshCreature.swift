@@ -343,6 +343,7 @@ final class MeshCreature {
     private let colTex, depTex, zTex: MTLTexture
     private let W: Int, H: Int
     let localHeight: Float
+    let bbMin, bbMax: SIMD3<Float>       // mesh bounds in LOCAL (Z-up) space — for portrait framing
     let front0: Float
     private var mcol: [UInt32]
     private var mdep: [Float]
@@ -379,6 +380,8 @@ final class MeshCreature {
         guard let mdl = asset.childObjects(of: MDLMesh.self).first as? MDLMesh else { return nil }
         let bb = mdl.boundingBox
         self.localHeight = max(0.001, bb.maxBounds.z - bb.minBounds.z)
+        self.bbMin = SIMD3(bb.minBounds.x, bb.minBounds.y, bb.minBounds.z)
+        self.bbMax = SIMD3(bb.maxBounds.x, bb.maxBounds.y, bb.maxBounds.z)
         mdl.addNormals(withAttributeNamed: MDLVertexAttributeNormal, creaseThreshold: 0.4)
         mdl.vertexDescriptor = vdesc
         guard let m = try? MTKMesh(mesh: mdl, device: device) else { return nil }
@@ -595,6 +598,110 @@ final class MeshCreature {
                 depth[i] = mdep[i]
             }
         }
+    }
+
+    // ── dossier portrait ──────────────────────────────────────────────────────
+    // A clean lookAt/perspective (independent of the game's skewed projection) so
+    // the codex shows the creature as a framed studio bust, not a first-person
+    // sliver. Left-handed to match the mesh shader's `clip = mvp * lp` convention.
+    private static func lookAtP(_ eye: SIMD3<Float>, _ center: SIMD3<Float>, _ up: SIMD3<Float>) -> simd_float4x4 {
+        let f = simd_normalize(center - eye)
+        let r = simd_normalize(simd_cross(up, f))
+        let u = simd_cross(f, r)
+        return simd_float4x4(SIMD4(r.x, u.x, f.x, 0),
+                             SIMD4(r.y, u.y, f.y, 0),
+                             SIMD4(r.z, u.z, f.z, 0),
+                             SIMD4(-simd_dot(r, eye), -simd_dot(u, eye), -simd_dot(f, eye), 1))
+    }
+    private static func perspP(_ fovY: Float, _ aspect: Float, _ near: Float, _ far: Float) -> simd_float4x4 {
+        let ys = 1 / tan(fovY / 2), xs = ys / aspect
+        let a = far / (far - near), b = -far * near / (far - near)
+        return simd_float4x4(SIMD4(xs, 0, 0, 0), SIMD4(0, ys, 0, 0), SIMD4(0, 0, a, 1), SIMD4(0, 0, b, 0))
+    }
+
+    /// Render a static dossier portrait: the creature at REST (all animation zeroed
+    /// — the live game's neutral stance, so the codex is accurate to what you fight),
+    /// lit from a 3/4 hero angle, on a transparent background, framed from the mesh's
+    /// own bounds so nothing crops. Returns the trimmed plate + the foot row for a
+    /// ground shadow. Called once at launch (warm) and cached by MeshPortraits.
+    func portrait(spin: Float, gain: Float) -> MeshPortraits.Plate {
+        // Orient to world Y-up, then apply the baked front + a hero turn so the face
+        // reads toward the camera; centre on the origin so the camera can look at 0.
+        let R = Self.Ry(front0 + spin) * Self.Rx(-Float.pi / 2)
+        var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        for xi in [bbMin.x, bbMax.x] { for yi in [bbMin.y, bbMax.y] { for zi in [bbMin.z, bbMax.z] {
+            let p = R * SIMD4(xi, yi, zi, 1)
+            lo = SIMD3(min(lo.x, p.x), min(lo.y, p.y), min(lo.z, p.z))
+            hi = SIMD3(max(hi.x, p.x), max(hi.y, p.y), max(hi.z, p.z))
+        } } }
+        let center = (lo + hi) * 0.5
+        let radius = 0.5 * simd_length(hi - lo)                 // bounding-sphere radius
+        let model = Self.T(-center.x, -center.y, -center.z) * R
+
+        let fovY: Float = 40 * .pi / 180
+        let dist = radius / sin(fovY / 2) * 1.06                // fit the sphere + a whisker → no crop
+        // front (+x, from front0), a little to the side (+z) and above (+y): a 3/4 bust
+        let camDir = simd_normalize(SIMD3<Float>(0.82, 0.34, 0.46))
+        let eye = camDir * dist
+        let fwd = simd_normalize(-eye)
+        let V = Self.lookAtP(eye, .zero, SIMD3(0, 1, 0))
+        let P = Self.perspP(fovY, Float(W) / Float(H), max(0.02, dist - radius - 1), dist + radius + 2)
+        let mvp = P * V * model
+
+        var cam = Cam(model: model, mvp: mvp,
+                      eye: SIMD4(eye, 0), fwd: SIMD4(fwd, 0),   // eye.w = 0 → wall clip disabled
+                      sector: SIMD4(0.24, 0.27, 0.34, 0),       // soft ambient fill so shadow sides read
+                      anim: .zero, misc: SIMD4(localHeight, 0, 0, 0),
+                      tune: SIMD4(gain, 0, 0, 0))
+
+        let rp = MTLRenderPassDescriptor()
+        rp.colorAttachments[0].texture = colTex
+        rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .store
+        rp.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        rp.colorAttachments[1].texture = depTex
+        rp.colorAttachments[1].loadAction = .clear; rp.colorAttachments[1].storeAction = .dontCare
+        rp.colorAttachments[1].clearColor = MTLClearColor(red: 1e9, green: 0, blue: 0, alpha: 0)
+        rp.depthAttachment.texture = zTex
+        rp.depthAttachment.loadAction = .clear; rp.depthAttachment.storeAction = .dontCare
+        rp.depthAttachment.clearDepth = 1.0
+
+        guard let cmd = queue.makeCommandBuffer(), let enc = cmd.makeRenderCommandEncoder(descriptor: rp) else {
+            return MeshPortraits.Plate(pixels: [], w: 0, h: 0, footY: 0)
+        }
+        enc.setRenderPipelineState(pipe); enc.setDepthStencilState(dss); enc.setCullMode(.none)
+        enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+        enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+        enc.setFragmentTexture(albedo, index: 0)
+        enc.setFragmentTexture(nil, index: 1)                  // wall field unused (eye.w = 0)
+        for (i, vb) in mtk.vertexBuffers.enumerated() { enc.setVertexBuffer(vb.buffer, offset: vb.offset, index: i) }
+        for sm in mtk.submeshes {
+            enc.drawIndexedPrimitives(type: sm.primitiveType, indexCount: sm.indexCount,
+                                      indexType: sm.indexType, indexBuffer: sm.indexBuffer.buffer,
+                                      indexBufferOffset: sm.indexBuffer.offset)
+        }
+        enc.endEncoding(); cmd.commit(); cmd.waitUntilCompleted()
+        mcol.withUnsafeMutableBytes { colTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0) }
+
+        // trim the transparent margins to a tight plate (nothing crops — the frame
+        // was fitted to the bounding sphere, so trimming only removes dead air)
+        var minX = W, maxX = -1, minY = H, maxY = -1
+        for j in 0..<H { let row = j * W
+            for i in 0..<W where alphaOf(mcol[row + i]) > 2 {
+                if i < minX { minX = i }; if i > maxX { maxX = i }
+                if j < minY { minY = j }; if j > maxY { maxY = j }
+            }
+        }
+        guard maxX >= minX, maxY >= minY else { return MeshPortraits.Plate(pixels: [], w: 0, h: 0, footY: 0) }
+        let feather = 4
+        minX = max(0, minX - feather); maxX = min(W - 1, maxX + feather)
+        minY = max(0, minY - feather); maxY = min(H - 1, maxY + feather)
+        let tw = maxX - minX + 1, th = maxY - minY + 1
+        var out = [UInt32](repeating: 0, count: tw * th)
+        for j in 0..<th { let src = (minY + j) * W + minX, dst = j * tw
+            for i in 0..<tw { let c = mcol[src + i]; out[dst + i] = alphaOf(c) > 2 ? (c | 0xFF00_0000) : 0 }
+        }
+        return MeshPortraits.Plate(pixels: out, w: tw, h: th, footY: th - 1 - feather)
     }
 
     /// One in-view drone to draw this frame.

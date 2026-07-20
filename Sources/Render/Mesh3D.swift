@@ -289,6 +289,11 @@ enum MeshItems {
         return Sprite(w: w, h: h, pixels: px)
     }
 
+    /// The weapon rendered as a dossier icon — the ACTUAL game model (the same one
+    /// the HUD viewmodel and the floor pickup use), so the codex can't drift from
+    /// what the marine carries. Cached by Sprites.weaponIcon.
+    static func weaponIcon(_ wk: WeaponKind) -> Sprite { weaponPickup(wk) }
+
     private static func build(_ k: ItemKind) -> Model3 {
         let white = packRGBA(228, 230, 236), red = packRGBA(214, 52, 48)
         let brass = packRGBA(226, 206, 96), dkmetal = packRGBA(72, 76, 90)

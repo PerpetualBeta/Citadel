@@ -108,7 +108,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         gpuWorldRenderer = GPUWorldRenderer(device: device)
         gpuWorldRenderer?.prewarm()      // build the level-independent GPU resources now (title is up), not on the first fire-press
         warmKernel()                     // …and pay the kernel's first-dispatch compile now too
-        IntelPortraits.warm()            // …and raymarch the codex portrait plates in the background
+        IntelPortraits.warm()            // …and raymarch the SDF codex portrait plates (fallback path)
+        gpuWorldRenderer?.warmPortraits()  // …and the mesh dossier busts the codex actually shows
+        ItemIcons.warm()                 // …and the SDF pickup icons (match the in-world geometry)
         audio.startMusic(.title)
     }
 

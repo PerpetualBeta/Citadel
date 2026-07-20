@@ -114,6 +114,7 @@ final class Sprites {
     private var itemCache: [Int: Sprite] = [:]
     private var propCache: [Int: Sprite] = [:]
     private var projCache: [Int: Sprite] = [:]
+    private var weaponIconCache: [Int: Sprite] = [:]
     private(set) var faces: [Sprite] = []
 
     private let mMet = packRGBA(104, 108, 122), mLit = packRGBA(168, 172, 188), mDk = packRGBA(48, 50, 60)
@@ -123,6 +124,7 @@ final class Sprites {
         for k in ItemKind.allCases { itemCache[k.rawValue] = buildItem(k) }
         for k in PropKind.allCases { propCache[k.rawValue] = MeshProps.sprite(k) }
         for k in ProjectileKind.allCases { projCache[k.rawValue] = buildProjectile(k) }
+        for k in WeaponKind.allCases { weaponIconCache[k.rawValue] = MeshItems.weaponIcon(k) }
         for bracket in 0..<5 { for dir in 0..<3 { faces.append(buildFace(bracket, dir)) } }
     }
 
@@ -138,6 +140,7 @@ final class Sprites {
         let s = buildMonsterSet(k); monsterCache[k.rawValue] = s; return s
     }
     func item(_ k: ItemKind) -> Sprite { itemCache[k.rawValue]! }
+    func weaponIcon(_ k: WeaponKind) -> Sprite { weaponIconCache[k.rawValue]! }
     func prop(_ k: PropKind) -> Sprite { propCache[k.rawValue]! }
     func projectile(_ k: ProjectileKind) -> Sprite { projCache[k.rawValue]! }
     func face(bracket: Int, dir: Int) -> Sprite { faces[max(0, min(4, bracket)) * 3 + max(0, min(2, dir))] }

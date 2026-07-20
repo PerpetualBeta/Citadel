@@ -805,6 +805,12 @@ enum SmokeTest {
             let ink = p.pixels.lazy.filter { $0 >> 24 > 128 }.count
             check(ink > p.w * p.h / 20, "\(k.displayName) \(v) plate has a body (\(ink) px)")
         } }
+        ItemIcons.ensureRendered()
+        for k in ItemKind.allCases {
+            guard let s = ItemIcons.cached(k) else { check(false, "\(k) SDF icon rendered"); continue }
+            let ink = s.pixels.lazy.filter { $0 >> 24 > 128 }.count
+            check(ink > 24, "\(k) SDF icon has a body (\(s.w)×\(s.h), \(ink) px)")
+        }
         for page in 0..<FrontEnd.intelPages { FrontEnd.intel(canvas, t: 1.0, page: page) }
         check(true, "front-end screens drew (all \(FrontEnd.intelPages) intel pages)")
 

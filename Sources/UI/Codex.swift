@@ -225,19 +225,22 @@ enum FrontEnd {
         }
     }
 
-    // ── FIELD INTEL — a paged dossier ────────────────────────────────────────
-    // Five plates: the two castes (static front + left-profile portraits,
-    // framed from their own bounds so nothing crops — IntelPortraits), the
-    // arsenal, the field supply, and what actually hurts. ◀ ▶ leaf through it;
-    // it's a codex, not a slideshow — nothing animates but the backdrop.
+    // ── FIELD INTEL — a paged dossier of cards ────────────────────────────────
+    // Five leaves: the two castes (a mesh HERO BUST — the actual creature the game
+    // renders, via MeshPortraits, with the SDF sculpt as fallback — beside a data
+    // card), the arsenal, the field supply, and what hurts. Every entry is its own
+    // card so nothing crams into a list. ◀ ▶ leaf through it; nothing animates but
+    // the backdrop — it's a codex, not a slideshow.
     static let intelPages = 5
+    private static let intelMagenta = packRGBA(224, 130, 224)
 
     static func intel(_ c: Canvas2D, t: Float, page: Int = 0) {
         backdrop(c, t, top: packRGBA(14, 8, 18), bottom: packRGBA(26, 10, 26))
-        c.labelCentered("FIELD INTEL", uiS(20), size: uiSf(36), color: packRGBA(220, 120, 220), weight: .heavy, shadow: true, glow: packRGBA(50, 10, 50))
+        c.labelCentered("FIELD INTEL", uiS(16), size: uiSf(30), color: intelMagenta, weight: .heavy, shadow: true, glow: packRGBA(50, 10, 50))
+        c.fillRectBlend(uiS(24), uiS(52), W - uiS(48), 1, packRGBA(150, 80, 150), 0.5)
         switch page {
-        case 0: creaturePage(c, .alien, t)
-        case 1: creaturePage(c, .queen, t)
+        case 0: creaturePage(c, .alien)
+        case 1: creaturePage(c, .queen)
         case 2: arsenalPage(c)
         case 3: supplyPage(c)
         default: survivalPage(c)
@@ -258,121 +261,193 @@ enum FrontEnd {
         return lines
     }
 
-    // ── page: one caste — front + left profile, then the dossier line ──
-    private static func creaturePage(_ c: Canvas2D, _ kind: MonsterKind, _ t: Float) {
-        c.labelCentered(kind.displayName, uiS(58), size: uiSf(26), color: amber, weight: .heavy, glow: packRGBA(50, 36, 0))
-        let boxTop = uiS(86)
-        let views: [(IntelPortraits.View, String)] = [(.front, "FRONT"), (.profile, "LEFT PROFILE")]
-        let plates = views.map { IntelPortraits.plate(kind, $0.0) }
-        // pair layout from the plates' true widths; downscale only if the pair
-        // would overflow the page margins
-        let gap = uiS(56), nominalW = IntelPortraits.plateH * 3 / 4
-        let w0 = plates[0]?.w ?? nominalW, w1 = plates[1]?.w ?? nominalW
-        var k: Float = 1
-        let maxPair = W - uiS(80)
-        if w0 + w1 + gap > maxPair { k = Float(maxPair - gap) / Float(w0 + w1) }
-        var x = (W - (Int(Float(w0) * k) + Int(Float(w1) * k) + gap)) / 2
-        for (i, (_, tag)) in views.enumerated() {
-            let dw = Int(Float(i == 0 ? w0 : w1) * k)
-            if let p = plates[i] {
-                // soft ground shadow at the creature's true foot line, plate over it
-                let footY = boxTop + Int(Float(p.footY) * k)
-                let cx = x + dw / 2, hw = max(uiS(20), dw * 2 / 5), hh = uiS(5)
-                for jj in -hh...hh { for ii in -hw...hw {
-                    let dd = Float(ii * ii) / Float(hw * hw) + Float(jj * jj) / Float(hh * hh)
-                    if dd < 1 { c.blend(cx + ii, footY + jj, packRGBA(0, 0, 0), (1 - dd) * 0.45) }
-                } }
-                c.blitBitmapF(p.pixels, p.w, p.h, x, boxTop, scale: k)
-            } else {
-                // plates render in the background from launch; if the codex is
-                // reached first, the feed is still decoding
-                let dh = Int(Float(IntelPortraits.plateH) * k)
-                for e in 0..<2 {
-                    c.fillRectBlend(x, boxTop + (dh - 1) * e, dw, 1, packRGBA(150, 90, 160), 0.5)
-                    c.fillRectBlend(x + (dw - 1) * e, boxTop, 1, dh, packRGBA(150, 90, 160), 0.5)
-                }
-                if Int(t * 2) % 2 == 0 {
-                    c.labelCentered2("DECRYPTING", x, dw, boxTop + dh / 2 - uiS(8), size: uiSf(13), color: dim, weight: .semibold, shadow: false)
-                }
-            }
-            c.labelCentered2(tag, x, dw, boxTop + Int(Float(IntelPortraits.plateH) * k) + uiS(6), size: uiSf(12), color: dim, weight: .semibold, shadow: false)
-            x += dw + gap
+    /// A dossier card: a translucent panel, a hairline border tinted by the accent,
+    /// and a left accent spine so each entry reads as its own filed record.
+    private static func card(_ c: Canvas2D, _ x: Int, _ y: Int, _ w: Int, _ h: Int,
+                             accent: UInt32, fill: UInt32 = packRGBA(24, 18, 30), alpha: Float = 0.70) {
+        c.fillRectBlend(x, y, w, h, fill, alpha)
+        let bd = mixRGBA(packRGBA(64, 56, 74), accent, 0.35)
+        c.fillRectBlend(x, y, w, 1, bd, 0.85)
+        c.fillRectBlend(x, y + h - 1, w, 1, bd, 0.85)
+        c.fillRectBlend(x, y, 1, h, bd, 0.85)
+        c.fillRectBlend(x + w - 1, y, 1, h, bd, 0.85)
+        c.fillRect(x, y, uiS(3), h, accent)                       // accent spine
+    }
+
+    /// A small label-over-value stat, for the creature data card.
+    private static func statCell(_ c: Canvas2D, _ x: Int, _ y: Int, _ key: String, _ value: String, _ col: UInt32) {
+        c.label(key, x, y, size: uiSf(11), color: dim, weight: .semibold, shadow: false, mono: true)
+        c.label(value, x, y + uiS(14), size: uiSf(20), color: col, weight: .heavy, shadow: false)
+    }
+
+    /// The dossier bust: the mesh portrait (what the game renders) if warmed, else
+    /// the SDF front plate. Both are packed-RGBA with a transparent background.
+    private static func heroPlate(_ kind: MonsterKind) -> (px: [UInt32], w: Int, h: Int, footY: Int)? {
+        if let m = MeshPortraits.plate(kind) { return (m.pixels, m.w, m.h, m.footY) }
+        if let s = IntelPortraits.plate(kind, .front) { return (s.pixels, s.w, s.h, s.footY) }
+        return nil
+    }
+
+    /// Fit an arbitrary sprite into a box (centred, whole, aspect-preserved).
+    private static func spriteFit(_ c: Canvas2D, _ spr: Sprite, _ x: Int, _ y: Int, boxW: Int, boxH: Int) {
+        let s = min(Float(boxW) / Float(spr.w), Float(boxH) / Float(spr.h))
+        c.blitBitmapF(spr.pixels, spr.w, spr.h,
+                      x + (boxW - Int(Float(spr.w) * s)) / 2, y + (boxH - Int(Float(spr.h) * s)) / 2, scale: s)
+    }
+
+    /// A colour-swatch damage tag ("■ PLASMA"), matching the HUD's ammo colours so
+    /// the codex speaks the same colour language as the live readout.
+    private static func damageTag(_ c: Canvas2D, _ x: Int, _ y: Int, _ label: String, _ col: UInt32) -> Int {
+        c.fillRect(x, y + uiS(2), uiS(9), uiS(9), col)
+        c.label(label, x + uiS(14), y, size: uiSf(12), color: mixRGBA(ink, col, 0.35), weight: .semibold, shadow: false)
+        return uiS(14) + c.labelWidth(label, size: uiSf(12), weight: .semibold) + uiS(18)
+    }
+
+    // ── page: one caste — a hero bust card beside a data card ──
+    private static func creaturePage(_ c: Canvas2D, _ kind: MonsterKind) {
+        let top = uiS(64), bodyH = uiS(292)
+        let accent = kind == .queen ? packRGBA(212, 92, 150) : packRGBA(150, 200, 120)
+
+        // ── portrait card (left): the bust, a ground shadow, a caste tag ──
+        // A wide card so the low, long drone bust fills it; the tall Queen is
+        // height-bound either way. The bust is scaled to fit and vertically centred.
+        let pcX = uiS(24), pcW = uiS(250)
+        card(c, pcX, top, pcW, bodyH, accent: accent)
+        let pad = uiS(10)
+        let ix = pcX + uiS(3) + pad, iy = top + pad
+        let iw = pcW - uiS(3) - pad * 2, ih = bodyH - pad * 2 - uiS(20)   // leave room for the tag
+        if let hp = heroPlate(kind) {
+            let k = min(Float(iw) / Float(hp.w), Float(ih) / Float(hp.h))
+            let dw = Int(Float(hp.w) * k), dh = Int(Float(hp.h) * k)
+            let bx = ix + (iw - dw) / 2, by = iy + (ih - dh) / 2          // vertically centred
+            let footY = by + Int(Float(hp.footY) * k)
+            let cx = bx + dw / 2, hw = max(uiS(24), dw * 2 / 5), hh = uiS(6)
+            for jj in -hh...hh { for ii in -hw...hw {                     // soft ground shadow
+                let dd = Float(ii * ii) / Float(hw * hw) + Float(jj * jj) / Float(hh * hh)
+                if dd < 1 { c.blend(cx + ii, footY + jj, packRGBA(0, 0, 0), (1 - dd) * 0.5) }
+            } }
+            c.blitBitmapF(hp.px, hp.w, hp.h, bx, by, scale: k)
+        } else {
+            c.labelCentered2("DECRYPTING", pcX, pcW, top + bodyH / 2 - uiS(6), size: uiSf(13), color: dim, weight: .semibold, shadow: false)
         }
-        c.labelCentered("THREAT \(kind.def.maxHealth) HP        \(kind.def.points) PTS", uiS(300), size: uiSf(15), color: packRGBA(220, 120, 120), weight: .semibold)
-        var ty = uiS(320)
-        for line in wrapLines(c, kind.codexText.capitalizedSentence, size: uiSf(15), weight: .medium, maxW: uiS(580)) {
-            c.labelCentered(line, ty, size: uiSf(15), color: ink, weight: .medium); ty += uiS(16)
+        let tag = kind == .queen ? "CASTE II · BROODMOTHER" : "CASTE I · PACK HUNTER"
+        c.labelCentered2(tag, pcX, pcW, top + bodyH - uiS(16), size: uiSf(11),
+                         color: mixRGBA(dim, accent, 0.45), weight: .semibold, shadow: false, mono: true)
+
+        // ── data card (right): name, stats, weakness, dossier ──
+        let icX = uiS(282), icW = W - icX - uiS(24)
+        card(c, icX, top, icW, bodyH, accent: accent)
+        let lx = icX + uiS(3) + uiS(16), rInner = icW - uiS(3) - uiS(32)
+        var y = top + uiS(16)
+        c.label(kind.displayName, lx, y, size: uiSf(34), color: amberHi, weight: .heavy, shadow: false, glow: packRGBA(70, 50, 12))
+        y += uiS(42)
+        statCell(c, lx, y, "INTEGRITY", "\(kind.def.maxHealth) HP", accent)
+        statCell(c, lx + uiS(150), y, "BOUNTY", "\(kind.def.points) PTS", amber)
+        y += uiS(46)
+        c.fillRectBlend(lx, y - uiS(8), rInner, 1, packRGBA(80, 70, 92), 0.5)
+        c.label("VULNERABLE TO", lx, y, size: uiSf(11), color: dim, weight: .semibold, shadow: false, mono: true)
+        y += uiS(16)
+        // colour-swatch damage tags, matching the HUD ammo colours (cells / fuel / rocket)
+        let weak: [(String, UInt32)] = kind == .queen
+            ? [("PLASMA", packRGBA(120, 210, 255)), ("FIRE", packRGBA(255, 150, 80))]
+            : [("PLASMA", packRGBA(120, 210, 255)), ("FIRE", packRGBA(255, 150, 80)), ("ROCKET", packRGBA(224, 96, 72))]
+        var wx = lx
+        for (name, col) in weak { wx += damageTag(c, wx, y, name, col) }
+        y += uiS(24)
+        c.fillRectBlend(lx, y - uiS(8), rInner, 1, packRGBA(80, 70, 92), 0.5)
+        for line in wrapLines(c, kind.codexText.capitalizedSentence, size: uiSf(13), weight: .medium, maxW: rInner) {
+            c.label(line, lx, y, size: uiSf(13), color: ink, weight: .medium, shadow: false); y += uiS(16)
         }
     }
 
-    // ── page: the arsenal — what kills, what feeds it, what it's FOR ──
+    // ── page: the arsenal — one card per weapon, 2×2 (real weapon models as icons) ──
     private static func arsenalPage(_ c: Canvas2D) {
-        c.labelCentered("THE ARSENAL", uiS(58), size: uiSf(26), color: amber, weight: .heavy, glow: packRGBA(50, 36, 0))
-        let rows: [(icon: ItemKind, name: String, tag: String, desc: String)] = [
-            (.ammoCells, "PLASMA RIFLE", "CELLS · CARRY \(AmmoType.cells.capacity)",
+        let rows: [(sprite: Sprite, name: String, tag: String, accent: UInt32, desc: String)] = [
+            (ItemIcons.weapon(.plasma) ?? Sprites.shared.weaponIcon(.plasma), "PLASMA RIFLE", "CELLS · \(AmmoType.cells.capacity)", packRGBA(90, 200, 235),
              "Always carried. Fast energy bolts — the workhorse, and the only weapon that wounds the Queen. Refills at wall sockets."),
-            (.ammoFuel, "FLAMETHROWER", "FUEL · CARRY \(AmmoType.fuel.capacity)",
+            (ItemIcons.weapon(.flamethrower) ?? Sprites.shared.weaponIcon(.flamethrower), "FLAMETHROWER", "FUEL · \(AmmoType.fuel.capacity)", packRGBA(240, 150, 60),
              "Always carried. A short cone of fire — the only thing that burns a corpse, or the Queen, away for good. Refills at fuel drums."),
-            (.weaponRocket, "ROCKET LAUNCHER", "ROCKETS · CARRY \(AmmoType.rockets.capacity)",
+            (ItemIcons.weapon(.rocket) ?? Sprites.shared.weaponIcon(.rocket), "ROCKET LAUNCHER", "ROCKETS · \(AmmoType.rockets.capacity)", packRGBA(224, 84, 60),
              "Found in the field. Heavy splash — clears a packed corridor and ruptures drums across the room. Its blast does not know your name."),
-            (.mineCrate, "PROXIMITY MINES", "[G] DEPLOY · CARRY \(Player.maxMines)",
-             "The meanest bang you carry. Arms in a second, then takes whatever crosses it — you included. Blasts chain into drums and other mines."),
+            (ItemIcons.cached(.mineCrate) ?? Sprites.shared.item(.mineCrate), "PROXIMITY MINES", "[G] DEPLOY · \(Player.maxMines)", packRGBA(230, 200, 90),
+             "The meanest bang you carry. Arms in a second, then takes whatever crosses it — you too. Blasts chain into drums and mines."),
         ]
-        var y = uiS(88)
-        for r in rows {
-            itemIcon(c, r.icon, uiS(92), y, box: uiS(30))
-            c.label(r.name, uiS(140), y, size: uiSf(17), color: amberHi, weight: .bold, shadow: false)
-            c.labelRight(r.tag, W - uiS(92), y + uiS(3), size: uiSf(12), color: dim, weight: .semibold, shadow: false, mono: true)
-            var dy = y + uiS(20)
-            for line in wrapLines(c, r.desc, size: uiSf(13), weight: .medium, maxW: uiS(448)) {
-                c.label(line, uiS(140), dy, size: uiSf(13), color: ink, weight: .medium, shadow: false); dy += uiS(14)
+        let top = uiS(64), mx = uiS(24), gap = uiS(14)
+        let cw = (W - mx * 2 - gap) / 2, ch = uiS(139)
+        for (i, r) in rows.enumerated() {
+            let cx = mx + (i % 2) * (cw + gap), cy = top + (i / 2) * (ch + gap)
+            card(c, cx, cy, cw, ch, accent: r.accent)
+            let inx = cx + uiS(3) + uiS(14)
+            spriteFit(c, r.sprite, inx, cy + uiS(20), boxW: uiS(50), boxH: uiS(40))
+            let tx = inx + uiS(60)
+            c.label(r.name, tx, cy + uiS(20), size: uiSf(17), color: amberHi, weight: .bold, shadow: false)
+            c.label(r.tag, tx, cy + uiS(42), size: uiSf(11), color: mixRGBA(dim, r.accent, 0.45), weight: .semibold, shadow: false, mono: true)
+            var dy = cy + uiS(64)
+            for line in wrapLines(c, r.desc, size: uiSf(12), weight: .medium, maxW: cw - uiS(34)) {
+                c.label(line, inx, dy, size: uiSf(12), color: ink, weight: .medium, shadow: false); dy += uiS(14)
             }
-            y += uiS(64)
         }
     }
 
-    // ── page: the field supply — every pickup, and the hardware that refills you ──
+    // ── page: the field supply — a chip per pickup, then the fixed hardware ──
     private static func supplyPage(_ c: Canvas2D) {
-        c.labelCentered("FIELD SUPPLY", uiS(58), size: uiSf(26), color: amber, weight: .heavy, glow: packRGBA(50, 36, 0))
+        let mx = uiS(24), gap = uiS(10)
         let green = packRGBA(120, 220, 140), blue = packRGBA(130, 180, 245)
-        let rows: [(icons: [ItemKind], name: String, tint: UInt32, effect: String)] = [
-            ([.stim], "STIMPACK", ink, "+\(ItemKind.stimHeal) HEALTH"),
-            ([.medkit], "MEDKIT", ink, "+\(ItemKind.medkitHeal) HEALTH"),
-            ([.armor], "ARMOUR REPAIR", green, "+\(ItemKind.armorRepair) ARMOUR · UP TO \(ItemKind.armorRepairCap)"),
-            ([.megaArmor], "FULL ARMOUR", blue, "A FRESH SUIT — ARMOUR \(Player.maxArmor)"),
-            // Fuel is NOT a floor pickup — it only comes from drums (see hardware
-            // below); MapGen never places an ammoFuel item, so it's not listed here.
-            ([.ammoCells, .ammoRockets], "AMMUNITION", ink,
-             "CELLS \(ItemKind.cellsPerPickup) · ROCKETS \(ItemKind.rocketsPerPickup)"),
-            ([.mineCrate], "MINE CRATE", ink, "+\(ItemKind.minesPerCrate) PROXIMITY MINES"),
-            // Only red + blue keycards spawn — MapGen places ≤2 locks from
-            // KeyColor.allCases[0…1]; yellow (index 2) is never reached.
-            ([.keyRed, .keyBlue], "KEYCARDS", ink, "EACH OPENS ITS COLOUR-SEALED DOOR"),
+        // Fuel is NOT a floor pickup (drums only). Only red + blue keycards spawn
+        // (MapGen places ≤2 locks; yellow is never reached).
+        let picks: [(icons: [ItemKind], name: String, value: String, accent: UInt32)] = [
+            ([.stim], "STIMPACK", "+\(ItemKind.stimHeal) HEALTH", green),
+            ([.medkit], "MEDKIT", "+\(ItemKind.medkitHeal) HEALTH", green),
+            ([.armor], "ARMOUR PLATE", "+\(ItemKind.armorRepair) · TO \(ItemKind.armorRepairCap)", packRGBA(120, 205, 150)),
+            ([.megaArmor], "FULL ARMOUR", "FRESH SUIT · \(Player.maxArmor)", blue),
+            ([.ammoCells, .ammoRockets], "AMMUNITION", "\(ItemKind.cellsPerPickup) CELLS · \(ItemKind.rocketsPerPickup) ROCKETS", packRGBA(200, 170, 90)),
+            ([.mineCrate], "MINE CRATE", "+\(ItemKind.minesPerCrate) MINES", packRGBA(230, 200, 90)),
+            ([.keyRed, .keyBlue], "KEYCARDS", "OPEN SEALED DOORS", packRGBA(214, 108, 108)),
         ]
-        var y = uiS(86)
-        for r in rows {
-            var ix = uiS(88)
-            for icon in r.icons { itemIcon(c, icon, ix, y - uiS(3), box: uiS(22)); ix += uiS(24) }
-            c.label(r.name, uiS(164), y, size: uiSf(15), color: r.tint, weight: .semibold, shadow: false)
-            c.labelRight(r.effect, W - uiS(88), y + uiS(2), size: uiSf(12), color: dim, weight: .medium, shadow: false, mono: true)
-            y += uiS(25)
+        var y = uiS(60)
+        c.label("CARRIED & COLLECTED", mx, y, size: uiSf(13), color: amber, weight: .bold, shadow: false, mono: true)
+        y += uiS(20)
+        let cols = 3, cw = (W - mx * 2 - gap * (cols - 1)) / cols, ch = uiS(46)
+        for (i, p) in picks.enumerated() {
+            let cx = mx + (i % cols) * (cw + gap), cy = y + (i / cols) * (ch + uiS(8))
+            card(c, cx, cy, cw, ch, accent: p.accent)
+            let leftX = cx + uiS(3) + uiS(10)
+            // line 1: icon(s) + name.  line 2: the value, on its own full-width line
+            // (never crowded against the border, whatever the icon count).
+            var ix = leftX
+            for icon in p.icons { itemIcon(c, icon, ix, cy + uiS(6), box: uiS(17)); ix += uiS(19) }
+            c.label(p.name, ix + uiS(6), cy + uiS(8), size: uiSf(13), color: ink, weight: .semibold, shadow: false)
+            c.label(p.value, leftX, cy + uiS(27), size: uiSf(11), color: mixRGBA(dim, p.accent, 0.45), weight: .medium, shadow: false, mono: true)
         }
-        // the fixed installations — the wall/floor hardware you work rather than
-        // carry. Name + a description line, so the mechanic has room to breathe.
-        c.labelCentered("FIELD HARDWARE", uiS(270), size: uiSf(15), color: amber, weight: .bold, shadow: false)
-        socketIcon(c, uiS(90), uiS(290), h: uiS(22))
-        c.label("RECHARGE SOCKET", uiS(140), uiS(290), size: uiSf(15), color: ink, weight: .semibold, shadow: false)
-        c.label("Stand close — the plasma rifle drinks cells; a drained panel recovers in time.",
-                uiS(140), uiS(307), size: uiSf(13), color: dim, weight: .medium, shadow: false)
-        drumIcon(c, uiS(92), uiS(326), h: uiS(22))
-        c.label("FUEL DRUM", uiS(140), uiS(326), size: uiSf(15), color: ink, weight: .semibold, shadow: false)
-        c.label("Stand close to refuel the flamethrower — or shoot it: a drum is a bomb.",
-                uiS(140), uiS(343), size: uiSf(13), color: dim, weight: .medium, shadow: false)
+
+        // ── the fixed installations you WORK, not carry — a card each, room to breathe ──
+        var hy = y + 3 * (ch + uiS(8)) + uiS(6)
+        c.label("FIELD HARDWARE", mx, hy, size: uiSf(13), color: amber, weight: .bold, shadow: false, mono: true)
+        hy += uiS(20)
+        let hw = (W - mx * 2 - gap) / 2, hh = uiS(58)
+        card(c, mx, hy, hw, hh, accent: packRGBA(80, 205, 235))
+        socketIcon(c, mx + uiS(3) + uiS(12), hy + uiS(14), h: uiS(30))
+        c.label("RECHARGE SOCKET", mx + uiS(3) + uiS(42), hy + uiS(12), size: uiSf(14), color: ink, weight: .semibold, shadow: false)
+        for line in wrapLines(c, "Stand close — the plasma rifle drinks its cells. A drained panel recovers in time.",
+                              size: uiSf(11), weight: .medium, maxW: hw - uiS(56)) {
+            c.label(line, mx + uiS(3) + uiS(42), hy + uiS(30), size: uiSf(11), color: dim, weight: .medium, shadow: false); hy += uiS(13)
+        }
+        let hx2 = mx + hw + gap
+        var hy2 = y + 3 * (ch + uiS(8)) + uiS(6) + uiS(20)
+        card(c, hx2, hy2, hw, hh, accent: packRGBA(224, 120, 60))
+        drumIcon(c, hx2 + uiS(3) + uiS(14), hy2 + uiS(14), h: uiS(30))
+        c.label("FUEL DRUM", hx2 + uiS(3) + uiS(42), hy2 + uiS(12), size: uiSf(14), color: ink, weight: .semibold, shadow: false)
+        for line in wrapLines(c, "Stand close to refuel the flamethrower — or shoot it: a drum is a bomb.",
+                              size: uiSf(11), weight: .medium, maxW: hw - uiS(56)) {
+            c.label(line, hx2 + uiS(3) + uiS(42), hy2 + uiS(30), size: uiSf(11), color: dim, weight: .medium, shadow: false); hy2 += uiS(13)
+        }
     }
 
-    /// A floor pickup's actual sprite, fitted into a square box (centred, whole).
+    /// A floor pickup, drawn from the SAME SDF geometry the game renders in-world
+    /// (ItemIcons), fitted into a square box. Falls back to the MeshItems sprite
+    /// until the SDF icons warm at launch.
     private static func itemIcon(_ c: Canvas2D, _ kind: ItemKind, _ x: Int, _ y: Int, box: Int) {
-        let spr = Sprites.shared.item(kind)
+        let spr = ItemIcons.cached(kind) ?? Sprites.shared.item(kind)
         let s = min(Float(box) / Float(spr.w), Float(box) / Float(spr.h))
         c.blitBitmapF(spr.pixels, spr.w, spr.h,
                       x + (box - Int(Float(spr.w) * s)) / 2, y + (box - Int(Float(spr.h) * s)) / 2, scale: s)
@@ -399,30 +474,41 @@ enum FrontEnd {
         for k in 1...2 { c.fillRect(x, y + uiS(2) + k * (h - uiS(4)) / 3, w, uiS(1), rim) }   // rolling hoops
     }
 
-    // ── page: survival — what hurts, how badly, and what mends it ──
+    // ── page: survival — a card per threat, then a staying-alive card ──
     private static func survivalPage(_ c: Canvas2D) {
-        c.labelCentered("SURVIVAL", uiS(58), size: uiSf(26), color: amber, weight: .heavy, glow: packRGBA(50, 36, 0))
-        let orange = packRGBA(240, 140, 60)
-        c.labelCentered("WHAT HURTS", uiS(86), size: uiSf(15), color: packRGBA(220, 120, 120), weight: .bold, shadow: false)
+        let mx = uiS(24), gap = uiS(14), orange = packRGBA(240, 140, 60)
+        var y = uiS(60)
+        c.label("WHAT HURTS", mx, y, size: uiSf(13), color: packRGBA(224, 120, 120), weight: .bold, shadow: false, mono: true)
+        y += uiS(20)
         let threats: [(name: String, sev: String, col: UInt32, note: String)] = [
-            ("DRONE BITE", "MAJOR", orange, "small on its own — but the pack flanks, and the wounds add up fast"),
-            ("QUEEN STRIKE", "SEVERE", red, "up to half your health in one blow — stay out of her reach"),
-            ("ACID POOLS", "MINOR", amber, "a slow burn underfoot — and it seeps straight through armour"),
-            ("BLAST SPLASH", "SEVERE", red, "rockets, mines and drums burn friend and foe alike — stand well clear"),
+            ("DRONE BITE", "MAJOR", orange, "Small on its own — but the pack flanks, and the wounds add up fast."),
+            ("QUEEN STRIKE", "SEVERE", red, "Up to half your health in one blow. Stay out of her reach."),
+            ("ACID POOLS", "MINOR", amber, "A slow burn underfoot — and it seeps straight through armour."),
+            ("BLAST SPLASH", "SEVERE", red, "Rockets, mines and drums burn friend and foe alike. Stand clear."),
         ]
-        var y = uiS(106)
-        for th in threats {
-            c.label(th.name, uiS(150), y, size: uiSf(16), color: ink, weight: .semibold, shadow: false)
-            c.labelRight(th.sev, W - uiS(150), y, size: uiSf(16), color: th.col, weight: .bold, shadow: false)
-            c.label(th.note, uiS(150), y + uiS(18), size: uiSf(13), color: dim, weight: .medium, shadow: false)
-            y += uiS(38)
+        let cw = (W - mx * 2 - gap) / 2, ch = uiS(78)
+        for (i, th) in threats.enumerated() {
+            let cx = mx + (i % 2) * (cw + gap), cy = y + (i / 2) * (ch + uiS(12))
+            card(c, cx, cy, cw, ch, accent: th.col)
+            let inx = cx + uiS(3) + uiS(14)
+            c.label(th.name, inx, cy + uiS(12), size: uiSf(16), color: ink, weight: .semibold, shadow: false)
+            c.labelRight(th.sev, cx + cw - uiS(14), cy + uiS(13), size: uiSf(12), color: th.col, weight: .bold, shadow: false, mono: true)
+            var dy = cy + uiS(34)
+            for line in wrapLines(c, th.note, size: uiSf(12), weight: .medium, maxW: cw - uiS(34)) {
+                c.label(line, inx, dy, size: uiSf(12), color: dim, weight: .medium, shadow: false); dy += uiS(14)
+            }
         }
-        c.labelCentered("STAYING ALIVE", uiS(262), size: uiSf(15), color: packRGBA(120, 220, 140), weight: .bold, shadow: false)
-        var ly = uiS(282)
+        // ── STAYING ALIVE — one card, the three rules that keep you breathing ──
+        var ay = y + 2 * (ch + uiS(12)) + uiS(6)
+        c.label("STAYING ALIVE", mx, ay, size: uiSf(13), color: packRGBA(120, 220, 140), weight: .bold, shadow: false, mono: true)
+        ay += uiS(20)
+        let aw = W - mx * 2, ah = uiS(78)
+        card(c, mx, ay, aw, ah, accent: packRGBA(120, 220, 140))
+        var ly = ay + uiS(14)
         for line in ["Armour turns away a third of every hit — acid excepted.",
-                     "Stims and medkits mend flesh; green plate patches armour, blue replaces the suit.",
-                     "Sockets refill cells and drums refill fuel — health only comes in crates."] {
-            c.labelCentered(line, ly, size: uiSf(14), color: ink, weight: .medium); ly += uiS(18)
+                     "Stims and medkits mend flesh; plates and suits restore armour.",
+                     "Sockets refill cells, drums refill fuel — health only from crates."] {
+            c.label("›  " + line, mx + uiS(3) + uiS(16), ly, size: uiSf(13), color: ink, weight: .medium, shadow: false); ly += uiS(20)
         }
     }
 

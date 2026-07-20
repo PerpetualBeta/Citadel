@@ -70,6 +70,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Render/SpriteCompositor.swift \
                     Sources/Render/Sprites.swift \
                     Sources/Render/Mesh3D.swift \
+                    Sources/Render/ItemIcons.swift \
                     Sources/Render/MonsterBake.swift \
                     Sources/Render/MeshCreature.swift \
                     Sources/Render/StaticFX.swift \
@@ -80,6 +81,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/UI/CinematicPlate.swift \
                     Sources/UI/HallArt.swift \
                     Sources/UI/IntelPortraits.swift \
+                    Sources/UI/MeshPortraits.swift \
                     Sources/UI/Automap.swift \
                     Sources/UI/Automap3D.swift \
                     Sources/UI/Font.swift \
