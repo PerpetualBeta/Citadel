@@ -116,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .applicationName: "Citadel",
             .applicationVersion: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.1",
             .credits: NSAttributedString(
-                string: "A first-person retake of the occupied colonies — set in the Strataris universe. Every pixel, sprite and sound generated in code.\n\nA Jorvik Software game.",
+                string: "A first-person retake of the occupied colonies — set in the Strataris universe. Procedural citadels, descended floor by floor.\n\nA Jorvik Software game.",
                 attributes: [.font: NSFont.systemFont(ofSize: 11)]),
         ])
     }
