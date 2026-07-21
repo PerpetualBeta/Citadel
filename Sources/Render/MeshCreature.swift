@@ -267,9 +267,11 @@ final class MeshCreature {
     }
 
     struct FOut { float4 color [[color(0)]]; float depth [[color(1)]]; };
+    struct MLight { float4 posR; float4 colI; };   // matches GPURaymarch.GPULight: posR=(x,y,z,1/r²) colI=(r,g,b,intensity)
     fragment FOut fmain(VOut in [[stage_in]],
                         texture2d<float> albedo [[texture(0)]],
                         texture2d<float> wallField [[texture(1)]],
+                        constant MLight* lights [[buffer(2)]],
                         constant Cam& C [[buffer(1)]]) {
         // WALL CLIP — discard fragments inside a wall so an extremity is cut at the
         // surface instead of poking through (a live drone's reach, or a corpse's head
@@ -301,12 +303,39 @@ final class MeshCreature {
         float val = max(alb.r, max(alb.g, alb.b));
         float emis = smoothstep(0.22, 0.55, warm) * smoothstep(0.4, 0.8, val) * (1.0 - slump);
         float3 col = alb * (amb + lamp + sector) + alb * emis * float3(1.0, 0.55, 0.22) * 1.3;
+        // DYNAMIC point lights (plasma bolts, muzzle flash, fire glow) — the near-black
+        // creature body was reading as a stark silhouette against a plasma-/flame-lit
+        // background because it caught none of that light. A body fill + a colour rim
+        // (which catches even a dark surface at the edges) means the creature takes on
+        // the bolt's cyan / the fire's orange instead of going pitch black.
+        int nL = int(C.sector.w);
+        for (int li = 0; li < nL; li++) {
+            float3 tl = lights[li].posR.xyz - in.wpos;
+            float d2 = dot(tl, tl);
+            float f = 1.0 - d2 * lights[li].posR.w;
+            if (f <= 0.0) continue;
+            float3 Lc = lights[li].colI.rgb * (lights[li].colI.w * f * f);
+            float3 Ln = tl / max(sqrt(d2), 1e-3);
+            float ndl = max(0.0, dot(N, Ln));
+            float rimL = pow(1.0 - max(0.0, dot(N, Ld)), 3.0);   // Ld = view dir; edges catch the colour
+            col += (alb * (0.30 + 0.70 * ndl) + rimL * 0.55) * Lc;
+        }
         col *= (1.0 - 0.4 * death);               // darken as she dies
-        float burn = C.tune.z;                    // charred remains: kill the glow, desaturate to ash
+        float burn = C.tune.z;
         if (burn > 0.001) {
+            // char the surface toward ash — a DARK base that keeps its luminance
+            // texture (creases, scales) so the body stays readable, not a flat fill.
             float lum = dot(col, float3(0.299, 0.587, 0.114));
             float3 charCol = float3(lum) * float3(0.42, 0.40, 0.38);
             col = mix(col, charCol, burn);
+            // incandescent glow that VARIES across the surface — hot embers on the
+            // exposed detail + grazing edges, dark char in the recesses — so a burning
+            // creature keeps its definition instead of going flat orange. Emissive →
+            // it blooms in post and reads as genuinely on fire.
+            float heat  = pow(sin(clamp(burn, 0.0, 1.0) * 3.14159), 0.6);   // bell over the burn
+            float rim   = pow(1.0 - max(0.0, dot(N, Ld)), 2.5);            // hotter on grazing edges
+            float ember = 0.22 + 0.95 * val + 0.75 * rim;                  // follows the albedo texture + rim
+            col += float3(1.55, 0.52, 0.12) * (heat * ember);             // textured orange incandescence
         }
         float ash = C.tune.w;                     // crumbled remains → grainy dust + debris
         if (ash > 0.001) {
@@ -319,6 +348,12 @@ final class MeshCreature {
         // high-contrast cut-outs — lift the shadows + ease the highlights around a dark
         // room-mid pivot (shared by queen + drone).
         col = (col - 0.17) * 0.80 + 0.17;
+        // AERIAL PERSPECTIVE: distant creatures lose contrast INTO the haze instead of
+        // reading as pitch-black cut-outs — mix toward the surrounding ambient tone
+        // with range, matching how the world's walls fade back.
+        float fog = 1.0 - exp(-max(0.0, in.fdepth) * 0.045);
+        float3 haze = (amb + sector) * 0.5 + 0.03;
+        col = mix(col, haze, clamp(fog, 0.0, 1.0) * 0.7);
         FOut o; o.color = float4(col, 1.0); o.depth = in.fdepth; return o;
     }
     """
@@ -515,6 +550,7 @@ final class MeshCreature {
                    eye: SIMD3<Float>, dir: Float, pos: SIMD2<Float>,
                    faceTarget: SIMD2<Float>, sector: SIMD3<Float>, time: Float,
                    map: GameMap, death: Float, burn: Float, ashed: Float,
+                   lights: [GPURaymarch.GPULight] = [],
                    wallField: MTLTexture?, mapW: Float, mapH: Float) {
         let height = Self.f("MeshQueenHeight", 1.0)
         let lightGain = Self.f("MeshQueenLight", 1.75)
@@ -555,7 +591,7 @@ final class MeshCreature {
                           W: Float(W), H: Float(H), near: 0.05, far: 64)
         let mvp = P * V * model
         var cam = Cam(model: model, mvp: mvp,
-                      eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(sector, 0),
+                      eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(sector, Float(lights.count)),
                       anim: SIMD4(headYaw, headPitch, breathe, sway),
                       misc: SIMD4(localHeight, 0.03 * aliveF, 0.02 * aliveF, time * 8.0 * animSpeed),   // .w = rapid howl-thrash phase
                       tune: SIMD4(lightGain, deathC, max(0, min(1, burn)), max(0, min(2, ashed))))
@@ -579,6 +615,8 @@ final class MeshCreature {
         enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
         enc.setFragmentTexture(albedo, index: 0)
         enc.setFragmentTexture(wallField, index: 1)
+        var lts = lights.isEmpty ? [GPURaymarch.GPULight(posR: .zero, colI: .zero)] : lights
+        enc.setFragmentBytes(&lts, length: MemoryLayout<GPURaymarch.GPULight>.stride * lts.count, index: 2)
         for (i, vb) in mtk.vertexBuffers.enumerated() { enc.setVertexBuffer(vb.buffer, offset: vb.offset, index: i) }
         for sm in mtk.submeshes {
             enc.drawIndexedPrimitives(type: sm.primitiveType, indexCount: sm.indexCount,
@@ -723,6 +761,7 @@ final class MeshCreature {
     /// perp-depth so the composite occludes correctly against the world + particles.
     func compositeDrones(into canvas: Canvas2D, depth: UnsafeMutablePointer<Float>,
                          eye: SIMD3<Float>, camDir: Float, instances: [DroneInst],
+                         lights: [GPURaymarch.GPULight] = [],
                          wallField: MTLTexture?, mapW: Float, mapH: Float) {
         guard !instances.isEmpty else { return }
         let height = Self.f("MeshDroneHeight", 1.0)
@@ -752,12 +791,15 @@ final class MeshCreature {
         enc.setCullMode(.none)
         enc.setFragmentTexture(albedo, index: 0)
         enc.setFragmentTexture(wallField, index: 1)
+        var lts = lights.isEmpty ? [GPURaymarch.GPULight(posR: .zero, colI: .zero)] : lights
+        enc.setFragmentBytes(&lts, length: MemoryLayout<GPURaymarch.GPULight>.stride * lts.count, index: 2)
+        let nLights = Float(lights.count)
         for (i, vb) in mtk.vertexBuffers.enumerated() { enc.setVertexBuffer(vb.buffer, offset: vb.offset, index: i) }
         for inst in instances {
             let model = Self.T(inst.pos.x, 0, inst.pos.y) * Self.Ry(front0 - inst.dir) * Self.S(scale) * Self.Rx(-Float.pi / 2)
             let mvp = P * V * model
             var cam = Cam(model: model, mvp: mvp,
-                          eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(inst.sector, 0),
+                          eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(inst.sector, nLights),
                           anim: SIMD4(inst.gait, inst.move, inst.rear, inst.dissolve),
                           misc: SIMD4(localHeight, inst.seed, 0, 0),
                           tune: SIMD4(lightGain, max(0, min(1, inst.death)), max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))))

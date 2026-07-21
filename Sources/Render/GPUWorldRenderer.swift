@@ -512,8 +512,14 @@ final class GPUWorldRenderer {
         // don't) culled to the player, plus the player's own muzzle/projectile glows
         // appended after — so extra.z gates the few shadow-casters to the emitter keys.
         let (emit, eshadow) = GPURaymarch.packLights(gpuEmitterLights, camera: p.pos, maxLights: 11)
+        // The mesh creatures get ONLY these TRANSIENT lights (plasma bolts, muzzle
+        // flash, fire glow, blasts) — their baked `sector` already stands in for the
+        // always-on room fixtures, so feeding them the fixtures too double-lit them
+        // into a washed, low-contrast silver. Transient lights just keep them from
+        // going stark-black against a plasma-/flame-lit background.
+        let meshLights = Array(gatherDynLights(world).prefix(12))
         var dyn = emit
-        dyn.append(contentsOf: gatherDynLights(world))
+        dyn.append(contentsOf: meshLights)
         if dyn.count > 16 { dyn = Array(dyn.prefix(16)) }
         u.grid.w = Float(dyn.count)
         u.extra.z = Float(eshadow)                                                   // leading emitter keys cast shadows
@@ -687,6 +693,7 @@ final class GPUWorldRenderer {
                     mc.composite(into: canvas, depth: dp.baseAddress!, eye: eye, dir: p.dir,
                                  pos: q.pos, faceTarget: p.pos, sector: sector, time: world.elapsed,
                                  map: world.map, death: death, burn: q.burn, ashed: q.ashed,
+                                 lights: meshLights,
                                  wallField: dtTex, mapW: Float(gpuMapW), mapH: Float(gpuMapH))
                 }
             }
@@ -720,6 +727,7 @@ final class GPUWorldRenderer {
             }
             gpuDepth.withUnsafeMutableBufferPointer { dp in
                 md.compositeDrones(into: canvas, depth: dp.baseAddress!, eye: eye, camDir: p.dir, instances: insts,
+                                   lights: meshLights,
                                    wallField: dtTex, mapW: Float(gpuMapW), mapH: Float(gpuMapH))
             }
         }
