@@ -86,6 +86,12 @@ final class World {
     struct FlameJet { var t: Float = 0; var nozzle = SIMD2<Float>(); var dir = SIMD2<Float>(); var reach: Float = 0 }
     var flameJet = FlameJet()
 
+    /// Short-lived explosion FIREBALLS (drum ruptures, rockets) rendered by the GPU
+    /// puff-fire (gatherFireEmitters): each expands fast then fades to sooty smoke
+    /// over `life`. `size` = final fireball radius; `soot` biases it toward black.
+    struct Fireball { var pos: SIMD2<Float>; var age: Float = 0; var life: Float; var size: Float; var soot: Float }
+    var fireballs: [Fireball] = []
+
     var score = 0
     let level: Int
     let colonyIndex: Int
@@ -400,6 +406,8 @@ final class World {
         player.fireCD = max(0, player.fireCD - dt)
         player.muzzle = max(0, player.muzzle - dt)
         flameJet.t = max(0, flameJet.t - dt)
+        for k in fireballs.indices { fireballs[k].age += dt }
+        fireballs.removeAll { $0.age >= $0.life }
         player.fireAnim = max(0, player.fireAnim - dt)
         player.switchAnim = max(0, player.switchAnim - dt)
         player.hurtFlash = max(0, player.hurtFlash - dt * 2)
@@ -1709,7 +1717,7 @@ final class World {
     }
 
     private func explode(at pos: SIMD2<Float>, radius: Float, damage: Int, fromPlayer: Bool,
-                         lethal: Bool = false, audio: AudioEngine) {
+                         lethal: Bool = false, sooty: Bool = false, audio: AudioEngine) {
         // every part of the show scales with the blast's reach (1 = a rocket's
         // splash): particle count, throw speed, fireball size, light intensity
         let k = radius / 2.0
@@ -1717,13 +1725,19 @@ final class World {
         // a real DETONATION: a fireball that blooms and rises, a smoke plume that
         // outlives it, and a flash of light thrown across the room (gatherDynLights)
         blasts.append((pos, 0.3, SIMD3(1.0, 0.62, 0.28) * k))
-        for _ in 0..<Int(14 * k) {
-            let a = rng.f(0, 6.2832), sp = rng.f(0.8, 3.0) * k
-            particles.append(Particle(pos: pos + SIMD2(rng.f(-0.25, 0.25), rng.f(-0.25, 0.25)),
-                                      vel: SIMD2(cos(a) * sp, sin(a) * sp),
-                                      life: rng.f(0.25, 0.55), maxLife: 0.55, color: 0,
-                                      size: rng.f(12, 26) * (0.7 + 0.3 * k), height: rng.f(0.1, 0.6), rise: rng.f(0.4, 1.1),
-                                      maxAlpha: 0.9, fire: true))
+        // the GPU puff-fire renders the fireball (expands fast → sooty smoke); a fuel
+        // drum burns sootier. Legacy soft-orb fireball kept only for the GPUFire A/B.
+        if FeatureFlags.gpuFire {
+            fireballs.append(Fireball(pos: pos, life: sooty ? 0.75 : 0.55, size: radius * 0.55, soot: sooty ? 1.0 : 0.55))
+        } else {
+            for _ in 0..<Int(14 * k) {
+                let a = rng.f(0, 6.2832), sp = rng.f(0.8, 3.0) * k
+                particles.append(Particle(pos: pos + SIMD2(rng.f(-0.25, 0.25), rng.f(-0.25, 0.25)),
+                                          vel: SIMD2(cos(a) * sp, sin(a) * sp),
+                                          life: rng.f(0.25, 0.55), maxLife: 0.55, color: 0,
+                                          size: rng.f(12, 26) * (0.7 + 0.3 * k), height: rng.f(0.1, 0.6), rise: rng.f(0.4, 1.1),
+                                          maxAlpha: 0.9, fire: true))
+            }
         }
         for _ in 0..<Int(8 * k) {
             particles.append(Particle(pos: pos + SIMD2(rng.f(-0.3, 0.3), rng.f(-0.3, 0.3)),
@@ -1796,14 +1810,16 @@ final class World {
         let frac = Float(d.fuel) / Float(max(1, drumFuel))
         let radius = drumBlastRadius * (0.7 + 0.3 * frac)
         let dmg = Int(Float(drumBlastDamage) * (0.6 + 0.4 * frac))
-        explode(at: d.pos, radius: radius, damage: dmg, fromPlayer: true, audio: audio)
+        explode(at: d.pos, radius: radius, damage: dmg, fromPlayer: true, sooty: true, audio: audio)
         addDecal(d.pos, radius: radius * 0.8, w: 0.95)
-        for _ in 0..<22 {                                          // a gout of flame
-            let a = rng.f(0, 6.2832), s = rng.f(1.5, 5.5)
-            particles.append(Particle(pos: d.pos, vel: SIMD2(cos(a) * s, sin(a) * s),
-                                      life: rng.f(0.4, 0.95), maxLife: 0.95, color: 0,
-                                      size: rng.f(11, 22), height: rng.f(0.1, 0.65), rise: rng.f(0.5, 1.3),
-                                      maxAlpha: 0.9, fire: true))
+        if !FeatureFlags.gpuFire {                                 // legacy soft-orb gout (GPU path uses the puff fireball)
+            for _ in 0..<22 {
+                let a = rng.f(0, 6.2832), s = rng.f(1.5, 5.5)
+                particles.append(Particle(pos: d.pos, vel: SIMD2(cos(a) * s, sin(a) * s),
+                                          life: rng.f(0.4, 0.95), maxLife: 0.95, color: 0,
+                                          size: rng.f(11, 22), height: rng.f(0.1, 0.65), rise: rng.f(0.5, 1.3),
+                                          maxAlpha: 0.9, fire: true))
+            }
         }
         for j in monsters.indices where monsters[j].state == .dead {
             if vlen(monsters[j].pos - d.pos) < radius { monsters[j].burn = max(monsters[j].burn, 0.1) }

@@ -421,6 +421,20 @@ final class GPUWorldRenderer {
         // mesh corpse's silhouette (which is drawn over the kernel), not a timid
         // stub hidden behind it. The Queen, a far greater mass, burns hardest.
         func ss(_ a: Float, _ b: Float, _ x: Float) -> Float { let t = max(0, min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t) }
+        // ── explosion fireballs ── drum ruptures + rocket splashes: a ball that
+        // blooms fast off the flash then dies to sooty smoke (the flame's own
+        // absorption caps the head-on brightness — no white-out).
+        for (k, fb) in world.fireballs.enumerated() {
+            let t = min(1, fb.age / fb.life)
+            let expand = 1 - (1 - t) * (1 - t)                    // fast bloom, easing out
+            let vigor  = 2.2 * (1 - ss(0.40, 1.0, t))            // brightest at the flash, fades to smoke
+            if vigor < 0.05 { continue }
+            let br = fb.size * (0.35 + 0.80 * expand)
+            out.append(GPURaymarch.FireEmitter(
+                p0: SIMD4(fb.pos.x, 0.30, fb.pos.y, br),
+                p1: SIMD4(0, 1, 0, br * 1.4),                     // short column → a rising ball, not a tower
+                p2: SIMD4(vigor, Float(k) * 7.1 + 2.0, 0, fb.soot)))   // kind = pyre · sooty
+        }
         let pp = world.player.pos
         var pyres: [(d: Float, e: GPURaymarch.FireEmitter)] = []
         for (i, m) in world.monsters.enumerated() where m.state == .dead && m.burn > 0 && m.burn < 1 {

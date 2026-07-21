@@ -2827,6 +2827,14 @@ enum GPURaymarch {
                 fireShot("gpu-fire-jet",
                     [FireEmitter(p0: SIMD4(nz.x, 0.5, nz.y, 0.42), p1: SIMD4(dx, 0, dy, max(0.6, reach - 0.15)), p2: SIMD4(1.9, 3.1, 1, 0))],
                     [GPULight(posR: SIMD4(jmid.x, 0.5, jmid.y, 1 / (4.2 * 4.2)), colI: SIMD4(1.0, 0.52, 0.18, 1.6))])
+                // (d) exploding fuel drum — a sooty fireball caught mid-bloom (t≈0.28
+                //     of its life: br = size·(0.35 + 0.80·expand), vigor near peak)
+                let bP = cor.pos + cdir * 3.2
+                let bT: Float = 0.28, bExpand = 1 - (1 - bT) * (1 - bT), bSize: Float = 1.5
+                let bR = bSize * (0.35 + 0.80 * bExpand)
+                fireShot("gpu-fire-blast",
+                    [FireEmitter(p0: SIMD4(bP.x, 0.30, bP.y, bR), p1: SIMD4(0, 1, 0, bR * 1.4), p2: SIMD4(2.2, 2.0, 0, 1))],
+                    [GPULight(posR: SIMD4(bP.x, 0.45, bP.y, 1 / (5.5 * 5.5)), colI: SIMD4(1.0, 0.58, 0.26, 3.0))])
             }
 
             // camera = the live raycaster's basis, as a 3-D frame
