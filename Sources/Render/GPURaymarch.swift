@@ -31,6 +31,10 @@ enum GPURaymarch {
     struct GPULight { float4 posR; float4 colI; };   // posR=(x,y,z,1/r²)  colI=(r,g,b,intensity)
     struct GShape   { float4 a, b, col, bnd; };  // a.xyz,a.w=r1 ; b.xyz,b.w=r2(<0 → sphere) ; col.rgb,col.w=k ; bnd = enclosing sphere (CPU-filled)
     struct GMonster { float4 a, b, c; };    // a=(x,z,yaw,scale) b=(shapeStart,shapeCount,boundR,boundCY) c=(minY,…)
+    // A burning source, integrated volumetrically along the view ray (fireEmission).
+    // p0 = base.xyz + baseRadius(w) · p1 = flowDir.xyz(unit, up for a pyre / aim for
+    // the jet) + length(w) · p2 = intensity(x) + seed(y) + kind(z: 0 pyre · 1 jet) + spare(w)
+    struct FireEmitter { float4 p0, p1, p2; };
     // params = (screenW, viewH, horizon, ceilH);  grid = (mapW, mapH, monsterCount, lightCount)
 
     constant float3 WARM = float3(1.0, 0.92, 0.78);
@@ -429,6 +433,36 @@ enum GPURaymarch {
         for (int i = 0; i < 4; i++) { s += a * vnoise2(p); p *= 2.03; a *= 0.5; }
         return s;
     }
+    // ── 3-D value noise for the volumetric FIRE puffs (fireEmission) ──
+    // Sin-free Dave-Hoskins hash — cheaper than the file's sin-hash, which matters
+    // at a few taps per puff.
+    static inline float hash13(float3 p) {
+        p = fract(p * 0.1031);
+        p += dot(p, p.zyx + 31.32);
+        return fract((p.x + p.y) * p.z);
+    }
+    static inline float vnoise3(float3 p) {
+        float3 i = floor(p), f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        float a = hash13(i + float3(0,0,0)), b = hash13(i + float3(1,0,0));
+        float c = hash13(i + float3(0,1,0)), d = hash13(i + float3(1,1,0));
+        float e = hash13(i + float3(0,0,1)), g = hash13(i + float3(1,0,1));
+        float h = hash13(i + float3(0,1,1)), k = hash13(i + float3(1,1,1));
+        return mix(mix(mix(a,b,f.x), mix(c,d,f.x), f.y),
+                   mix(mix(e,g,f.x), mix(h,k,f.x), f.y), f.z);
+    }
+    static inline float fbm3(float3 p) {                 // 3 octaves ≈ 0 … 0.87
+        float s = 0.0, a = 0.5;
+        for (int i = 0; i < 3; i++) { s += a * vnoise3(p); p *= 2.02; a *= 0.5; }
+        return s;
+    }
+    // temperature → emissive HDR colour. Reference power ramp (red~2n, green~n³,
+    // blue~n⁵): white-hot core → yellow → orange → deep red → BLACK. Cores exceed
+    // 1.0 so they clear the post bright-pass and bloom white.
+    static inline float3 blackbodyFire(float T) {
+        T = clamp(T, 0.0, 1.0);
+        return float3(1.90 * T, 1.15 * T * T * T, 0.35 * T * T * T * T * T);
+    }
 
     // ── standing water (the deep rock floors) ── floor 7 doesn't flood, it POOLS.
     //   Value noise on the INTEGER hash so the CPU samples the identical field
@@ -594,6 +628,115 @@ enum GPURaymarch {
         return acc * 0.7;
     }
 
+    // ── volumetric fire ── each emitter is a rising, tapering tongue of flame
+    // integrated along the view ray: bounded to its enclosing sphere (so a ray
+    // that misses it pays ~10 flops), then a short mini-march accumulates
+    // additive HDR emission from a domain-warped FBM turbulence field that
+    // scrolls UP with time (buoyancy). White-hot at the base → orange → deep red
+    // at the flickering tip. Occluded by `tmax` (the nearest opaque surface), so
+    // walls cut the jet and the world sits in front of a distant pyre. Cost is
+    // proportional to fire's SCREEN coverage, never full-frame — and it lives on
+    // the GPU, not the CPU blend loop that used to spin the fans.
+    // Fire = a recycling CHAIN of analytic 3-D PUFFS per emitter (real fire is many
+    // small rolling/mushrooming puffs), NOT a volumetric FBM ray-march. Each puff is
+    // ONE ray-vs-sphere (chord thickness → opaque core + soft rim for free), carved by
+    // ONE fixed-WORLD-FREQUENCY 3-D turbulence sample (crisp — no along-ray averaging),
+    // composited FRONT-TO-BACK. This structurally kills: the soft-cloud average, the
+    // summed white dome down the jet (a convex opacity blend can't blow out), and any
+    // straight line/cylinder (a jittered union of carved blobs has no axis). Colour is
+    // TEMPERATURE (blackbodyFire: white→yellow→orange→red→black), never height; old
+    // puffs flip to absorbing warm-black SMOKE that darkens the fire-lit walls behind
+    // it — that value contrast is what reads as fire, not glow. `bgTransOut` = how much
+    // scene survives the smoke, applied by the caller (col = col*bg + acc).
+    static inline float3 fireEmission(float3 ro, float3 rd, float tmax, float ceilH,
+                                      constant FireEmitter* F, int n, float time,
+                                      thread float& bgTransOut) {
+        float3 acc = float3(0.0);
+        float bgTrans = 1.0;                                        // scene survival behind ALL fire
+        for (int i = 0; i < n; i++) {
+            float3 base = F[i].p0.xyz;  float baseR    = F[i].p0.w;
+            float3 flow = F[i].p1.xyz;  float len      = F[i].p1.w;
+            float vigor = F[i].p2.x;    float seed     = F[i].p2.y;
+            bool  jet   = F[i].p2.z > 0.5;  float smokeBias = F[i].p2.w;   // Queen = sootier
+            // whole-plume bounding-sphere reject (~12 flops on a miss)
+            float3 bc = base + flow * (len * 0.5);
+            float  bR = len * 0.6 + baseR * 2.4 + 0.35;
+            float3 oc = ro - bc; float bq = dot(oc, rd);
+            if (bq * bq - (dot(oc, oc) - bR * bR) <= 0.0) continue;
+            // basis ⟂ to the flow, for lateral puff wander (pyre flow=up → e1=(1,0,0))
+            float3 up = fabs(flow.y) < 0.9 ? float3(0,1,0) : float3(1,0,0);
+            float3 e1 = normalize(cross(flow, up));
+            float3 e2 = cross(flow, e1);
+            float fk    = 0.80 + 0.14 * sin(time * 11.0 + seed * 6.3)
+                               + 0.10 * sin(time * 27.0 + seed * 15.1);   // arrhythmic gutter
+            float opac  = clamp(vigor * 0.60, 0.38, 1.0);
+            float bright= clamp(vigor * 0.85, 0.30, 1.6) * fk;
+            int   NP    = jet ? 8 : 10;
+            float rate  = jet ? 2.2 : 0.9;                 // jet churns fast; pyre rolls slow
+            float drift = fract(time * rate);              // whole chain slides + recycles
+            float scr   = jet ? 3.2 : 1.7;                 // internal turbulence scroll speed
+            float trans = 1.0;                             // this emitter, front-to-back
+            float3 localAcc = float3(0.0);
+            for (int k = 0; k < NP; k++) {
+                // axial age 0(source)…1(tip); monotonic in k ⇒ k-order == depth order,
+                // source first (nozzle nearest head-on; flame-below-smoke for a pyre)
+                float age  = (float(k) + drift) / float(NP);
+                float fade = smoothstep(0.0, 0.10, age) * (1.0 - smoothstep(0.86, 1.0, age));
+                if (fade < 0.02) continue;
+                // puff centre rides the flow and WANDERS (grows with age → mushrooms).
+                // Cheap sines, NO noise eval → placement costs ~nothing per pixel.
+                float ph  = seed * 6.3 + float(k) * 1.7;
+                float wob = baseR * (jet ? 0.35 : 0.85) * (0.35 + 1.9 * age);
+                float wa  = sin(age * 5.1 + ph)       + 0.5 * sin(age * 11.7 + ph * 1.7);
+                float wb  = cos(age * 4.3 + ph * 1.3) + 0.5 * sin(age *  9.3 + ph * 0.7);
+                float3 C  = base + flow * (age * len) + (e1 * wa + e2 * wb) * (wob * 0.5);
+                if (!jet) C.y = min(C.y, ceilH - 0.05);    // smoke flattens & rolls at the ceiling
+                // radius: tiny hot nucleus at the source, ballooning as it cools
+                float R = jet ? baseR * (0.16 + 1.05 * age)
+                              : baseR * (0.45 + 0.75 * age);
+                // ── analytic ray-vs-sphere → chord thickness (opaque core, soft rim) ──
+                float3 rel = ro - C;
+                float b2 = dot(rel, rd);
+                float c2 = dot(rel, rel) - R * R;
+                float disc = b2 * b2 - c2;
+                if (disc <= 0.0) continue;                 // MISS → no noise paid (cheap reject)
+                float sq = sqrt(disc);
+                float t0 = max(0.0, -b2 - sq);
+                float t1 = min(tmax, -b2 + sq);            // clipped by nearest opaque surface (volT)
+                if (t1 <= t0) continue;                    // behind a wall / behind the eye
+                float thick = (t1 - t0) / (2.0 * R);       // 0 rim … 1 through the centre
+                // ── carve organic shape from FIXED-WORLD-FREQUENCY 3-D turbulence ──
+                // sampled at the front surface: same absolute detail on tiny & huge puffs
+                // (no smooth disc), scrolling back along the flow so structure blows out.
+                float3 sp   = (ro + rd * t0) * 7.0 - flow * (time * scr) + seed * 11.0;
+                float  turb = fbm3(sp);                    // ONE crisp sample — no averaging
+                // ragged silhouette + interior voids: low turb eats chunks out of the rim
+                float dens = smoothstep(0.05, 0.42, thick - (0.72 - turb) * 0.60) * fade;
+                if (dens < 0.004) continue;
+                // ── temperature: cooling ramp. Pyre peaks ABOVE the base so the white-hot
+                // core clears the rasterised corpse mesh; jet is white-hot at the nozzle. ──
+                float axial = jet ? (1.0 - 0.65 * age)
+                                  : (smoothstep(0.0, 0.16, age) * (1.0 - 0.75 * age));
+                float heat  = clamp(axial * (0.35 + 0.85 * turb) * (0.50 + 0.65 * thick), 0.0, 1.0);
+                float smokeF= smoothstep(0.42 - 0.14 * smokeBias, 0.88, age);   // old → soot
+                float flameA= dens * opac * (1.0 - smokeF);        // OPAQUE hot core
+                float smokeA= dens * (0.55 + 0.40 * smokeBias) * smokeF;        // ABSORBS the bg
+                float3 emis     = blackbodyFire(heat) * bright;
+                float3 smokeCol = mix(float3(0.05, 0.035, 0.028),  // warm soot near the flame …
+                                      float3(0.012, 0.012, 0.013), // … cold black up high
+                                      smokeF);
+                // front-to-back: flame emits + occludes; smoke faintly self-lit + absorbs
+                localAcc += emis * (flameA * trans) + smokeCol * (smokeA * trans);
+                trans    *= (1.0 - flameA) * (1.0 - smokeA);
+                if (trans < 0.02) break;                   // pixel is opaque → stop
+            }
+            acc += localAcc * bgTrans;                     // near emitters (sent first) occlude far
+            bgTrans *= trans;
+        }
+        bgTransOut = bgTrans;
+        return acc * 2.0;                                  // HDR gain → white cores bloom in post
+    }
+
     kernel void raymarch(uint2 gid [[thread_position_in_grid]],
                          texture2d<float> dt        [[texture(0)]],
                          texture2d<float> lightTex  [[texture(1)]],
@@ -610,6 +753,7 @@ enum GPURaymarch {
                          constant float4* decals   [[buffer(4)]],   // (x,z,radius,w): w>0 scorch · w<0 blood
                          constant float4* doorsB   [[buffer(5)]],   // (cellX, cellY, part 0…1, flags: bit0 slideX · bit1 elevator)
                          constant float4* fits     [[buffer(6)]],   // pipe fittings: (x, z, normal angle, kind) — count in U.vmB.w
+                         constant FireEmitter* fires [[buffer(7)]],  // burning sources — count in U.tune.y (0 ⇒ never read)
                          constant Uniforms& U [[buffer(0)]]) {
         float screenW = U.params.x, viewH = U.params.y, horizon = U.params.z, ceilH = U.params.w;
         if (gid.x >= uint(screenW) || gid.y >= uint(viewH)) return;
@@ -1464,6 +1608,15 @@ enum GPURaymarch {
                 }
             }
         }
+        // volumetric fire — burning sources, integrated up to the nearest opaque
+        // surface (volT) so walls/creatures/gun occlude it; additive HDR so it
+        // blooms in the post pass. Gated on the count → zero cost out of combat.
+        int nFire = int(U.tune.y);
+        if (nFire > 0) {
+            float bgT = 1.0;
+            float3 fa = fireEmission(ro, rd, volT, ceilH, fires, nFire, time, bgT);
+            col = col * bgT + fa;                // smoke darkens the scene; flame adds light
+        }
         // volumetric in-scatter (haze + god-rays from the sector glow & lights)
         float jit = fract(sin(dot(float2(gid), float2(12.9898, 78.233))) * 43758.5453);
         col += volumetric(ro, rd, volT, dt, s, mapWH, lightTex, int(U.grid.w), lights, jit);
@@ -1640,8 +1793,9 @@ enum GPURaymarch {
                       var vmA: SIMD4<Float> = SIMD4(0, 0, 0, 0)     // viewmodel: gun anchor.xyz + local bound radius
                       var vmB: SIMD4<Float> = SIMD4(0, 0, 0, 0)     // viewmodel: gun-local bound centre
                       var dbg: SIMD4<Float> = SIMD4(0, 0, 0, 0)     // dbg.x = 1 → disable the per-ray creature mask (harness invariant checks)
-                      var tune: SIMD4<Float> = SIMD4(1, 0, 0, 0) }  // tune.x = overhead-lamp brightness gain (1 = as-authored; harnesses keep the default)
+                      var tune: SIMD4<Float> = SIMD4(1, 0, 0, 0) }  // tune.x = overhead-lamp brightness gain (1 = as-authored) · tune.y = fire-emitter count (0 ⇒ fire buffer never read)
     struct GPULight { var posR, colI: SIMD4<Float> }   // posR=(x,y,z,1/r²)  colI=(r,g,b,intensity)
+    struct FireEmitter { var p0, p1, p2: SIMD4<Float> }   // p0=base.xyz+baseR · p1=flowDir.xyz(unit)+length · p2=intensity,seed,kind,spare
     struct GShape { var a, b, col: SIMD4<Float>; var bnd: SIMD4<Float> = .zero }   // a.xyz/r1 ; b.xyz/r2(<0 sphere) ; col.rgb/k ; bnd = enclosing sphere
     struct GMonster { var a, b, c: SIMD4<Float> }      // a=(x,z,yaw,scale) b=(start,count,boundR,boundCY) c=(minY,…)
 
@@ -2533,8 +2687,11 @@ enum GPURaymarch {
             var fitsHarness = world.map.pipeFittings
             let nFitsHarness = fitsHarness.count
             if fitsHarness.isEmpty { fitsHarness = [SIMD4<Float>(0, 0, 0, 0)] }
+            // fire emitters for the shot that wants them (set u.tune.y to match);
+            // every other shot leaves tune.y = 0 so the kernel never reads this.
+            var firesHarness: [FireEmitter] = [FireEmitter(p0: .zero, p1: .zero, p2: .zero)]
             func dispatch(_ u0: Uniforms, _ dyn0: [GPULight], _ monBuf: MTLBuffer, _ shpBuf: MTLBuffer, _ decals0: [SIMD4<Float>]) -> Double {
-                var u = u0, dyn = dyn0, decals = decals0
+                var u = u0, dyn = dyn0, decals = decals0, fires = firesHarness
                 u.vmB.w = Float(nFitsHarness)                    // CPU-placed pipe fittings ride along
                 let cmd = queue.makeCommandBuffer()!
                 let enc = cmd.makeComputeCommandEncoder()!
@@ -2548,6 +2705,7 @@ enum GPURaymarch {
                 enc.setBuffer(monBuf, offset: 0, index: 2); enc.setBuffer(shpBuf, offset: 0, index: 3)
                 enc.setBytes(&decals, length: MemoryLayout<SIMD4<Float>>.stride * decals.count, index: 4)
                 enc.setBytes(&fitsHarness, length: MemoryLayout<SIMD4<Float>>.stride * fitsHarness.count, index: 6)
+                enc.setBytes(&fires, length: MemoryLayout<FireEmitter>.stride * fires.count, index: 7)
                 enc.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)
                 enc.endEncoding()
                 let penc = cmd.makeComputeCommandEncoder()!
@@ -2626,6 +2784,49 @@ enum GPURaymarch {
                     extra: SIMD4(0, Lighting.floodLevel(level: level), Float(qsh), 0))
                 _ = dispatch(cu, qlights, qMonBuf, qShpBuf, [.zero])
                 writePNG(String(format: "gpu-creature-%d.png", level))
+            }
+
+            // ── (1c) FIRE review set — three named shots down the corridor so the
+            //        puff-impostor fire can be judged: a DRONE pyre, the QUEEN pyre
+            //        (bigger + sootier), and a HEAD-ON flamethrower jet. Each also
+            //        prints its GPU frame time (the 60 fps fan-safety check). ──
+            if let cor = bestCorridorView(map) {
+                let dx = cos(cor.dir), dy = sin(cor.dir), plane = RenderConfig.cameraPlane
+                let cdir = SIMD2<Float>(dx, dy), cside = SIMD2<Float>(-dy, dx)
+                func fireShot(_ name: String, _ fires: [FireEmitter], _ fl: [GPULight]) {
+                    firesHarness = fires
+                    var cu = Uniforms(
+                        ro: SIMD4(cor.pos.x, 0.5, cor.pos.y, 2.3),
+                        fwd: SIMD4(dx, 0, dy, 0),
+                        right: SIMD4(-sin(cor.dir) * plane, 0, cos(cor.dir) * plane, 0),
+                        up: SIMD4(0, 1, 0, 0),
+                        params: SIMD4(Float(W), Float(H), Float(RenderConfig.horizon), 1.0),
+                        grid: SIMD4(Float(map.w), Float(map.h), 0, Float(fl.count)),
+                        extra: SIMD4(0, Lighting.floodLevel(level: level), 0, 0))
+                    cu.tune = SIMD4(1, Float(fires.count), 0, 0)          // tune.y = fire count
+                    let ms = dispatch(cu, fl.isEmpty ? [GPULight(posR: .zero, colI: .zero)] : fl, nilMon, nilShp, [.zero])
+                    writePNG(String(format: "\(name)-%d.png", level))
+                    FileHandle.standardError.write("  [fire] \(name): \(String(format: "%.2f", ms)) ms\n".data(using: .utf8)!)
+                    firesHarness = [FireEmitter(p0: .zero, p1: .zero, p2: .zero)]
+                }
+                // (a) drone pyre — contained, offset from the vanishing point
+                let dP = cor.pos + cdir * 3.0 - cside * 0.5
+                fireShot("gpu-fire-drone",
+                    [FireEmitter(p0: SIMD4(dP.x, 0.02, dP.y, 0.55), p1: SIMD4(0, 1, 0, 1.4), p2: SIMD4(1.9, 5.0, 0, 0))],
+                    [GPULight(posR: SIMD4(dP.x, 0.45, dP.y, 1 / (4.2 * 4.2)), colI: SIMD4(1.0, 0.52, 0.20, 1.7))])
+                // (b) Queen pyre — bigger, hotter, sootier (smokeBias = 1)
+                let qP = cor.pos + cdir * 4.0 + cside * 0.4
+                fireShot("gpu-fire-queen",
+                    [FireEmitter(p0: SIMD4(qP.x, 0.02, qP.y, 1.25), p1: SIMD4(0, 1, 0, 1.9), p2: SIMD4(2.1, 9.0, 0, 1))],
+                    [GPULight(posR: SIMD4(qP.x, 0.55, qP.y, 1 / (6.0 * 6.0)), colI: SIMD4(1.0, 0.50, 0.18, 2.4))])
+                // (c) flamethrower jet — HEAD-ON down the aim (the make-or-break view)
+                let nz = cor.pos + cdir * 0.35
+                var reach: Float = 3.4, tvl: Float = 0, pr = nz
+                while tvl < 3.4 { pr += cdir * 0.15; tvl += 0.15; if map.blocksMovement(Int(pr.x), Int(pr.y)) { reach = tvl; break } }
+                let jmid = nz + cdir * min(reach * 0.5, 1.6)
+                fireShot("gpu-fire-jet",
+                    [FireEmitter(p0: SIMD4(nz.x, 0.5, nz.y, 0.42), p1: SIMD4(dx, 0, dy, max(0.6, reach - 0.15)), p2: SIMD4(1.9, 3.1, 1, 0))],
+                    [GPULight(posR: SIMD4(jmid.x, 0.5, jmid.y, 1 / (4.2 * 4.2)), colI: SIMD4(1.0, 0.52, 0.18, 1.6))])
             }
 
             // camera = the live raycaster's basis, as a 3-D frame

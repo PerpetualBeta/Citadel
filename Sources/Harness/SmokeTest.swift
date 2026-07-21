@@ -476,11 +476,40 @@ enum SmokeTest {
             check(joltSeen, "the toppling Queen jolts the deck as she lands")
             check(qw.monsters.contains { $0.kind == .queen && $0.state == .dead }, "the landed Queen is a corpse")
             check(!qw.queenDefeated, "a downed-but-unburned Queen is still not defeated")
-            // torch the body → she's finished and the exit unlocks
+            // torch the body → she burns down on her own and the exit unlocks. The
+            // Queen is a great mass (~4.5 s to full ash at her burn rate), so loop
+            // until she's defeated rather than assume a fixed frame count.
             if let qd = qw.monsters.firstIndex(where: { $0.kind == .queen }) { qw.monsters[qd].burn = 0.06 }
-            for _ in 0..<200 { qw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+            for _ in 0..<360 {   // up to 6 s — ample for the Queen's slower, more ferocious burn
+                qw.update(dt: 1.0 / 60, input: InputState(), audio: audio)
+                if qw.queenDefeated { break }
+            }
             check(qw.queenDefeated, "a burned Queen meets the objective (exit unlocks)")
         } else { check(false, "level seeded a Queen") }
+
+        // 2g1b. plasma aim-assist targeting: a drone-LOCKED bolt overlapping the
+        // Queen's far larger hitbox (radius 1.1 vs 0.4) must strike the DRONE it's
+        // bound to — never be poached by the Queen. Tested at the collision layer (a
+        // bolt tagged to the drone's index), so it's deterministic and doesn't hinge
+        // on the lock/AI dynamics of a live chase.
+        do {
+            let tw = World(level: 1, colonyIndex: 0, seed: 20260721)
+            let fwd = SIMD2<Float>(cos(tw.player.dir), sin(tw.player.dir))
+            let side = SIMD2<Float>(-fwd.y, fwd.x)
+            let c = tw.player.pos + fwd * 1.8
+            let queen = Monster(kind: .queen, pos: c)
+            var drone = Monster(kind: .alien, pos: c + side * 0.35)           // INSIDE the Queen's radius
+            drone.health = 100000
+            tw.monsters = [queen, drone]                                      // Queen at index 0 (old code struck her first)
+            let qh0 = tw.monsters[0].health, dh0 = tw.monsters[1].health
+            // a plasma bolt bound to the drone (index 1), sitting on the overlap so it
+            // resolves at once — no player fire, so this is the only projectile in play
+            tw.projectiles.append(Projectile(pos: c + side * 0.35, vel: fwd * 0.5, kind: .plasma,
+                                             damage: 60, fromPlayer: true, life: 1.0, targetIndex: 1))
+            for _ in 0..<3 { tw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+            check(tw.monsters[1].health < dh0, "a drone-locked plasma bolt strikes the drone")
+            check(tw.monsters[0].health == qh0, "…and NOT the Queen whose hitbox it overlaps (q \(qh0)->\(tw.monsters[0].health), d \(dh0)->\(tw.monsters[1].health))")
+        }
 
         // 2g2. the Queen (radius 0.72) must spawn with clearance — never wedged in
         // a wall. She gates the exit, so an unreachable Queen = an unwinnable level.

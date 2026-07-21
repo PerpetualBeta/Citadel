@@ -78,6 +78,14 @@ final class World {
     var projectiles: [Projectile] = []
     var particles: [Particle] = []
 
+    /// The live flamethrower jet, stashed by `flameTick` for the renderer (the GPU
+    /// volumetric flame + its firelight). `t` counts down each frame so the stream
+    /// reads continuous across the 0.06 s fire ticks and tails off a beat after the
+    /// trigger releases; nozzle/dir/reach mirror the exact mechanics so flame and
+    /// damage share one source of truth.
+    struct FlameJet { var t: Float = 0; var nozzle = SIMD2<Float>(); var dir = SIMD2<Float>(); var reach: Float = 0 }
+    var flameJet = FlameJet()
+
     var score = 0
     let level: Int
     let colonyIndex: Int
@@ -159,6 +167,7 @@ final class World {
     // The HUD slides + greens the reticle onto it; handleFire flies the bolt at it.
     // Plasma ONLY — the flamethrower (cone) and rocket (splash) don't assist.
     private(set) var plasmaLockPos: SIMD2<Float>? = nil
+    private var plasmaLockIndex = -1              // the locked monster's index (stable; monsters are append-only) — the bolt homes to and damages THIS one
     private let plasmaAimArc: Float = 0.14        // ~8° half-angle assist cone around the reticle
     private let plasmaAimRange: Float = 40        // cells; matches the plasma's projectile reach
     private let queenBreedInterval: Float = 60   // she births a drone about once a minute
@@ -390,6 +399,7 @@ final class World {
         // player timers
         player.fireCD = max(0, player.fireCD - dt)
         player.muzzle = max(0, player.muzzle - dt)
+        flameJet.t = max(0, flameJet.t - dt)
         player.fireAnim = max(0, player.fireAnim - dt)
         player.switchAnim = max(0, player.switchAnim - dt)
         player.hurtFlash = max(0, player.hurtFlash - dt * 2)
@@ -890,6 +900,7 @@ final class World {
     /// direction and what actually takes damage all agree. Plasma only.
     private func acquirePlasmaTarget() {
         plasmaLockPos = nil
+        plasmaLockIndex = -1
         guard player.current == .plasma, !player.dead else { return }
         let ahead = SIMD2<Float>(cos(player.dir), sin(player.dir))
         let cosArc = cos(plasmaAimArc)
@@ -904,7 +915,7 @@ final class World {
             if !lineOfSight(player.pos, monsters[i].pos) { continue }   // never lock through a wall
             if d < bestD { bestD = d; best = i }
         }
-        if best >= 0 { plasmaLockPos = monsters[best].pos }
+        if best >= 0 { plasmaLockPos = monsters[best].pos; plasmaLockIndex = best }
     }
 
     private func handleFire(dt: Float, input: InputState, audio: AudioEngine) {
@@ -945,13 +956,15 @@ final class World {
             // Plasma flies at the auto-locked alien so the bolt visibly strikes what
             // it damages; other projectiles (rocket) fire straight down the aim.
             var ang = player.dir
+            var lockIdx = -1
             if player.current == .plasma, let t = plasmaLockPos {
                 ang = atan2(t.y - player.pos.y, t.x - player.pos.x)
+                lockIdx = plasmaLockIndex               // the bolt strikes THIS alien, not a bigger one nearby
             }
             let dx = cos(ang), dy = sin(ang)
             let origin = SIMD2<Float>(player.pos.x + dx * 0.4, player.pos.y + dy * 0.4)
             projectiles.append(Projectile(pos: origin, vel: SIMD2(dx, dy) * pk.speed,
-                                          kind: pk, damage: def.damage, fromPlayer: true, life: pk.lifetime))
+                                          kind: pk, damage: def.damage, fromPlayer: true, life: pk.lifetime, targetIndex: lockIdx))
             audio.weaponFire(player.current)
         }
     }
@@ -997,33 +1010,66 @@ final class World {
             probe += dir * 0.15; travelled += 0.15
             if map.blocksMovement(Int(probe.x), Int(probe.y)) { wallD = travelled; break }
         }
-        // Density × life × alpha is the additive-glow budget: these droplets live
-        // ~2× as long as the old puffs (they must fly the whole stream), so the
-        // count and alpha come DOWN to compensate — a readable core of flame, not
-        // a screen-filling whiteout at close range.
-        for _ in 0..<9 {
-            let a = player.dir + rng.f(-def.spread * 0.35, def.spread * 0.35)
-            let fdir = SIMD2<Float>(cos(a), sin(a))
-            let speed = rng.f(8.5, 12.0)
-            let life = min((wallD - 0.1) / speed, rng.f(0.30, 0.46))
-            particles.append(Particle(pos: nozzle + SIMD2(rng.f(-0.04, 0.04), rng.f(-0.04, 0.04)),
-                                      vel: fdir * speed,
-                                      life: life, maxLife: 0.46, color: 0,
-                                      size: rng.f(5, 10), height: 0.32 + rng.f(-0.03, 0.03),
-                                      rise: rng.f(-0.22, 0.06),
-                                      maxAlpha: 0.55, fire: true))
+        // Hand the live jet to the renderer: the GPU draws the flame BODY as a
+        // volumetric tongue straight down this aim (flameJet.t persists past the
+        // 0.06 s ticks so the stream reads continuous and tails off naturally).
+        flameJet = FlameJet(t: 0.10, nozzle: nozzle, dir: dir, reach: wallD)
+        let gpuFlame = FeatureFlags.gpuFire
+        // the soft additive flame ORBS — the old CPU flame body. This was the
+        // compositor's heaviest additive load (close-range O(r²) blends — the
+        // fan-spinner); retire it entirely when the GPU renders the jet. Kept
+        // behind the flag purely to A/B against the new path.
+        if !gpuFlame {
+            for _ in 0..<9 {
+                let a = player.dir + rng.f(-def.spread * 0.35, def.spread * 0.35)
+                let fdir = SIMD2<Float>(cos(a), sin(a))
+                let speed = rng.f(8.5, 12.0)
+                let life = min((wallD - 0.1) / speed, rng.f(0.30, 0.46))
+                particles.append(Particle(pos: nozzle + SIMD2(rng.f(-0.04, 0.04), rng.f(-0.04, 0.04)),
+                                          vel: fdir * speed,
+                                          life: life, maxLife: 0.46, color: 0,
+                                          size: rng.f(5, 10), height: 0.32 + rng.f(-0.03, 0.03),
+                                          rise: rng.f(-0.22, 0.06),
+                                          maxAlpha: 0.55, fire: true))
+            }
         }
         particles.append(Particle(pos: nozzle, vel: dir * rng.f(2, 4) + SIMD2(rng.f(-0.5, 0.5), rng.f(-0.5, 0.5)),
                                   life: rng.f(0.05, 0.12), maxLife: 0.12, color: packRGBA(255, 240, 190),
-                                  size: 1.5, height: 0.32, rise: 0, maxAlpha: 1, fire: true))   // nozzle ignition glint
+                                  size: 1.5, height: 0.32, rise: 0, maxAlpha: 1, fire: true))   // nozzle ignition glint (spark)
+        // burning embers flung down the stream — sharp sparks (color ≠ 0), cheap,
+        // texturing the GPU flame body with flying detail it can't produce
+        if gpuFlame {
+            for _ in 0..<2 {
+                let a = player.dir + rng.f(-def.spread * 0.55, def.spread * 0.55)
+                let fdir = SIMD2<Float>(cos(a), sin(a))
+                let speed = rng.f(7, 11)
+                let life = min((wallD - 0.1) / speed, rng.f(0.16, 0.32))
+                particles.append(Particle(pos: nozzle, vel: fdir * speed,
+                                          life: life, maxLife: 0.32, color: packRGBA(255, 196, 96),
+                                          size: 1.3, height: 0.32, rise: rng.f(-0.1, 0.12),
+                                          maxAlpha: 1, fire: true))
+            }
+        }
         if wallD < def.range {   // fuel splashing and climbing the wall it hits
             let hit = nozzle + dir * (wallD - 0.2)
-            for _ in 0..<3 {
-                particles.append(Particle(pos: hit + SIMD2(rng.f(-0.15, 0.15), rng.f(-0.15, 0.15)),
-                                          vel: SIMD2(rng.f(-0.9, 0.9), rng.f(-0.9, 0.9)) - dir * rng.f(0.4, 1.2),
-                                          life: rng.f(0.25, 0.5), maxLife: 0.5, color: 0,
-                                          size: rng.f(8, 13), height: rng.f(0.1, 0.5), rise: rng.f(0.5, 1.1),
-                                          maxAlpha: 0.5, fire: true))
+            // GPU path: a couple of bright embers bouncing off the wall (sparks);
+            // legacy path: the old soft splash orbs.
+            if gpuFlame {
+                for _ in 0..<2 {
+                    particles.append(Particle(pos: hit + SIMD2(rng.f(-0.1, 0.1), rng.f(-0.1, 0.1)),
+                                              vel: SIMD2(rng.f(-1.1, 1.1), rng.f(-1.1, 1.1)) - dir * rng.f(0.3, 0.9),
+                                              life: rng.f(0.2, 0.42), maxLife: 0.42, color: packRGBA(255, 170, 80),
+                                              size: 1.3, height: rng.f(0.15, 0.5), rise: rng.f(0.6, 1.3),
+                                              maxAlpha: 1, fire: true))
+                }
+            } else {
+                for _ in 0..<3 {
+                    particles.append(Particle(pos: hit + SIMD2(rng.f(-0.15, 0.15), rng.f(-0.15, 0.15)),
+                                              vel: SIMD2(rng.f(-0.9, 0.9), rng.f(-0.9, 0.9)) - dir * rng.f(0.4, 1.2),
+                                              life: rng.f(0.25, 0.5), maxLife: 0.5, color: 0,
+                                              size: rng.f(8, 13), height: rng.f(0.1, 0.5), rise: rng.f(0.5, 1.1),
+                                              maxAlpha: 0.5, fire: true))
+                }
             }
         }
         if particles.count > 700 { particles.removeFirst(particles.count - 700) }
@@ -1272,7 +1318,9 @@ final class World {
                     monsters[i] = m; continue
                 }
                 if m.burn > 0 && m.burn < 1 {                       // a corpse set alight — the PYRE
-                    let nb = min(1, m.burn + dt * 0.35)
+                    // bigger mass burns LONGER: a drone is consumed in ~3.3 s, the
+                    // Queen takes ~4.5 s of ferocious blaze before she's ash
+                    let nb = min(1, m.burn + dt * (m.kind == .queen ? 0.22 : 0.30))
                     // the ash bed goes down EARLY, under cover of the blaze, so when
                     // the flames thin the remains are simply already there — there is
                     // never a visible corpse→ash swap
@@ -1293,22 +1341,37 @@ final class World {
                     // so the burn-away is never visible through a thin flame
                     let flare = powf(sinf(m.burn * .pi), 0.6)
                     let rad = m.def.radius
-                    var nFire = Int(flare * 5); if rng.chance(0.4 + flare) { nFire += 1 }
-                    for _ in 0..<nFire {
-                        let jit = SIMD2<Float>(rng.f(-rad, rad), rng.f(-rad, rad)) * 0.9
-                        particles.append(Particle(pos: m.pos + jit, vel: SIMD2(rng.f(-0.15, 0.15), rng.f(-0.15, 0.15)),
-                                                  life: rng.f(0.3, 0.7), maxLife: 0.7, color: 0,
-                                                  size: rng.f(10, 15 + 14 * flare), height: rng.f(0.02, 0.3 + 0.5 * flare),
-                                                  rise: rng.f(0.5, 1.2), maxAlpha: 0.85, fire: true))
-                    }
-                    if m.burn > 0.3 && m.burn < 0.95 {
-                        for _ in 0..<2 {
-                            let jit = SIMD2<Float>(rng.f(-rad, rad), rng.f(-rad, rad)) * 0.4
-                            particles.append(Particle(pos: m.pos + jit, vel: SIMD2(rng.f(-0.1, 0.1), rng.f(-0.1, 0.1)),
-                                                      life: rng.f(0.35, 0.7), maxLife: 0.7, color: 0,
-                                                      size: rng.f(14, 26), height: rng.f(0.05, 0.55),
-                                                      rise: rng.f(0.4, 1.0), maxAlpha: 0.9, fire: true))
+                    // the soft flame ORBS — the CPU pyre body. Retired when the GPU
+                    // renders the pyre as a rising volumetric column (see
+                    // gatherFireEmitters); the smoke + embers below stay on the CPU
+                    // (they composite over/in-front-of the mesh corpse, which the
+                    // kernel-drawn column cannot). Kept behind the flag to A/B.
+                    if !FeatureFlags.gpuFire {
+                        var nFire = Int(flare * 5); if rng.chance(0.4 + flare) { nFire += 1 }
+                        for _ in 0..<nFire {
+                            let jit = SIMD2<Float>(rng.f(-rad, rad), rng.f(-rad, rad)) * 0.9
+                            particles.append(Particle(pos: m.pos + jit, vel: SIMD2(rng.f(-0.15, 0.15), rng.f(-0.15, 0.15)),
+                                                      life: rng.f(0.3, 0.7), maxLife: 0.7, color: 0,
+                                                      size: rng.f(10, 15 + 14 * flare), height: rng.f(0.02, 0.3 + 0.5 * flare),
+                                                      rise: rng.f(0.5, 1.2), maxAlpha: 0.85, fire: true))
                         }
+                        if m.burn > 0.3 && m.burn < 0.95 {
+                            for _ in 0..<2 {
+                                let jit = SIMD2<Float>(rng.f(-rad, rad), rng.f(-rad, rad)) * 0.4
+                                particles.append(Particle(pos: m.pos + jit, vel: SIMD2(rng.f(-0.1, 0.1), rng.f(-0.1, 0.1)),
+                                                          life: rng.f(0.35, 0.7), maxLife: 0.7, color: 0,
+                                                          size: rng.f(14, 26), height: rng.f(0.05, 0.55),
+                                                          rise: rng.f(0.4, 1.0), maxAlpha: 0.9, fire: true))
+                            }
+                        }
+                    }
+                    // a couple of extra embers when the GPU body carries the flame,
+                    // so the near-body region reads live in front of the mesh corpse
+                    if FeatureFlags.gpuFire && rng.chance(0.35 * (0.4 + flare)) {
+                        particles.append(Particle(pos: m.pos + SIMD2(rng.f(-rad, rad), rng.f(-rad, rad)) * 0.6,
+                                                  vel: SIMD2(rng.f(-0.4, 0.4), rng.f(-0.4, 0.4)),
+                                                  life: rng.f(0.25, 0.6), maxLife: 0.6, color: packRGBA(255, 190, 90),
+                                                  size: 1.4, height: rng.f(0.05, 0.45), rise: rng.f(0.9, 1.8), maxAlpha: 1, fire: true))
                     }
                     if rng.chance(0.25 + 0.5 * max(0, m.burn - 0.5)) {   // smoke thickens as the fire dies
                         particles.append(Particle(pos: m.pos + SIMD2(rng.f(-0.32, 0.32), rng.f(-0.32, 0.32)),
@@ -1598,8 +1661,21 @@ final class World {
                 if drumHit { detonate = true; break }
                 if p.fromPlayer {
                     var hit = -1
-                    for (mi, m) in monsters.enumerated() where m.alive {
-                        if vlen(m.pos - p.pos) < m.def.radius + 0.18 { hit = mi; break }
+                    if p.targetIndex >= 0, p.targetIndex < monsters.count, monsters[p.targetIndex].alive {
+                        // LOCKED bolt: it strikes only the reticle's target and passes
+                        // by everything else — so a targeted drone is hit even with the
+                        // Queen (radius 1.1 vs 0.4) right beside it. Lands once reached.
+                        let t = p.targetIndex
+                        if vlen(monsters[t].pos - p.pos) < monsters[t].def.radius + 0.18 { hit = t }
+                    } else {
+                        // unlocked (rocket, or plasma with no lock): the NEAREST monster
+                        // centre in range — not merely the first in array order, which
+                        // let the Queen's huge radius poach a bolt meant for a drone
+                        var bd = Float.greatestFiniteMagnitude
+                        for (mi, m) in monsters.enumerated() where m.alive {
+                            let dc = vlen(m.pos - p.pos)
+                            if dc < m.def.radius + 0.18, dc < bd { bd = dc; hit = mi }
+                        }
                     }
                     if hit >= 0 {
                         if p.kind.splash == 0 { damageMonster(hit, p.damage, audio: audio, kind: p.kind == .plasma ? .plasma : .generic) }

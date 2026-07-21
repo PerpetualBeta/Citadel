@@ -36,4 +36,9 @@ struct Projectile {
     var damage: Int
     var fromPlayer: Bool
     var life: Float
+    /// Monster index this bolt is locked to (plasma auto-aim), or -1 for none.
+    /// A locked bolt strikes ONLY this target, so a drone under the reticle is hit
+    /// even with the Queen's far larger hitbox beside it. Monsters are append-only
+    /// per level, so the index stays valid for the bolt's short life.
+    var targetIndex: Int = -1
 }

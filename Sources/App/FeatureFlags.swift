@@ -37,6 +37,13 @@ enum FeatureFlags {
     ///   defaults write cc.jorviksoftware.Citadel MeshDrone -bool false   to A/B vs SDF.
     static var meshDrone: Bool { d.object(forKey: "MeshDrone") == nil ? true : d.bool(forKey: "MeshDrone") }
 
+    /// Volumetric GPU fire — the flamethrower jet and corpse pyres rendered as
+    /// procedural, domain-warped flame tongues in the raymarch kernel (plus their
+    /// flickering firelight), instead of the old CPU additive-orb billboards.
+    /// Default ON; set false to A/B against the legacy CPU flame:
+    ///   defaults write cc.jorviksoftware.Citadel GPUFire -bool false
+    static var gpuFire: Bool { d.object(forKey: "GPUFire") == nil ? true : d.bool(forKey: "GPUFire") }
+
     /// Overhead-lamp brightness. Scales the ceiling lamps as a UNIT — their
     /// emissive glow AND the warm pools they cast onto the world and the weapon —
     /// leaving the headlamp, the ambient sector fill, and the dramatic point

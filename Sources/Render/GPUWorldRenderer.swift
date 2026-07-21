@@ -301,10 +301,26 @@ final class GPUWorldRenderer {
     private func gatherDynLights(_ world: World) -> [GPURaymarch.GPULight] {
         var out: [GPURaymarch.GPULight] = []
         let p = world.player
-        if p.muzzle > 0 {
+        if p.muzzle > 0 && world.flameJet.t <= 0 {   // the flamethrower has its own warm light (below) — no cold muzzle flash
             let mz = min(1, p.muzzle / 0.07), rad: Float = 6.5
             out.append(GPURaymarch.GPULight(posR: SIMD4(p.pos.x, 0.5, p.pos.y, 1 / (rad * rad)),
                                             colI: SIMD4(1.0, 0.86, 0.55, 1.7 * mz)))
+        }
+        // the flamethrower jet throws warm firelight down the aim — the stream
+        // lights the room ahead and flares against the wall it splashes on,
+        // guttering on two incommensurate rates so it never pulses in rhythm
+        let jt = world.flameJet
+        if jt.t > 0 {
+            let s0 = min(1, jt.t / 0.10)
+            let flick = 0.80 + 0.20 * sinf(world.elapsed * 31) + 0.12 * sinf(world.elapsed * 67 + 1.3)
+            let reach = max(0.6, jt.reach)
+            let mid = jt.nozzle + jt.dir * min(reach * 0.5, 1.6)
+            let far = jt.nozzle + jt.dir * (reach - 0.2)
+            let rM: Float = 4.2, rF: Float = 3.0
+            out.append(GPURaymarch.GPULight(posR: SIMD4(mid.x, 0.5, mid.y, 1 / (rM * rM)),
+                                            colI: SIMD4(1.0, 0.55, 0.20, 1.6 * s0 * flick)))
+            out.append(GPURaymarch.GPULight(posR: SIMD4(far.x, 0.45, far.y, 1 / (rF * rF)),
+                                            colI: SIMD4(1.0, 0.48, 0.16, 1.1 * s0 * flick)))
         }
         // elevator cabin light — the car interior is pitch dark once the leaves
         // shut (no baked light reaches it), so a car in use carries its own lamp.
@@ -357,8 +373,10 @@ final class GPUWorldRenderer {
         // the pyre — the room flickers while a body burns
         for (i, m) in world.monsters.enumerated() where m.state == .dead && m.burn > 0 && m.burn < 1 {
             let flare = sinf(m.burn * .pi)
-            let flick = 0.85 + 0.15 * sinf(world.elapsed * 13 + Float(i) * 1.7)
-            let rad: Float = 3.4
+            // gutter on two incommensurate rates, desynced per corpse — no rhythm
+            let ph = Float(i) * 1.7
+            let flick = 0.80 + 0.14 * sinf(world.elapsed * 13 + ph) + 0.10 * sinf(world.elapsed * 29 + ph * 2.3)
+            let rad: Float = 3.6
             out.append(GPURaymarch.GPULight(posR: SIMD4(m.pos.x, 0.45, m.pos.y, 1 / (rad * rad)),
                                             colI: SIMD4(1.0, 0.55, 0.22, (0.4 + 1.3 * flare) * flick)))
             if out.count >= 14 { break }
@@ -376,6 +394,60 @@ final class GPUWorldRenderer {
                                             colI: SIMD4(c.0, c.1, c.2, it)))
             if out.count >= 16 { break }
         }
+        return out
+    }
+
+    /// Burning sources for the GPU volumetric flame (`fireEmission` in the kernel):
+    /// the flamethrower jet (a fat gout down the live aim, clipped at the wall) and
+    /// every corpse pyre (a rising column, taller over the Queen). The kernel loops
+    /// this per ray with a cheap bounding-sphere reject, so it stays tight — capped,
+    /// and the nearest pyres win when a whole pack ignites at once.
+    private func gatherFireEmitters(_ world: World) -> [GPURaymarch.FireEmitter] {
+        guard FeatureFlags.gpuFire else { return [] }
+        var out: [GPURaymarch.FireEmitter] = []
+        // ── the flamethrower jet ── flow horizontal down the aim; kind = 1
+        let j = world.flameJet
+        if j.t > 0 {
+            let strength = min(1, j.t / 0.10)
+            let len = max(0.5, j.reach - 0.15)
+            out.append(GPURaymarch.FireEmitter(
+                p0: SIMD4(j.nozzle.x, 0.5, j.nozzle.y, 0.42),      // nozzle · puff-envelope radius
+                p1: SIMD4(j.dir.x, 0, j.dir.y, len),               // horizontal flow, length clipped at the wall
+                p2: SIMD4(1.9 * strength, 3.1, 1, 0)))             // vigor · seed · kind=jet · smoke=0
+        }
+        // ── corpse pyres ── a FUEL FIRE consuming a mass: ignites at once, flares
+        // ferociously for a beat, then dies down as the body is spent. Taller and
+        // wider than the corpse so the blaze ROARS UP AND OUT of it — clearing the
+        // mesh corpse's silhouette (which is drawn over the kernel), not a timid
+        // stub hidden behind it. The Queen, a far greater mass, burns hardest.
+        func ss(_ a: Float, _ b: Float, _ x: Float) -> Float { let t = max(0, min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t) }
+        let pp = world.player.pos
+        var pyres: [(d: Float, e: GPURaymarch.FireEmitter)] = []
+        for (i, m) in world.monsters.enumerated() where m.state == .dead && m.burn > 0 && m.burn < 1 {
+            let b = m.burn
+            let ignite = ss(0, 0.10, b)                            // catches almost at once
+            let decay  = 1 - ss(0.42, 1.0, b)                     // falls away over the back half
+            let flare  = ignite * (0.30 + 0.70 * decay)          // held high, then tapering (not a symmetric bell)
+            let burst  = (1 - ss(0.0, 0.20, b)) * ignite         // a fireball at ignition — the fuel catching
+            let queen  = m.kind == .queen
+            let rad = m.def.radius
+            let baseR = rad * (queen ? 1.5 : 1.35) * (0.80 + 0.55 * flare + 0.40 * burst)   // puff-chain envelope width
+            let tall: Float = (queen ? 1.9 : 1.4) * (0.70 + 0.40 * flare + 0.25 * burst)    // overshoots the ceiling → upper puffs pile into rolling smoke
+            // vigor drives puff opacity + brightness (colour is temperature, decoupled);
+            // ignites hard, holds, then dies as fuel spends. Queen burns hotter + sootier.
+            let vigor = (queen ? 1.20 : 1.0) * (0.55 + 0.55 * flare + 0.70 * burst)         // ~0.55 … 2.1
+            let e = GPURaymarch.FireEmitter(
+                p0: SIMD4(m.pos.x, 0.02, m.pos.y, baseR),
+                p1: SIMD4(0, 1, 0, tall),
+                p2: SIMD4(vigor, Float(i) * 1.7 + 0.3, 0, queen ? 1 : 0))   // vigor · seed · kind=pyre · smokeBias(Queen sootier)
+            let rel = m.pos - pp
+            pyres.append((rel.x * rel.x + rel.y * rel.y, e))
+        }
+        // keep the jet + the nearest pyres within a tight budget (a mine can ignite
+        // a whole pack; distant columns cull cheaply per ray but needn't be sent)
+        let budget = 16 - out.count
+        if pyres.count > budget { pyres.sort { $0.d < $1.d }; pyres = Array(pyres.prefix(budget)) }
+        out.append(contentsOf: pyres.map { $0.e })
         return out
     }
 
@@ -432,6 +504,11 @@ final class GPUWorldRenderer {
         u.grid.w = Float(dyn.count)
         u.extra.z = Float(eshadow)                                                   // leading emitter keys cast shadows
         if dyn.isEmpty { dyn = [GPURaymarch.GPULight(posR: .zero, colI: .zero)] }   // ≥1 elem for setBytes
+        // volumetric GPU fire — the jet + corpse pyres (count → tune.y, so the
+        // kernel skips the whole block, and the buffer, when nothing burns)
+        var fires = gatherFireEmitters(world)
+        u.tune.y = Float(fires.count)
+        if fires.isEmpty { fires = [GPURaymarch.FireEmitter(p0: .zero, p1: .zero, p2: .zero)] }   // ≥1 elem for setBytes
         // When the mesh Queen is active she's drawn by MeshCreature (rasterised
         // after the kernel) through ALL states — including death, which deforms the
         // SAME mesh (slump/topple/extinguish) rather than popping to an SDF corpse —
@@ -533,6 +610,7 @@ final class GPUWorldRenderer {
         enc.setBytes(&decals, length: MemoryLayout<SIMD4<Float>>.stride * decals.count, index: 4)
         enc.setBytes(&doorsPack, length: MemoryLayout<SIMD4<Float>>.stride * doorsPack.count, index: 5)
         enc.setBytes(&fitsPack, length: MemoryLayout<SIMD4<Float>>.stride * fitsPack.count, index: 6)
+        enc.setBytes(&fires, length: MemoryLayout<GPURaymarch.FireEmitter>.stride * fires.count, index: 7)
         let tg = MTLSize(width: 16, height: 16, depth: 1)
         let groups = MTLSize(width: (RenderConfig.width + 15) / 16, height: (RenderConfig.viewHeight + 15) / 16, depth: 1)
         enc.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)
