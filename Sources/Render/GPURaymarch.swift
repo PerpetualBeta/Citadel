@@ -377,6 +377,24 @@ enum GPURaymarch {
         }
         return clamp(res, 0.0, 1.0);
     }
+    // Cheap HARD occlusion for the colour FILL lights: march the horizontal wall
+    // field toward the light and block on the first wall or CLOSED DOOR between the
+    // surface and the light. Ignores floor/ceiling (the leak is through walls/doors,
+    // and skipping y avoids grazing self-shadow), early-outs on a hit, and — unlike a
+    // full soft shadow — is cheap enough to run on every fill. In-room fills with a
+    // clear path march to the light and stay lit, so the "fills spill freely" look is
+    // untouched; only cross-wall / cross-closed-door bleed is cut.
+    static inline float wallBlocked(float3 ro, float3 rd, float maxt,
+                                    texture2d<float> dt, sampler s, float2 mapWH) {
+        float t = 0.08;
+        for (int i = 0; i < 20; i++) {
+            if (t >= maxt) break;
+            float h = wallDist(dt, s, (ro + rd * t).xz, mapWH);
+            if (h < 0.03) return 0.0;               // a wall or a closed door blocks the light
+            t += max(h, 0.06);
+        }
+        return 1.0;
+    }
 
     static inline float wallEmissive(uint id) {
         if (id == 4u)  return 0.85;
@@ -1461,11 +1479,10 @@ enum GPURaymarch {
                 if (isCreature) lit += diffAlb * (pow(max(0.0, dot(V, -Ld)), 2.0) * 0.5 * ao) * lcol;
                 float nl = max(0.0, dot(n, Ld));
                 if (nl <= 0.0) continue;
-                float shd = 1.0;
-                if (li < nShadow) {
-                    shd = softShadow(p + n * 0.02, Ld, dl - 0.05, 18.0, dt, s, mapWH, ceilH);
-                    if (shd <= 0.0) continue;
-                }
+                float shd = (li < nShadow)
+                    ? softShadow(p + n * 0.02, Ld, dl - 0.05, 18.0, dt, s, mapWH, ceilH)   // keys: soft, full occlusion
+                    : wallBlocked(p + n * 0.02, Ld, dl - 0.05, dt, s, mapWH);              // fills: cheap wall/door occlusion (no cross-door bleed)
+                if (shd <= 0.0) continue;
                 lit += (diffAlb * nl + specBP(n, V, Ld, rough, f0)) * lcol * shd;
             }
             // wet-floor reflection — one grid-only bounce, Fresnel-weighted
