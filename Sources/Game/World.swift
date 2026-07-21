@@ -483,7 +483,15 @@ final class World {
             if !trodden {
                 for j in monsters.indices where j != i && monsters[j].alive && vlen(monsters[j].pos - cp) < rad { trodden = true; break }
             }
-            if trodden { monsters[i].ashed = min(2, monsters[i].ashed + dt / 0.4) }   // ~0.4s per stage
+            // a door closing on a burnt corpse collapses it to dust too — the same as
+            // treading through it — so the leaves never shut on a standing body that
+            // then pokes through the closed door.
+            var byDoor = false
+            if !trodden, map.inBounds(Int(cp.x), Int(cp.y)),
+               let d = map.doors[map.idx(Int(cp.x), Int(cp.y))], d.open < GameMap.passThreshold {
+                trodden = true; byDoor = true
+            }
+            if trodden { monsters[i].ashed = min(2, monsters[i].ashed + dt / (byDoor ? 0.22 : 0.4)) }   // door crush is quicker than a footstep
         }
         for bi in blasts.indices { blasts[bi].t -= dt }
         blasts.removeAll { $0.t <= 0 }
@@ -1930,6 +1938,7 @@ final class World {
                 var clear = true
                 for ox in [-rr, rr] { for oy in [-rr, rr] where map.blocksMovement(Int((c.x + ox).rounded(.down)), Int((c.y + oy).rounded(.down))) { clear = false } }
                 if !clear || blockedBySolidProp(c.x, c.y, rr) { continue }
+                if items.contains(where: { vlen($0.pos - c) < 0.9 }) { continue }   // never park a solid drum on a pickup (it would swallow/wall it off)
                 guard drumReachable(c) else { continue }
                 let d = vlen(c - home)
                 if d < bestD { bestD = d; best = c }
