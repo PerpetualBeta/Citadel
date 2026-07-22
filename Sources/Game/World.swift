@@ -1345,13 +1345,17 @@ final class World {
                 // test the whole FOOTPRINT (centre + a ring at the body radius), not
                 // just the centre — one lying half in a pool still gets dissolved.
                 if !m.dissolving && !m.gibbed {
-                    let r = m.def.radius + 0.4
+                    // dissolve only when the corpse's BODY is genuinely OVER the acid —
+                    // its footprint sampled at the collision radius (no padding, cardinals
+                    // only) — never merely NEAR a pool. A drone thus needs its own cell (or
+                    // a body-width overlap) to be hazard; a big carcass counts once its
+                    // bulk laps into the pool.
+                    let r = m.def.radius
+                    let pts: [(Float, Float)] = [(0, 0), (r, 0), (-r, 0), (0, r), (0, -r)]
                     var inAcid = false
-                    for oy in [-r, 0.0, r] where !inAcid {
-                        for ox in [-r, 0.0, r] {
-                            let cx = Int(m.pos.x + ox), cy = Int(m.pos.y + oy)
-                            if map.inBounds(cx, cy) && map.hazard[map.idx(cx, cy)] { inAcid = true; break }
-                        }
+                    for (ox, oy) in pts {
+                        let cx = Int(m.pos.x + ox), cy = Int(m.pos.y + oy)
+                        if map.inBounds(cx, cy), map.hazard[map.idx(cx, cy)] { inAcid = true; break }
                     }
                     if inAcid { m.dissolving = true }
                 }
