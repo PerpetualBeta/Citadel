@@ -221,6 +221,27 @@ enum MapGen {
             map.playerDir = atan2(Float(site.front.1 - wy), Float(site.front.0 - wx))
         }
 
+        // Never spawn nose-first into steel — "she should face the doors", not the
+        // elevator wall. The car path above already aims her at its open front; but a
+        // car-less start room keeps the random fallback dir, which can point straight
+        // at a wall. If the cell she looks at is solid, turn to the open cardinal with
+        // the longest clear run so she faces out into the level.
+        func openRun(_ dx: Int, _ dy: Int) -> Int {
+            var n = 0, x = Int(map.playerStart.x) + dx, y = Int(map.playerStart.y) + dy
+            while map.inBounds(x, y) && map.wall[map.idx(x, y)] == 0 { n += 1; x += dx; y += dy }
+            return n
+        }
+        let lookX = Int(map.playerStart.x) + Int(cos(map.playerDir).rounded())
+        let lookY = Int(map.playerStart.y) + Int(sin(map.playerDir).rounded())
+        if !(map.inBounds(lookX, lookY) && map.wall[map.idx(lookX, lookY)] == 0) {
+            let cardinals: [(Int, Int, Float)] = [(1, 0, 0), (0, 1, .pi / 2), (-1, 0, .pi), (0, -1, -.pi / 2)]
+            var best = map.playerDir, bestRun = -1
+            for (dx, dy, ang) in cardinals where openRun(dx, dy) > bestRun {
+                bestRun = openRun(dx, dy); best = ang
+            }
+            map.playerDir = best
+        }
+
         // ── exit in the last room: the colony elevator — or, on the citadel's
         //    LAST floor, the planet-jump TELEPORTER (there is nothing deeper
         //    to ride to) ──

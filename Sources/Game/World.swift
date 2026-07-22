@@ -690,17 +690,27 @@ final class World {
         }
     }
 
-    /// The props index of the NEAREST computer-desk terminal within reach, or nil.
-    /// Desks are set against a wall, so a modest radius reads as "at the
-    /// workstation" without catching a passer-by. The index identifies the specific
-    /// unit so each terminal shows its own single egg (then guru on re-use).
+    /// USE a desk only when squared up to it — the marine must be looking within
+    /// this half-cone of the unit's bearing, not merely near it.
+    private static let terminalFacingDot = cos(Float.pi / 4)   // 45° off dead-on
+
+    /// The props index of the NEAREST computer-desk terminal the marine is both
+    /// beside AND facing, or nil. Desks are set against a wall, so a modest radius
+    /// reads as "at the workstation" without catching a passer-by; the facing cone
+    /// stops him reading a unit he's walking past or standing with his back to. The
+    /// index identifies the specific unit so each terminal shows its own single egg
+    /// (then guru on re-use).
     private func nearestDeskTerminal(within r: Float) -> Int? {
+        let fwd = SIMD2<Float>(cos(player.dir), sin(player.dir))
         var best = -1
         var bestD = r * r
         for (i, p) in props.enumerated() where p.kind == .desk {
-            let dx = p.pos.x - player.pos.x, dy = p.pos.y - player.pos.y
-            let d = dx * dx + dy * dy
-            if d < bestD { bestD = d; best = i }
+            let rel = SIMD2<Float>(p.pos.x - player.pos.x, p.pos.y - player.pos.y)
+            let d = rel.x * rel.x + rel.y * rel.y
+            guard d < bestD, d > 1e-6 else { continue }
+            let facing = (rel.x * fwd.x + rel.y * fwd.y) / d.squareRoot()   // cos∠(facing, bearing)
+            guard facing >= Self.terminalFacingDot else { continue }
+            bestD = d; best = i
         }
         return best >= 0 ? best : nil
     }
@@ -1571,13 +1581,13 @@ final class World {
                 let standoff = m.def.radius + 0.8
                 if dist > standoff {
                     let desired = steerDir(m, index: i, canSee: canSee)
-                    steerMove(&m, desired: desired, dt: dt, fast: fast, speedScale: 1)
+                    steerMove(&m, index: i, desired: desired, dt: dt, fast: fast, speedScale: 1)
                 } else {
                     // hold at a readable distance and circle, so the lunge reads from a
                     // visible standoff instead of being pressed into the camera
                     let toP2 = player.pos - m.pos
                     let strafe = SIMD2(-toP2.y, toP2.x) * flankSign(i)
-                    steerMove(&m, desired: strafe, dt: dt, fast: fast, speedScale: 0.4)
+                    steerMove(&m, index: i, desired: strafe, dt: dt, fast: fast, speedScale: 0.4)
                 }
             }
             monsters[i] = m
@@ -1656,7 +1666,7 @@ final class World {
     /// Move along a desired direction with axis-separated wall sliding, plus a
     /// wall-follow fallback (slip 90° round a corner when blocked head-on) and
     /// door-opening — so they navigate the layout rather than grind into walls.
-    private func steerMove(_ m: inout Monster, desired: SIMD2<Float>, dt: Float, fast: Float, speedScale: Float) {
+    private func steerMove(_ m: inout Monster, index i: Int, desired: SIMD2<Float>, dt: Float, fast: Float, speedScale: Float) {
         let dl = vlen(desired)
         if dl < 0.001 { return }
         let strideFrom = m.pos                       // walk cycle advances with ground actually covered
@@ -1667,6 +1677,20 @@ final class World {
         m.wallHold = max(0, m.wallHold - dt)        // tick down the corner-follow commitment
         func free(_ x: Float, _ y: Float) -> Bool {
             if blockedBySolidProp(x, y, r) { return false }                  // furniture/drums are solid for aliens too
+            // Don't climb into another live drone — queue single-file through tight
+            // gaps (this is what stops two of them jamming a doorway). A step that
+            // INCREASES separation is always allowed, so an existing overlap resolves
+            // rather than deadlocking.
+            for j in monsters.indices where j != i {
+                let o = monsters[j]
+                if !o.alive || !o.awake || o.kind == .queen { continue }
+                let want = r + o.def.radius
+                let ndx = x - o.pos.x, ndy = y - o.pos.y
+                let dNew = ndx * ndx + ndy * ndy
+                if dNew >= want * want { continue }                          // clear of this body → fine
+                let cdx = m.pos.x - o.pos.x, cdy = m.pos.y - o.pos.y
+                if dNew < cdx * cdx + cdy * cdy { return false }             // pressing deeper in → block
+            }
             if m.def.flying { return !map.blocksMovement(Int(x), Int(y)) }   // flyers ignore hazard, not walls
             // the pools burn THEM too: a drone treats acid as a wall and routes
             // around it — unless it's already standing in one (it must climb out)

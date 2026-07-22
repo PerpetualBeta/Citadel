@@ -193,24 +193,15 @@ final class Automap3D {
         return v
     }
 
-    /// True once the marine has passed the exit on his travels — its cell, or any of
-    /// the eight around it, has been seen. (Static so the EXIT caption agrees.)
-    static func exitSeen(_ map: GameMap) -> Bool {
-        guard map.exitCell >= 0 else { return false }
-        let ex = map.exitCell % map.w, ey = map.exitCell / map.w
-        for dy in -1...1 { for dx in -1...1 {
-            let nx = ex + dx, ny = ey + dy
-            if map.inBounds(nx, ny) && map.visited[map.idx(nx, ny)] { return true }
-        } }
-        return false
-    }
-
-    /// Whether the exit marker should show: the Queen is dead AND the marine has
-    /// passed the exit. (The exit stays sealed until she falls, so it's only a nav
-    /// aid from that point — matching the HUD objective caret.)
+    /// Whether the exit marker should show. The exit stays sealed until the Queen
+    /// falls, and from that point reaching it is the whole objective — so it surfaces
+    /// on the map exactly when the HUD objective caret does: the moment no Queen is
+    /// alive. (The former "must have walked the eight cells around the exit" gate hid
+    /// it even at point-blank range, because `visited` is only a sparse per-step
+    /// breadcrumb, never a line-of-sight reveal.)
     static func exitVisible(_ world: World) -> Bool {
-        let queenDead = !world.monsters.contains { $0.kind == .queen && $0.alive }
-        return queenDead && exitSeen(world.map)
+        guard world.map.exitCell >= 0 else { return false }
+        return !world.monsters.contains { $0.kind == .queen && $0.alive }
     }
 
     /// The DYNAMIC markers — rebuilt every frame so the marine's pillar tracks his
@@ -261,11 +252,16 @@ final class Automap3D {
         }
     }
 
-    // ── camera math (left-handed, camera looks +z, depth 0…1) ────────────────
+    // ── camera math (camera looks +z, depth 0…1) ─────────────────────────────
+    // Right is built as cross(f, up) — the SAME handedness the FPS camera uses
+    // (GPUWorldRenderer sets right = cross(fwd, up)). The game grid is y-DOWN (the
+    // row index grows downward), so a naive y-up lookAt (cross(up, f)) renders the
+    // whole map MIRRORED against what the marine sees in first person. Matching the
+    // FPS right vector keeps left/right on the map agreeing with the world.
     private static func lookAt(eye: SIMD3<Float>, center: SIMD3<Float>, up: SIMD3<Float>) -> simd_float4x4 {
         let f = normalize(center - eye)
-        let r = normalize(cross(up, f))
-        let u = cross(f, r)
+        let r = normalize(cross(f, up))
+        let u = cross(r, f)
         return simd_float4x4(SIMD4(r.x, u.x, f.x, 0),
                              SIMD4(r.y, u.y, f.y, 0),
                              SIMD4(r.z, u.z, f.z, 0),
