@@ -632,7 +632,17 @@ final class MeshCreature {
         let fb = canvas.framebuffer
         for i in 0..<W * H {
             if alphaOf(mcol[i]) > 2 && mdep[i] < depth[i] {
-                fb[i] = mcol[i] | 0xFF00_0000
+                let mc = mcol[i] | 0xFF00_0000
+                // bright FLAME in front of a creature obscures it — the iris contracts,
+                // you can't make out a body through fire. The pixel the mesh is about to
+                // overwrite already holds the bloomed fire; detect ORANGE flame in it
+                // (bright, red ≫ blue — not lamp-white) and keep the fire over the
+                // creature rather than punching a crisp silhouette through the flames.
+                let bg = fb[i]
+                let rr = Float(bg & 0xFF) / 255, bl = Float((bg >> 16) & 0xFF) / 255
+                let brt = max(0, min(1, (rr - 0.45) / 0.40))
+                let fireness = max(0, min(1, (rr - bl) * 1.6)) * (brt * brt * (3 - 2 * brt))
+                fb[i] = fireness > 0.02 ? mixRGBA(mc, bg, min(0.95, fireness)) : mc
                 depth[i] = mdep[i]
             }
         }
@@ -819,7 +829,17 @@ final class MeshCreature {
         let fb = canvas.framebuffer
         for i in 0..<W * H {
             if alphaOf(mcol[i]) > 2 && mdep[i] < depth[i] {
-                fb[i] = mcol[i] | 0xFF00_0000
+                let mc = mcol[i] | 0xFF00_0000
+                // bright FLAME in front of a creature obscures it — the iris contracts,
+                // you can't make out a body through fire. The pixel the mesh is about to
+                // overwrite already holds the bloomed fire; detect ORANGE flame in it
+                // (bright, red ≫ blue — not lamp-white) and keep the fire over the
+                // creature rather than punching a crisp silhouette through the flames.
+                let bg = fb[i]
+                let rr = Float(bg & 0xFF) / 255, bl = Float((bg >> 16) & 0xFF) / 255
+                let brt = max(0, min(1, (rr - 0.45) / 0.40))
+                let fireness = max(0, min(1, (rr - bl) * 1.6)) * (brt * brt * (3 - 2 * brt))
+                fb[i] = fireness > 0.02 ? mixRGBA(mc, bg, min(0.95, fireness)) : mc
                 depth[i] = mdep[i]
             }
         }
