@@ -15,21 +15,27 @@ war; this is the retake on foot.
 
 ## Rendered in code, in real time
 
-Citadel ships **no textures, no sprites, no 3-D models and no level files**. The
-world and everything in it is a real-time **GPU signed-distance-field
-raymarcher** (a Metal compute kernel): the iron-and-steel architecture, the
-wall-baked pipework and steelwork, the fuel drums and recharge panels, and the
-**biomechanical aliens themselves** are all true 3-D SDF geometry, lit and
-colour-graded on the GPU. The HUD and front-end screens are drawn into a
-software 2-D canvas and composited on top, then upscaled aspect-correct and
-letterboxed.
+Citadel's world is drawn in real time by a **GPU signed-distance-field
+raymarcher** (a Metal compute kernel) — **no textures, no sprites, no level
+files.** The iron-and-steel architecture, the wall-baked pipework and steelwork,
+the fuel drums and recharge panels, the fire, and the pickups are all true 3-D
+SDF geometry, lit and colour-graded on the GPU. The HUD and front-end screens are
+drawn into a software 2-D canvas and composited on top, then upscaled
+aspect-correct and letterboxed.
 
-The one deliberate exception is **audio**. Citadel's atmosphere leans too hard on
-sound to synthesise convincingly, so it ships a small, curated set of **CC0 /
-CC-BY** samples — weapon fire, the aliens' voices, and a reactive ambient bed
-that thickens as the swarm closes in — all credited in [CREDITS.md](CREDITS.md).
-(A from-scratch synthesiser remains in the binary as a fallback for any missing
-sample.)
+Three deliberate exceptions earn their place:
+
+- **The bestiary.** The biomechanical aliens — the **DRONE** and the **QUEEN** —
+  ship as **3-D meshes**: their organic, ridged anatomy reads better sculpted
+  than raymarched. They're rasterised into the SDF scene over matched depth, with
+  per-pixel lighting, so they take fire, burn and dissolve like everything else.
+- **Two hero plates.** A single cinematic image backs the title screen and the
+  Hall of the Fallen.
+- **Audio.** Citadel's atmosphere leans too hard on sound to synthesise
+  convincingly, so it ships a small, curated set of **CC0 / CC-BY** samples —
+  weapon fire, the aliens' voices, and a reactive ambient bed that thickens as the
+  swarm closes in — all credited in [CREDITS.md](CREDITS.md). (A from-scratch
+  synthesiser remains in the binary as a fallback for any missing sample.)
 
 Levels are **procedurally generated** and **verified solvable** with a keyed
 flood-fill, so every floor is beatable: rooms and corridors, doors and
@@ -77,10 +83,14 @@ fight.
 
 ## Screenshots
 
+![The flamethrower, mid-gout, a drone caught in the stream](docs/screenshots/13-fire.png)
+
+*The flamethrower opens up in an occupied ARC control room.*
+
 | | |
 |---|---|
 | ![Combat and the visor HUD](docs/screenshots/02-combat.png) | ![Field intel — the Queen](docs/screenshots/04-intel-2.png) |
-| The visor HUD, live in an occupied ARC control room. | FIELD INTEL: the Queen, front and profile. |
+| The plasma rifle and the visor HUD. | FIELD INTEL: the Queen, front and profile. |
 | ![Mission briefing](docs/screenshots/08-briefing.png) | ![The Hall of the Fallen](docs/screenshots/10-highscores.png) |
 | The occupation, in brief. | The Hall of the Fallen. |
 

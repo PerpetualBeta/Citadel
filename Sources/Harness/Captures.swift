@@ -66,6 +66,34 @@ enum Captures {
         HUD().draw(world, into: game)
         save(game, "combat")
 
+        // fire — the build's money shot: the flamethrower's fat gout down the aim,
+        // a drone caught in the stream and burning. Reuses the combat world (its
+        // sightline is already validated clear); staged directly so it's
+        // deterministic. Explicit filename so the 03–09 doc numbering doesn't shift.
+        world.drums.removeAll()                                   // clear the plasma-shot's drum
+        world.player.giveWeapon(.flamethrower); world.player.giveAmmo(.fuel, 200)
+        world.player.current = .flamethrower
+        world.player.fireAnim = 0.12; world.player.muzzle = 0.06
+        let fdir = SIMD2<Float>(cos(world.player.dir), sin(world.player.dir))
+        // a drone in the stream, mid-pyre (0 < burn < 1 → a live, flaring fire)
+        if let di = world.monsters.firstIndex(where: { $0.kind == .alien }) {
+            world.monsters[di].pos = world.player.pos + fdir * 2.4
+            world.monsters[di].state = .dead
+            world.monsters[di].burn = 0.4
+        }
+        // the live jet down the aim, clipped at the first wall (as World.fire does)
+        let fnozzle = world.player.pos + fdir * 0.35 + SIMD2(-fdir.y, fdir.x) * Viewmodel.anchorRight
+        var freach: Float = 6, fprobe = fnozzle, ftrav: Float = 0
+        while ftrav < 6 { fprobe += fdir * 0.15; ftrav += 0.15
+            if world.map.blocksMovement(Int(fprobe.x), Int(fprobe.y)) { freach = ftrav; break } }
+        world.flameJet = World.FlameJet(t: 0.10, nozzle: fnozzle, dir: fdir, reach: freach)
+        let fire = Canvas2D()
+        draw3D(world, into: fire)
+        HUD().draw(world, into: fire)
+        writePNG(fire.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: scale,
+                 to: dir.appendingPathComponent("13-fire.png"))
+        print("  wrote 13-fire.png")
+
         // atmosphere — drop the marine into the darkest cell of the level, facing
         // the Queen's lair, so the auto-headlamp does the seeing. Showcases the
         // dark pass; explicit filename so the 03–09 doc references don't shift.
