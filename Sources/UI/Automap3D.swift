@@ -76,7 +76,7 @@ final class Automap3D {
         let map = world.map
         let sig = world.level &* 1_000_003 &+ map.visited.reduce(0) { $0 + ($1 ? 1 : 0) }
         if sig != cachedSig {
-            let verts = buildGeometry(world)
+            let verts = buildStatic(world)
             cachedCount = verts.count
             cachedBuf = verts.isEmpty ? nil
                 : device.makeBuffer(bytes: verts, length: MemoryLayout<AMVert>.stride * verts.count, options: .storageModeShared)
@@ -108,10 +108,17 @@ final class Automap3D {
         enc.setRenderPipelineState(pipe)
         enc.setDepthStencilState(dss)
         enc.setCullMode(.none)
-        enc.setVertexBuffer(vbuf, offset: 0, index: 0)
         enc.setVertexBytes(&u, length: MemoryLayout<AMUniforms>.stride, index: 1)
         enc.setFragmentBytes(&u, length: MemoryLayout<AMUniforms>.stride, index: 1)
+        // static explored mesh (cached), then the live markers (player / exit / keys)
+        enc.setVertexBuffer(vbuf, offset: 0, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: cachedCount)
+        let markers = buildMarkers(world)
+        if !markers.isEmpty,
+           let mbuf = device.makeBuffer(bytes: markers, length: MemoryLayout<AMVert>.stride * markers.count, options: .storageModeShared) {
+            enc.setVertexBuffer(mbuf, offset: 0, index: 0)
+            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: markers.count)
+        }
         enc.endEncoding()
         cmd.commit(); cmd.waitUntilCompleted()
 
@@ -143,73 +150,98 @@ final class Automap3D {
         return (SIMD3(cx, Self.wallH * 0.35, cz), max(6, max(maxX - minX, maxZ - minZ)))
     }
 
-    private func buildGeometry(_ world: World) -> [AMVert] {
+    // ── vertex emit helpers (shared by the static mesh + the dynamic markers) ──
+    private func emitQuad(_ v: inout [AMVert], _ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>, _ d: SIMD3<Float>, _ nn: SIMD3<Float>, _ col: SIMD3<Float>) {
+        for p in [a, b, c, a, c, d] {
+            v.append(AMVert(px: p.x, py: p.y, pz: p.z, nx: nn.x, ny: nn.y, nz: nn.z, r: col.x, g: col.y, b: col.z))
+        }
+    }
+    private func emitPrism(_ v: inout [AMVert], _ cx: Float, _ cz: Float, _ hw: Float, _ ht: Float, _ col: SIMD3<Float>) {
+        let x0 = cx - hw, x1 = cx + hw, z0 = cz - hw, z1 = cz + hw, y1 = ht
+        emitQuad(&v, SIMD3(x0, 0, z0), SIMD3(x0, 0, z1), SIMD3(x0, y1, z1), SIMD3(x0, y1, z0), SIMD3(-1, 0, 0), col)
+        emitQuad(&v, SIMD3(x1, 0, z1), SIMD3(x1, 0, z0), SIMD3(x1, y1, z0), SIMD3(x1, y1, z1), SIMD3(1, 0, 0), col)
+        emitQuad(&v, SIMD3(x0, 0, z0), SIMD3(x1, 0, z0), SIMD3(x1, y1, z0), SIMD3(x0, y1, z0), SIMD3(0, 0, -1), col)
+        emitQuad(&v, SIMD3(x1, 0, z1), SIMD3(x0, 0, z1), SIMD3(x0, y1, z1), SIMD3(x1, y1, z1), SIMD3(0, 0, 1), col)
+        emitQuad(&v, SIMD3(x0, y1, z0), SIMD3(x1, y1, z0), SIMD3(x1, y1, z1), SIMD3(x0, y1, z1), SIMD3(0, 1, 0), col)
+    }
+
+    /// The explored floor + its bordering walls — the fog-of-war STATIC mesh, cached
+    /// by the visited-cell count (it only changes as the marine explores).
+    private func buildStatic(_ world: World) -> [AMVert] {
         let map = world.map
         var v: [AMVert] = []
         v.reserveCapacity(map.w * map.h * 8)
-
-        func quad(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>, _ d: SIMD3<Float>, _ nn: SIMD3<Float>, _ col: SIMD3<Float>) {
-            for p in [a, b, c, a, c, d] {
-                v.append(AMVert(px: p.x, py: p.y, pz: p.z, nx: nn.x, ny: nn.y, nz: nn.z, r: col.x, g: col.y, b: col.z))
-            }
-        }
-        func prism(_ cx: Float, _ cz: Float, _ hw: Float, _ ht: Float, _ col: SIMD3<Float>) {
-            let x0 = cx - hw, x1 = cx + hw, z0 = cz - hw, z1 = cz + hw, y1 = ht
-            quad(SIMD3(x0, 0, z0), SIMD3(x0, 0, z1), SIMD3(x0, y1, z1), SIMD3(x0, y1, z0), SIMD3(-1, 0, 0), col)
-            quad(SIMD3(x1, 0, z1), SIMD3(x1, 0, z0), SIMD3(x1, y1, z0), SIMD3(x1, y1, z1), SIMD3(1, 0, 0), col)
-            quad(SIMD3(x0, 0, z0), SIMD3(x1, 0, z0), SIMD3(x1, y1, z0), SIMD3(x0, y1, z0), SIMD3(0, 0, -1), col)
-            quad(SIMD3(x1, 0, z1), SIMD3(x0, 0, z1), SIMD3(x0, y1, z1), SIMD3(x1, y1, z1), SIMD3(0, 0, 1), col)
-            quad(SIMD3(x0, y1, z0), SIMD3(x1, y1, z0), SIMD3(x1, y1, z1), SIMD3(x0, y1, z1), SIMD3(0, 1, 0), col)
-        }
-
         let floorCol = SIMD3<Float>(0.17, 0.21, 0.29)
         let steelCol = SIMD3<Float>(0.47, 0.59, 0.77)
         let h = Self.wallH
-
         func wallColor(_ nx: Int, _ ny: Int) -> SIMD3<Float> {
             guard map.inBounds(nx, ny), let door = map.doors[map.idx(nx, ny)] else { return steelCol }
             if let lock = door.locked { return keyRGB(lock) }
             return SIMD3(0.91, 0.77, 0.38)           // unlocked door — amber
         }
         func solid(_ x: Int, _ y: Int) -> Bool { !map.inBounds(x, y) || map.wall[map.idx(x, y)] != 0 }
-
         for y in 0..<map.h { for x in 0..<map.w {
             let i = map.idx(x, y)
             guard map.visited[i], map.wall[i] == 0 else { continue }
             let fx = Float(x), fz = Float(y)
-            // explored floor tile
-            quad(SIMD3(fx, 0, fz), SIMD3(fx + 1, 0, fz), SIMD3(fx + 1, 0, fz + 1), SIMD3(fx, 0, fz + 1), SIMD3(0, 1, 0), floorCol)
-            // a wall face on each solid side (fog-of-war: only walls that border seen floor)
-            if solid(x + 1, y) { quad(SIMD3(fx + 1, 0, fz), SIMD3(fx + 1, 0, fz + 1), SIMD3(fx + 1, h, fz + 1), SIMD3(fx + 1, h, fz), SIMD3(-1, 0, 0), wallColor(x + 1, y)) }
-            if solid(x - 1, y) { quad(SIMD3(fx, 0, fz + 1), SIMD3(fx, 0, fz), SIMD3(fx, h, fz), SIMD3(fx, h, fz + 1), SIMD3(1, 0, 0), wallColor(x - 1, y)) }
-            if solid(x, y + 1) { quad(SIMD3(fx + 1, 0, fz + 1), SIMD3(fx, 0, fz + 1), SIMD3(fx, h, fz + 1), SIMD3(fx + 1, h, fz + 1), SIMD3(0, 0, -1), wallColor(x, y + 1)) }
-            if solid(x, y - 1) { quad(SIMD3(fx, 0, fz), SIMD3(fx + 1, 0, fz), SIMD3(fx + 1, h, fz), SIMD3(fx, h, fz), SIMD3(0, 0, 1), wallColor(x, y - 1)) }
+            emitQuad(&v, SIMD3(fx, 0, fz), SIMD3(fx + 1, 0, fz), SIMD3(fx + 1, 0, fz + 1), SIMD3(fx, 0, fz + 1), SIMD3(0, 1, 0), floorCol)
+            if solid(x + 1, y) { emitQuad(&v, SIMD3(fx + 1, 0, fz), SIMD3(fx + 1, 0, fz + 1), SIMD3(fx + 1, h, fz + 1), SIMD3(fx + 1, h, fz), SIMD3(-1, 0, 0), wallColor(x + 1, y)) }
+            if solid(x - 1, y) { emitQuad(&v, SIMD3(fx, 0, fz + 1), SIMD3(fx, 0, fz), SIMD3(fx, h, fz), SIMD3(fx, h, fz + 1), SIMD3(1, 0, 0), wallColor(x - 1, y)) }
+            if solid(x, y + 1) { emitQuad(&v, SIMD3(fx + 1, 0, fz + 1), SIMD3(fx, 0, fz + 1), SIMD3(fx, h, fz + 1), SIMD3(fx + 1, h, fz + 1), SIMD3(0, 0, -1), wallColor(x, y + 1)) }
+            if solid(x, y - 1) { emitQuad(&v, SIMD3(fx, 0, fz), SIMD3(fx + 1, 0, fz), SIMD3(fx + 1, h, fz), SIMD3(fx, h, fz), SIMD3(0, 0, 1), wallColor(x, y - 1)) }
         } }
+        return v
+    }
 
-        // markers — vertical prisms so they read from any orbit angle
-        if map.exitCell >= 0 {
+    /// True once the marine has passed the exit on his travels — its cell, or any of
+    /// the eight around it, has been seen. (Static so the EXIT caption agrees.)
+    static func exitSeen(_ map: GameMap) -> Bool {
+        guard map.exitCell >= 0 else { return false }
+        let ex = map.exitCell % map.w, ey = map.exitCell / map.w
+        for dy in -1...1 { for dx in -1...1 {
+            let nx = ex + dx, ny = ey + dy
+            if map.inBounds(nx, ny) && map.visited[map.idx(nx, ny)] { return true }
+        } }
+        return false
+    }
+
+    /// Whether the exit marker should show: the Queen is dead AND the marine has
+    /// passed the exit. (The exit stays sealed until she falls, so it's only a nav
+    /// aid from that point — matching the HUD objective caret.)
+    static func exitVisible(_ world: World) -> Bool {
+        let queenDead = !world.monsters.contains { $0.kind == .queen && $0.alive }
+        return queenDead && exitSeen(world.map)
+    }
+
+    /// The DYNAMIC markers — rebuilt every frame so the marine's pillar tracks his
+    /// live position and the exit appears the moment the Queen falls.
+    private func buildMarkers(_ world: World) -> [AMVert] {
+        let map = world.map
+        let h = Self.wallH
+        var v: [AMVert] = []
+        // exit — Queen-gated + discovered
+        if map.exitCell >= 0, Self.exitVisible(world) {
             let ex = map.exitCell % map.w, ey = map.exitCell / map.w
-            let seen = [(1, 0), (-1, 0), (0, 1), (0, -1)].contains { map.inBounds(ex + $0.0, ey + $0.1) && map.visited[map.idx(ex + $0.0, ey + $0.1)] }
-            if seen { prism(Float(ex) + 0.5, Float(ey) + 0.5, 0.22, h * 1.6, SIMD3(0.38, 0.89, 0.47)) }
+            emitPrism(&v, Float(ex) + 0.5, Float(ey) + 0.5, 0.22, h * 1.6, SIMD3(0.38, 0.89, 0.47))
         }
+        // uncollected keys the marine has seen
         for it in world.items where !it.taken {
             guard let kc = keyColorOf(it.kind) else { continue }
             let cx = Int(it.pos.x), cy = Int(it.pos.y)
             guard map.inBounds(cx, cy), map.visited[map.idx(cx, cy)] else { continue }
-            prism(it.pos.x, it.pos.y, 0.16, h * 1.3, keyRGB(kc))
+            emitPrism(&v, it.pos.x, it.pos.y, 0.16, h * 1.3, keyRGB(kc))
         }
-        // the marine — a bright CYAN pillar (distinct from the green exit) plus a floor
-        // wedge pointing his facing
+        // the marine — a bright CYAN pillar (distinct from the green exit) plus a
+        // floor wedge pointing his facing. Rebuilt live so his position is correct.
         let px = world.player.pos.x, pz = world.player.pos.y
-        prism(px, pz, 0.17, h * 1.7, SIMD3(0.30, 0.82, 1.0))
+        emitPrism(&v, px, pz, 0.17, h * 1.7, SIMD3(0.30, 0.82, 1.0))
         let fdir = SIMD2<Float>(cos(world.player.dir), sin(world.player.dir))
         let side = SIMD2<Float>(-fdir.y, fdir.x)
         let tip = SIMD2(px, pz) + fdir * 0.55
         let bl = SIMD2(px, pz) - fdir * 0.10 + side * 0.24
         let br = SIMD2(px, pz) - fdir * 0.10 - side * 0.24
         let pc = SIMD3<Float>(0.55, 0.92, 1.0)
-        quad(SIMD3(tip.x, 0.02, tip.y), SIMD3(bl.x, 0.02, bl.y), SIMD3(br.x, 0.02, br.y), SIMD3(tip.x, 0.02, tip.y), SIMD3(0, 1, 0), pc)
-
+        emitQuad(&v, SIMD3(tip.x, 0.02, tip.y), SIMD3(bl.x, 0.02, bl.y), SIMD3(br.x, 0.02, br.y), SIMD3(tip.x, 0.02, tip.y), SIMD3(0, 1, 0), pc)
         return v
     }
 

@@ -63,13 +63,10 @@ enum Automap {
     /// Float the EXIT caption over the exit pillar, projected through the live camera.
     private static func drawExitLabel(_ c: Canvas2D, _ world: World, _ mvp: simd_float4x4) {
         let map = world.map
-        guard map.exitCell >= 0 else { return }
+        guard map.exitCell >= 0, Automap3D.exitVisible(world) else { return }   // Queen dead + passed it
         let ex = map.exitCell % map.w, ey = map.exitCell / map.w
-        let seen = [(1, 0), (-1, 0), (0, 1), (0, -1)].contains {
-            map.inBounds(ex + $0.0, ey + $0.1) && map.visited[map.idx(ex + $0.0, ey + $0.1)]
-        }
         let top = SIMD3<Float>(Float(ex) + 0.5, 1.75, Float(ey) + 0.5)
-        guard seen, let (sx, sy) = Automap3D.project(top, mvp, W, H) else { return }
+        guard let (sx, sy) = Automap3D.project(top, mvp, W, H) else { return }
         c.labelCentered2("EXIT", sx - uiS(26), uiS(52), sy - uiS(22), size: uiSf(13), color: exitCol, weight: .bold)
     }
 
@@ -131,16 +128,11 @@ enum Automap {
         }
 
         // the exit switch, once its cell has been glimpsed from an explored neighbour
-        if map.inBounds(map.exitCell % map.w, map.exitCell / map.w), map.exitCell >= 0 {
+        if map.exitCell >= 0, Automap3D.exitVisible(world) {          // Queen dead + passed it
             let ex = map.exitCell % map.w, ey = map.exitCell / map.w
-            let seen = [(1, 0), (-1, 0), (0, 1), (0, -1)].contains {
-                map.inBounds(ex + $0.0, ey + $0.1) && map.visited[map.idx(ex + $0.0, ey + $0.1)]
-            }
-            if seen {
-                let cx = SX(Float(ex) + 0.5), cy = SY(Float(ey) + 0.5)
-                marker(c, cx, cy, uiS(6), exitCol)
-                c.labelCentered2("EXIT", cx - uiS(20), uiS(40), cy - uiS(24), size: uiSf(13), color: exitCol, weight: .bold)
-            }
+            let cx = SX(Float(ex) + 0.5), cy = SY(Float(ey) + 0.5)
+            marker(c, cx, cy, uiS(6), exitCol)
+            c.labelCentered2("EXIT", cx - uiS(20), uiS(40), cy - uiS(24), size: uiSf(13), color: exitCol, weight: .bold)
         }
 
         // keys still on the floor (navigation-critical), once their cell is seen
