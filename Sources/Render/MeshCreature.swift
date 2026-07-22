@@ -24,7 +24,7 @@
 // Live-tunable defaults (read each draw): MeshQueenHeight, MeshQueenLight,
 // MeshQueenAnimSpeed, MeshQueenFront0.
 //
-// Gated by FeatureFlags.meshQueen; asset in Resources/queen.usdz (+ _basecolor).
+// The permanent creature renderer; asset in Resources/queen.usdz (+ _basecolor).
 
 import Foundation
 import Metal

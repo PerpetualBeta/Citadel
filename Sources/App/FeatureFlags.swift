@@ -28,15 +28,6 @@ enum FeatureFlags {
     static var revealMap: Bool  { d.bool(forKey: "RevealMap") }   // automap fully revealed
     static var fastMonsters: Bool { d.bool(forKey: "FastMonsters") } // -nightmare- speed
 
-    /// Render the Queen as a textured 3D mesh (Resources/queen.usdz) instead of
-    /// the native SDF sculpt. ON by default while we evaluate the 3D-asset
-    /// direction; set false to A/B against the SDF queen:
-    ///   defaults write cc.jorviksoftware.Citadel MeshQueen -bool false
-    static var meshQueen: Bool { d.object(forKey: "MeshQueen") == nil ? true : d.bool(forKey: "MeshQueen") }
-    /// Drones drawn as 3-D textured meshes (Tripo) instead of SDF. Default ON;
-    ///   defaults write cc.jorviksoftware.Citadel MeshDrone -bool false   to A/B vs SDF.
-    static var meshDrone: Bool { d.object(forKey: "MeshDrone") == nil ? true : d.bool(forKey: "MeshDrone") }
-
     /// Volumetric GPU fire — the flamethrower jet and corpse pyres rendered as
     /// procedural, domain-warped flame tongues in the raymarch kernel (plus their
     /// flickering firelight), instead of the old CPU additive-orb billboards.
@@ -47,11 +38,13 @@ enum FeatureFlags {
     /// Overhead-lamp brightness. Scales the ceiling lamps as a UNIT — their
     /// emissive glow AND the warm pools they cast onto the world and the weapon —
     /// leaving the headlamp, the ambient sector fill, and the dramatic point
-    /// lights alone. 1.0 = as-authored; lower it to darken the early floors, which
-    /// light brighter than this game wants. Read live (next frame):
-    ///   defaults write cc.jorviksoftware.Citadel OverheadLight -float 0.7
+    /// lights alone. 0.5 = the shipping default: the moody look the game is tuned
+    /// for. The original authored lamps sit at 1.0, which washes out the early
+    /// floors — raise toward it only if you want them brighter. Read live (next
+    /// frame):
+    ///   defaults write cc.jorviksoftware.Citadel OverheadLight -float 1.0
     static var overheadLight: Float {
-        (d.object(forKey: "OverheadLight") as? Double).map { Float($0) } ?? 1.0
+        (d.object(forKey: "OverheadLight") as? Double).map { Float($0) } ?? 0.5
     }
 
     /// Force a specific level seed for testing (0 = off, use the run's seed).

@@ -62,8 +62,12 @@ final class GPUWorldRenderer {
         self.queue = q
         self.raymarch = p.raymarch
         self.post = p.post
-        self.meshCreature = FeatureFlags.meshQueen ? MeshCreature(device: device) : nil
-        self.meshDrone = FeatureFlags.meshDrone ? MeshCreature(device: device, kind: .drone) : nil
+        // The bestiary ships as 3-D meshes, permanently — the queen and the drone
+        // (the game's only two creatures). The optionals remain a load-failure
+        // safety net; the SDF instance renderer (creatureField) still draws every
+        // other dynamic object — drums, sockets, mines, pickups, projectiles.
+        self.meshCreature = MeshCreature(device: device)
+        self.meshDrone = MeshCreature(device: device, kind: .drone)
     }
 
     /// Upload `arr` into a reused grow-only shared buffer and return it for the
