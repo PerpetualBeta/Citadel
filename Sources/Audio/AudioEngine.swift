@@ -706,13 +706,15 @@ final class AudioEngine {
     // ── arcade mini-game (the Space Invaders easter egg) — pure synth bleeps, no
     //    samples; keeps the terminal toy self-contained and true to the era ──
     func arcadeShoot() { trigger(wave: AudioEngine.square, f0: 820, f1: 1500, dur: 0.08, amp: 0.18, attack: 0.001) }
-    /// A layered pixel-splat, not a bare pop: a bright crack transient, a pitched
-    /// zap sweeping down, a little low thud for weight, and a short reverb tail.
+    /// A crunchy two-voice splat: a bright noise CRACK then a fast exponential
+    /// pitch-drop CRUNCH. No reverb send and no third "thud" voice — so a cluster
+    /// of rapid kills stays clean and cheap instead of smearing into mud and
+    /// starving the voice pool. Enqueued as ONE batch (a single lock, not four).
     func arcadeInvaderKilled() {
-        add(AudioEngine.noise,    1,   1,  0.05, 0.15, attack: 0.001, lp: 0.95)              // bright crack
-        add(AudioEngine.square, 560,  70,  0.16, 0.12, attack: 0.001)                        // pitched zap down
-        add(AudioEngine.triangle, 240, 44, 0.18, 0.10, attack: 0.002, send: 0.22)            // low thud + tail
-        add(AudioEngine.noise,    1,   1,  0.20, 0.11, attack: 0.004, lp: 0.45, send: 0.35)  // debris tail (reverb)
+        addBatch([
+            makeVoice(AudioEngine.noise,   1,   1, 0.035, 0.20, attack: 0.0004, lp: 0.85),   // crack
+            makeVoice(AudioEngine.square, 620,  90, 0.085, 0.16, attack: 0.001),             // pitch-drop crunch
+        ])
     }
     /// The classic four-note descending march — call once per formation step with a
     /// cycling index; the tempo is set by how often the caller steps (it speeds up
@@ -721,15 +723,15 @@ final class AudioEngine {
         let notes: [Float] = [174, 155, 138, 130]
         trigger(wave: AudioEngine.square, f0: notes[((step % 4) + 4) % 4], dur: 0.10, amp: 0.15, attack: 0.002)
     }
-    /// The dramatic death: a blast, the classic warbling descending wail (two
-    /// slightly detuned squares that beat against each other), a deep boom for the
-    /// gut-punch, and a smoky reverb tail. A real explosion, not a pop.
+    /// The player's death: a darker, weightier blast then a triangle wail sweeping
+    /// down into sub-bass — the "oomph" is the sweep's destination (46 Hz), not a
+    /// separate boom voice. Two voices, no reverb send, so repeated deaths can't
+    /// accumulate a tail in the echo line. Enqueued as one batch.
     func arcadePlayerHit() {
-        add(AudioEngine.noise,    1,   1, 0.45, 0.24, attack: 0.002, lp: 0.6,  send: 0.5)   // the blast
-        add(AudioEngine.square, 420,  46, 0.70, 0.16, attack: 0.002, send: 0.3)             // descending wail…
-        add(AudioEngine.square, 398,  42, 0.72, 0.15, attack: 0.002, send: 0.3)             // …detuned twin → warble
-        add(AudioEngine.sine,   130,  28, 0.85, 0.30, attack: 0.004, send: 0.25)            // deep boom (the oomph)
-        add(AudioEngine.noise,    1,   1, 0.95, 0.13, attack: 0.03,  lp: 0.26, send: 0.4)   // smoky low tail
+        addBatch([
+            makeVoice(AudioEngine.noise,    1,   1, 0.16, 0.22, attack: 0.001, lp: 0.55),    // blast
+            makeVoice(AudioEngine.triangle, 300, 46, 0.30, 0.20, attack: 0.002),            // wail → sub
+        ])
     }
     func arcadeUFO() { trigger(wave: AudioEngine.square, f0: 1250, f1: 1050, dur: 0.11, amp: 0.09) }   // warble tick
     func arcadeUFOHit() {
@@ -845,7 +847,7 @@ final class AudioEngine {
             var vi = 0
             while vi < voices.count {
                 var v = voices[vi]
-                if v.left <= 0 { voices.remove(at: vi); continue }
+                if v.left <= 0 { voices[vi] = voices[voices.count - 1]; voices.removeLast(); continue }   // O(1) swap-remove (the mix is order-free)
                 let elapsed = v.total - v.left
                 let env: Float = elapsed < v.attack
                     ? Float(elapsed) / Float(max(1, v.attack))
@@ -886,21 +888,56 @@ final class AudioEngine {
         os_unfair_lock_unlock(lock)
     }
 
-    private func add(_ wave: Int, _ f0: Float, _ f1: Float, _ dur: Float, _ amp: Float,
-                     attack: Float = 0.004, lp: Float = 1, bus: Int = 1, send: Float = 0) {
+    /// Build a voice (the total/slide/seed maths) WITHOUT taking the lock, so a
+    /// caller can prepare a whole cluster and commit it in one critical section.
+    private func makeVoice(_ wave: Int, _ f0: Float, _ f1: Float, _ dur: Float, _ amp: Float,
+                           attack: Float = 0.004, lp: Float = 1, bus: Int = 1, send: Float = 0) -> Voice {
         let total = max(1, Int(dur * sr))
         let slide = total > 1 ? powf(max(1, f1) / max(1, f0), 1 / Float(total)) : 1
         seqCounter &+= 1
         var seed: UInt64 = 0x2545_F491_4F6C_DD1D &+ UInt64(total) &+ UInt64(f0) &+ seqCounter &* 2_654_435_761
         if seed == 0 { seed = 1 }
-        let v = Voice(wave: wave, freq: f0, slide: slide, amp: amp, attack: max(1, Int(attack * sr)),
-                      total: total, left: total, lp: lp, bus: bus, send: send, rng: seed, seq: seqCounter)
-        os_unfair_lock_lock(lock)
-        if voices.count >= maxVoices {
-            var oldest = 0; for j in 1..<voices.count where voices[j].seq < voices[oldest].seq { oldest = j }
-            voices.remove(at: oldest)
+        return Voice(wave: wave, freq: f0, slide: slide, amp: amp, attack: max(1, Int(attack * sr)),
+                     total: total, left: total, lp: lp, bus: bus, send: send, rng: seed, seq: seqCounter)
+    }
+
+    /// Evict the LEAST AUDIBLE live voice — the one nearest to finishing or quietest
+    /// right now — tie-broken by age. Was oldest-by-seq, which chopped off a just-
+    /// triggered explosion the instant the pool filled (the "sounds cut each other
+    /// off" in the arcade). Caller must hold `lock`.
+    private func evictLocked() {
+        guard !voices.isEmpty else { return }
+        var worst = 0, worstE = Float.greatestFiniteMagnitude
+        for j in voices.indices {
+            let v = voices[j]
+            let elapsed = v.total - v.left
+            let env: Float = elapsed < v.attack
+                ? Float(elapsed) / Float(max(1, v.attack))
+                : Float(v.left) / Float(max(1, v.total - v.attack))
+            let e = v.amp * env
+            if e < worstE { worstE = e; worst = j }
         }
+        voices.remove(at: worst)
+    }
+
+    private func enqueueLocked(_ v: Voice) {
+        if voices.count >= maxVoices { evictLocked() }
         voices.append(v)
+    }
+
+    private func add(_ wave: Int, _ f0: Float, _ f1: Float, _ dur: Float, _ amp: Float,
+                     attack: Float = 0.004, lp: Float = 1, bus: Int = 1, send: Float = 0) {
+        let v = makeVoice(wave, f0, f1, dur, amp, attack: attack, lp: lp, bus: bus, send: send)
+        os_unfair_lock_lock(lock); enqueueLocked(v); os_unfair_lock_unlock(lock)
+    }
+
+    /// Commit a whole cluster of voices under ONE lock — an explosion is a single
+    /// critical section, not four or five. Cuts the game thread's contention with
+    /// the real-time render callback (which holds the same lock for a full buffer)
+    /// to once per event: that per-layer lock thrash was the frame-stall.
+    private func addBatch(_ vs: [Voice]) {
+        os_unfair_lock_lock(lock)
+        for v in vs { enqueueLocked(v) }
         os_unfair_lock_unlock(lock)
     }
 
