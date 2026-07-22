@@ -13,9 +13,13 @@
 //   • ARCMAIL        — the human view: Kirsty Smith's emails home to her mum
 // The mini-game (Space Invaders) and the bare pop-culture nods are single-screen.
 //
-// CONTENT IS PLACEHOLDER — Jonathan is directing the real entries. Each document
-// is just a list of pages; add or rewrite freely. Keep bodies to ~8 lines / ~52
-// cols so they sit above the page footer without paging within a screen.
+// CONTENT follows the Strataris / Citadel back-story: Demeter — deepest of the six
+// colonies ARC sank into the cluster to mine Tantalanium — the intercepted signal
+// and its false dawn of first contact, the marauder fleet, the fall, the retreat
+// below, and the infestation the signal always heralded. The three documents view
+// that one timeline through three lenses. The dates line up across them (the
+// Director's DAY count, the memo REF numbers, Kirsty's arc). Keep bodies to <= 8
+// lines / ~52 cols so they sit above the page footer without paging within a screen.
 
 import Foundation
 
@@ -59,133 +63,169 @@ struct TerminalEgg {
     static let all: [TerminalEgg] = [
         // ── 1. Director's Log — the professional's view; a back-story across pages ──
         TerminalEgg(kind: .directorsLog, pages: [
-            TerminalPage(sub: "STARDATE 7738.0  \u{00B7}  ARRIVAL", body: [
-                "Assumed command of Demeter Station today.",
-                "Population four thousand. The mandate is",
-                "simple: extract, refine, ship. ARC calls it",
-                "\"the deepest colony ever sunk.\" They mean it",
-                "as a boast.",
+            TerminalPage(sub: "DEMETER  \u{00B7}  DAY 001  \u{00B7}  FIRST LIGHT", body: [
+                "One year to build it, one day to fill it.",
+                "The first crews rode the shafts down today,",
+                "with the modest guard ARC saw fit to send.",
+                "Deepest colony we have ever sunk \u{2014} I sank it.",
                 "",
-                "The lifts take forty minutes to the surface.",
-                "You stop counting after the first week.",
+                "Tantalanium runs richer than the surveys dared:",
+                "harder than diamond, superconducting cold, and",
+                "it shrugs off open flame. ARC will mint gods.",
             ]),
-            TerminalPage(sub: "STARDATE 7742.3  \u{00B7}  ROUTINE", body: [
-                "Day 210 below the crust. The reactor hums,",
-                "the quotas are met, the sun is a rumour.",
+            TerminalPage(sub: "DEMETER  \u{00B7}  DAY 061  \u{00B7}  ON QUOTA", body: [
+                "Two months under, and we have already cleared",
+                "target. The refineries never sleep; lately,",
+                "neither do I.",
                 "",
-                "Corporate reminds us the Citadel \"runs itself.\"",
-                "It does. We are, increasingly, a formality.",
-                "",
-                "I have started dating my logs by the shift",
-                "rotations. It is easy to forget there is a sky.",
+                "Six colonies in the Strataris cluster and",
+                "Demeter ships the most ore of any. Corporate",
+                "sends congratulations. No bonus. Just the",
+                "word, on repeat: congratulations.",
             ]),
-            TerminalPage(sub: "STARDATE 7749.6  \u{00B7}  ANOMALY", body: [
-                "Something in the lower galleries is not on",
-                "the manifest. Seismics that aren't seismics.",
-                "A warmth where the rock should be cold.",
+            TerminalPage(sub: "DEMETER  \u{00B7}  DAY 074  \u{00B7}  THE SIGNAL", body: [
+                "PROSERPINE woke me at 03:00 over a whisper",
+                "beneath the background hiss. I called it noise.",
+                "The core will not agree. It finds pattern in it,",
+                "order, intent \u{2014} and cannot translate one word.",
+                "Still it insists: something out there speaks.",
                 "",
-                "I have logged it three times. Three times the",
-                "log has been \u{2014} amended. Not by me, and not",
-                "from this station.",
+                "First contact, they murmur in the mess halls.",
+                "God help me, I let myself hope. \u{2014} Director",
             ]),
-            TerminalPage(sub: "STARDATE 7755.1  \u{00B7}  SUB-LEVEL 7", body: [
-                "Sealed Sub-level 7 this morning. Corporate",
-                "overruled me by lunch. \"Legacy asset,\" they",
-                "said. It has a heartbeat. I have heard it",
-                "through two metres of shielding.",
+            TerminalPage(sub: "DEMETER  \u{00B7}  DAY 079  \u{00B7}  THEY CAME", body: [
+                "Five days. Five days between that whisper and",
+                "the sky tearing open. The marauder fleet burned",
+                "our air defence in a single afternoon.",
                 "",
-                "Six of my people are down there and ARC will",
-                "not say why. I am a formality with a title.",
+                "ARC swears reinforcements are en route. I have",
+                "stopped reading the bulletins. We hold with the",
+                "guard we landed with \u{2014} and no more are coming.",
+                "I am ordering everyone below.",
             ]),
-            TerminalPage(sub: "STARDATE 7760.4  \u{00B7}  FINAL ENTRY", body: [
-                "If you are reading this, the lifts are down",
-                "and so are we. Do not come for the ore.",
-                "Do not come for us. There is nothing left",
-                "to retake but the dark \u{2014} and it is awake.",
+            TerminalPage(sub: "DEMETER  \u{00B7}  DAY 088  \u{00B7}  BELOW", body: [
+                "The lifts only travel down now. We sealed the",
+                "upper levels behind us and called it strategy,",
+                "not burial. It was burial.",
                 "",
-                "\u{2014} Director, Demeter Station. Signing off.",
+                "Then the bombing stopped, and something worse",
+                "began. They are in the dark with us \u{2014} not the",
+                "fleet, but what the fleet was only ever herding",
+                "toward us. The signal had a body all along.",
+            ]),
+            TerminalPage(sub: "DEMETER  \u{00B7}  DAY 093  \u{00B7}  LAST ENTRY", body: [
+                "I am the last of command; the guard is spent.",
+                "One soldier still breathes in the medbay \u{2014}",
+                "months in a coma, skull broken in the first",
+                "raid, and waking to nothing they remember.",
+                "",
+                "Marine, if you read this: the Citadel is yours",
+                "now. Retake it, or fall taking it.",
+                "\u{2014} Director, Demeter. Signing off.",
             ]),
         ]),
         // ── 2. ARCMAIL — Kirsty Smith to her mum; the human perspective, an arc ──
         TerminalEgg(kind: .email, pages: [
-            TerminalPage(sub: "TO: MUM   \u{00B7}   RE: I MADE IT!", body: [
+            TerminalPage(sub: "TO: MUM   \u{00B7}   RE: I MADE IT!!", body: [
                 "Hi Mum,",
                 "",
-                "Landed on Demeter today! The brochure said",
-                "\"resort colony.\" The brochure lied \u{2014} it's dark,",
-                "it's loud, and everything hums. But the pay is",
-                "real and the people are kind.",
+                "I'm here \u{2014} Demeter, the bottom of the deepest",
+                "colony people have ever dug. My badge actually",
+                "reads JUNIOR RESEARCH SCIENTIST. Me!",
                 "",
-                "Tell Dad his awful lunchbox note made me cry in",
-                "front of my whole intake. Love you \u{2014} Kirsty x",
+                "It's dark, it hums, and I have never been this",
+                "happy. This is the frontier, Mum. Love, K x",
             ]),
-            TerminalPage(sub: "TO: MUM   \u{00B7}   RE: SETTLING IN", body: [
-                "Week three. I can find the canteen without the",
-                "map now, which counts as a promotion round here.",
+            TerminalPage(sub: "TO: MUM   \u{00B7}   RE: you won't believe this", body: [
+                "Mum \u{2014} I can't say much (so many forms), but the",
+                "big machine down here has caught a SIGNAL.",
+                "From out there. With patterns in it.",
                 "",
-                "My bunkmate Ana says the old hands never look at",
-                "the lower galleries. \"Nothing down there but",
-                "company secrets,\" she says, and laughs.",
-                "She doesn't quite laugh, though. You know the one.",
-            ]),
-            TerminalPage(sub: "TO: MUM   \u{00B7}   RE: (no subject)", body: [
-                "Mum, something's off. They moved a whole shift",
-                "to Sub-level 7 and none of them came up for mess.",
-                "Ana went to ask about it \u{2014} now her bunk's empty",
-                "too. Nobody will say a word.",
-                "",
-                "I keep hearing it through the walls at night. Like",
-                "a heartbeat, but too big. Probably just tired.",
-                "Write back soon? Please.",
+                "They think it might be someone. Not us. I came",
+                "to test ore and I might get to say hello to a",
+                "whole new everyone. Tell Dad his girl was here",
+                "for that. x",
             ]),
             TerminalPage(sub: "TO: MUM   \u{00B7}   RE: (no subject)", body: [
-                "if you get this the lifts only go DOWN now and",
-                "the lights are nearly gone. i'm in a maintenance",
-                "crawl with three others and we're being quiet.",
-                "it's close.",
+                "Mum, it wasn't hello.",
                 "",
-                "tell dad i wasn't scared. that's a lie but tell",
-                "him anyway.",
+                "Ships came \u{2014} more than the sky could hold. It",
+                "all burned, and then the sky was simply gone.",
+                "They keep promising help. No one's face",
+                "believes it.",
                 "",
-                "i love you \u{2014} K",
+                "They're sending us down to the lower levels. K",
+            ]),
+            TerminalPage(sub: "TO: MUM   \u{00B7}   RE: (no subject)", body: [
+                "day ten below, i think. we ration the lamps.",
+                "there is something in the tunnels that isn't",
+                "the ships. it doesn't make the ships' sound.",
+                "it makes the SIGNAL's sound. i would know that",
+                "anywhere now.",
+                "",
+                "the machine was right, mum: we are not alone.",
+                "i only wish we were.",
+            ]),
+            TerminalPage(sub: "TO: MUM   \u{00B7}   RE: (no subject)", body: [
+                "if this ever reaches you \u{2014} i wasn't brave, but",
+                "i was useful to the last. i logged everything.",
+                "someone will need what i wrote down.",
+                "",
+                "there's a soldier in the medbay who won't wake.",
+                "i leave a light on for them. someone should.",
+                "",
+                "i love you, i love you. \u{2014} Kirsty",
             ]),
         ]),
         // ── 3. ARC memos — the corporate view; escalating, darkly funny ──
         TerminalEgg(kind: .memo, pages: [
-            TerminalPage(sub: "RE: MORALE, PRODUCTIVITY & YOU", body: [
-                "ALL STAFF \u{2014} PRIORITY: ROUTINE",
+            TerminalPage(sub: "REF: ARC/DEM/001  \u{00B7}  PRODUCTION", body: [
+                "ALL PERSONNEL \u{2014} ASOLAR RESOURCE CORP",
                 "",
-                "1. Unscheduled screaming is down 4% this cycle.",
-                "   Excellent work, everyone.",
-                "2. The thing in Sub-level 7 is a \"legacy asset.\"",
-                "   Do not name it. Naming implies ownership.",
-                "3. Your loyalty bonus is now additional loyalty.",
+                "Demeter has beaten extraction targets by 31%.",
+                "Tantalanium is now the single most valuable",
+                "substance our species has drawn from rock.",
+                "",
+                "You are not miners. You are shareholders in the",
+                "future \u{2014} minus the shares. Keep digging.",
             ]),
-            TerminalPage(sub: "RE: SUB-LEVEL 7 \u{2014} FAQ", body: [
-                "Q: What is the noise?       A: There is no noise.",
-                "Q: What is the smell?       A: Productivity.",
-                "Q: Where is my shift team?  A: Reassigned.",
+            TerminalPage(sub: "REF: ARC/DEM/044  \u{00B7}  ANOMALY \u{2014} SEALED", body: [
+                "The acoustic anomaly logged by PROSERPINE is",
+                "reclassified: SURVEY ARTEFACT. Non-biological.",
+                "Non-intelligent. Non-existent, preferably.",
                 "",
-                "Please direct further questions to the empty",
-                "office where Employee Relations used to be.",
+                "Staff overheard discussing \"first contact\" will",
+                "be reassigned to morale. Contact is a licensing",
+                "matter, and ARC has not filed the paperwork.",
             ]),
-            TerminalPage(sub: "RE: NEW OVERTIME OPPORTUNITIES", body: [
-                "Great news! Due to \"staffing volatility,\" all",
-                "shifts are now double shifts.",
+            TerminalPage(sub: "REF: ARC/DEM/061  \u{00B7}  SECURITY EVENT", body: [
+                "The hostile fleet is a temporary logistics",
+                "disruption. Reinforcements are EN ROUTE.",
                 "",
-                "Rest periods have been converted to standing",
-                "periods. Standing periods have been converted to",
-                "opportunities. You have never had so many",
-                "opportunities. Congratulations.",
+                "(That sentence ships in every bulletin since the",
+                "disruption began. It is load-bearing. Leave it.)",
+                "",
+                "Production continues regardless. The ore does not",
+                "care who is shooting at whom.",
             ]),
-            TerminalPage(sub: "RE: THIS IS FINE", body: [
-                "A brief note as containment is \"optimised\":",
+            TerminalPage(sub: "REF: ARC/DEM/077  \u{00B7}  RELOCATION", body: [
+                "Withdrawal to the lower levels is a strategic",
+                "consolidation, not a rout. The upper colony is",
+                "not lost \u{2014} it is \"awaiting recustomer.\"",
                 "",
-                "1. The lifts going down is a feature.",
-                "2. The lights going out is mood lighting.",
-                "3. The screaming is back, but on-brand.",
+                "The biological presence now sharing those levels",
+                "is, per memo 044, non-existent. Kindly do not",
+                "feed it, name it, or be eaten by it.",
+            ]),
+            TerminalPage(sub: "REF: ARC/DEM/093  \u{00B7}  ASSET RECOVERY", body: [
+                "PRIORITY RECOVERY, in order:",
+                "1. PROSERPINE's core and all signal data.",
+                "2. Tantalanium survey maps.",
+                "3. \u{2014}",
                 "",
-                "ARC \u{2014} A Brighter Tomorrow, Underground\u{2122}",
+                "Personnel are not listed. Personnel are not",
+                "recoverable. Personnel were always the cheapest",
+                "line on Demeter. \u{2014} Asolar Resource Corp",
             ]),
         ]),
         // ── 4. The mini-game — amber Space Invaders. Pages unused; the terminal
@@ -206,6 +246,14 @@ struct TerminalEgg {
             "life, the universe, and everything, is...",
             "",
             "42!",
+        ]),
+        // ── 8. Highlander (1986) — the Quickening. ──
+        .single(.blankMessage, body: [
+            "There can be only one",
+        ]),
+        // ── 9. WarGames (1983) — the WOPR learns the futility of the game. ──
+        .single(.blankMessage, body: [
+            "The only winning move is not to play",
         ]),
     ]
 }
