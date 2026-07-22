@@ -1322,11 +1322,19 @@ final class World {
             m.painFlash = max(0, m.painFlash - dt)
             if m.state == .dead {
                 // ash & carcasses RESTING in a toxic pool are eaten by it too — not
-                // only those that died in it. Any corpse (charred remains included)
-                // sitting on a hazard cell starts to sink and dissolve.
-                if !m.dissolving && !m.gibbed && map.inBounds(Int(m.pos.x), Int(m.pos.y))
-                    && map.hazard[map.idx(Int(m.pos.x), Int(m.pos.y))] {
-                    m.dissolving = true
+                // only those that died in it. Big carcasses straddle several cells, so
+                // test the whole FOOTPRINT (centre + a ring at the body radius), not
+                // just the centre — one lying half in a pool still gets dissolved.
+                if !m.dissolving && !m.gibbed {
+                    let r = m.def.radius + 0.4
+                    var inAcid = false
+                    for oy in [-r, 0.0, r] where !inAcid {
+                        for ox in [-r, 0.0, r] {
+                            let cx = Int(m.pos.x + ox), cy = Int(m.pos.y + oy)
+                            if map.inBounds(cx, cy) && map.hazard[map.idx(cx, cy)] { inAcid = true; break }
+                        }
+                    }
+                    if inAcid { m.dissolving = true }
                 }
                 if m.dissolving {                                    // the pool eats the body
                     m.dissolveT += dt
