@@ -107,9 +107,9 @@ final class AudioEngine {
             case .wade: return 0.5
             case .drip: return 0.55
             case .fault: return 0.7
-            case .faultHum: return 0.48       // hum left as-is; buzz + crackle trimmed a further 30%
-            case .faultBuzz: return 0.42      // was 0.6
-            case .faultCrackle: return 0.50   // was 0.72
+            case .faultHum: return 0.34       // quietened relative to the ambient bed
+            case .faultBuzz: return 0.24      // pre-spark buzz — kept low; only fires when close
+            case .faultCrackle: return 0.32   // the spark itself
             default: return 0.8
             }
         }
@@ -701,6 +701,40 @@ final class AudioEngine {
         alog("play \(s) vol=\(String(format: "%.2f", vol))")
         guard vol > 0.02, !isMuted(s), engine.isRunning, let bufs = bank[s] else { return }
         playOneShot(bufs, gain: s.gain * min(1, vol))
+    }
+
+    // ── arcade mini-game (the Space Invaders easter egg) — pure synth bleeps, no
+    //    samples; keeps the terminal toy self-contained and true to the era ──
+    func arcadeShoot() { trigger(wave: AudioEngine.square, f0: 820, f1: 1500, dur: 0.08, amp: 0.18, attack: 0.001) }
+    /// A layered pixel-splat, not a bare pop: a bright crack transient, a pitched
+    /// zap sweeping down, a little low thud for weight, and a short reverb tail.
+    func arcadeInvaderKilled() {
+        add(AudioEngine.noise,    1,   1,  0.05, 0.15, attack: 0.001, lp: 0.95)              // bright crack
+        add(AudioEngine.square, 560,  70,  0.16, 0.12, attack: 0.001)                        // pitched zap down
+        add(AudioEngine.triangle, 240, 44, 0.18, 0.10, attack: 0.002, send: 0.22)            // low thud + tail
+        add(AudioEngine.noise,    1,   1,  0.20, 0.11, attack: 0.004, lp: 0.45, send: 0.35)  // debris tail (reverb)
+    }
+    /// The classic four-note descending march — call once per formation step with a
+    /// cycling index; the tempo is set by how often the caller steps (it speeds up
+    /// with the swarm, exactly like the original).
+    func arcadeMarch(_ step: Int) {
+        let notes: [Float] = [174, 155, 138, 130]
+        trigger(wave: AudioEngine.square, f0: notes[((step % 4) + 4) % 4], dur: 0.10, amp: 0.15, attack: 0.002)
+    }
+    /// The dramatic death: a blast, the classic warbling descending wail (two
+    /// slightly detuned squares that beat against each other), a deep boom for the
+    /// gut-punch, and a smoky reverb tail. A real explosion, not a pop.
+    func arcadePlayerHit() {
+        add(AudioEngine.noise,    1,   1, 0.45, 0.24, attack: 0.002, lp: 0.6,  send: 0.5)   // the blast
+        add(AudioEngine.square, 420,  46, 0.70, 0.16, attack: 0.002, send: 0.3)             // descending wail…
+        add(AudioEngine.square, 398,  42, 0.72, 0.15, attack: 0.002, send: 0.3)             // …detuned twin → warble
+        add(AudioEngine.sine,   130,  28, 0.85, 0.30, attack: 0.004, send: 0.25)            // deep boom (the oomph)
+        add(AudioEngine.noise,    1,   1, 0.95, 0.13, attack: 0.03,  lp: 0.26, send: 0.4)   // smoky low tail
+    }
+    func arcadeUFO() { trigger(wave: AudioEngine.square, f0: 1250, f1: 1050, dur: 0.11, amp: 0.09) }   // warble tick
+    func arcadeUFOHit() {
+        trigger(wave: AudioEngine.square, f0: 700, f1: 1500, dur: 0.10, amp: 0.18)
+        trigger(wave: AudioEngine.square, f0: 1100, f1: 1900, dur: 0.14, amp: 0.16, attack: 0.05)
     }
 
     func startMusic(_ m: MusicMode, depth: Int = 1) {

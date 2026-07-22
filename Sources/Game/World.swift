@@ -96,6 +96,11 @@ final class World {
     /// Renderer consumes it (clears it) to zoom into the terminal and show an
     /// easter egg, suspending play while it's read.
     var terminalUsePending = false
+    var terminalDeskIndex = -1            // which desk (props index) was activated
+    /// Desks already read this level: each terminal shows ONE egg, then falls back
+    /// to the guru meditation on any re-use. A fresh terminal draws the next unseen
+    /// egg from the pool (the Renderer owns that pool across the session).
+    var usedTerminals: Set<Int> = []
 
     var score = 0
     let level: Int
@@ -166,10 +171,11 @@ final class World {
     private static let faultFlickerDur: Float = 1.7
     var powerDim: Float = 0                      // 0 normally; 0…~0.65 as the lights sag/flicker with a fault (renderer reads it → dbg.z). Settable so a capture harness can stage a fault.
     // electrical-fault audio: a shower CHARGES (buzz) then EMITs (sparks + crackle) a beat later
-    private var sparkCharge: [(site: Int, t: Float)] = []
+    private var sparkCharge: [(site: Int, t: Float, buzz: Float)] = []   // buzz = committed audible level (0 = silent/visual-only)
     private let faultHumRange: Float = 2.6       // metres — proximity hum inaudible beyond this (per spec: only within 2–3 m)
     private let faultSparkRange: Float = 8.0     // metres — buzz/crackle distance falloff
     private let faultChargeLead: Float = 0.20    // seconds the buzz leads the sparks
+    private let faultCommitLevel: Float = 0.45   // only VOICE a shower this audible (close + in sight), so buzz→crackle always completes — never a truncated clip
     private var faultHumLevel: Float = 0         // smoothed hum level — eased toward target so it swells/fades, never snaps on
     private let faultHumSmooth: Float = 0.30     // hum fade time-constant (s)
     // ── the Queen ──
@@ -638,7 +644,7 @@ final class World {
         }
         // a computer-desk terminal within reach → read it (easter eggs). The Renderer
         // zooms into the terminal and suspends play; nothing else happens this press.
-        if nearDeskTerminal(within: 1.5) { terminalUsePending = true; return }
+        if let di = nearestDeskTerminal(within: 1.5) { terminalUsePending = true; terminalDeskIndex = di; return }
         // probe a couple of points ahead
         let dx = cos(player.dir), dy = sin(player.dir)
         for reach: Float in [0.7, 1.2, 1.7] {
@@ -684,15 +690,19 @@ final class World {
         }
     }
 
-    /// True if the marine is stood beside a computer-desk terminal (its easter egg
-    /// is within reach). Desks are set against a wall, so a modest radius reads as
-    /// "at the workstation" without catching a passer-by.
-    private func nearDeskTerminal(within r: Float) -> Bool {
-        for p in props where p.kind == .desk {
+    /// The props index of the NEAREST computer-desk terminal within reach, or nil.
+    /// Desks are set against a wall, so a modest radius reads as "at the
+    /// workstation" without catching a passer-by. The index identifies the specific
+    /// unit so each terminal shows its own single egg (then guru on re-use).
+    private func nearestDeskTerminal(within r: Float) -> Int? {
+        var best = -1
+        var bestD = r * r
+        for (i, p) in props.enumerated() where p.kind == .desk {
             let dx = p.pos.x - player.pos.x, dy = p.pos.y - player.pos.y
-            if dx * dx + dy * dy < r * r { return true }
+            let d = dx * dx + dy * dy
+            if d < bestD { bestD = d; best = i }
         }
-        return false
+        return best >= 0 ? best : nil
     }
 
     /// Drop a proximity mine at the marine's feet (edge-triggered). It arms after
@@ -2365,8 +2375,14 @@ final class World {
             sparkCharge[k].t -= dt
             if sparkCharge[k].t <= 0 {
                 let v = sparkSites[sparkCharge[k].site]
-                emitSparkShower(v)                                  // the sparks fly…
-                audio.faultCrackle(faultAudible(v.pos))             // …and crackle as they do (LOS-gated)
+                emitSparkShower(v)                                  // the sparks fly (visual, always)
+                let bz = sparkCharge[k].buzz
+                if bz > 0 {
+                    // a committed shower ALWAYS pays off its buzz — crackle at the
+                    // LIVE distance (so it fades if you've moved past), floored so it
+                    // completes the sequence rather than cutting to an abrupt click.
+                    audio.faultCrackle(max(faultAudible(v.pos), bz * 0.5))
+                }
                 sparkCharge.remove(at: k)
             } else { k += 1 }
         }
@@ -2381,8 +2397,13 @@ final class World {
             // every few seconds throws a SHOWER. Charge it now (BUZZ), fire a beat
             // later (sparks + CRACKLE) — unless it's already charging.
             if rng.f(0, 1) < 0.045 && !sparkCharge.contains(where: { $0.site == i }) {
-                audio.faultBuzz(faultAudible(v.pos))                // buzz only when the fault is in sight
-                sparkCharge.append((site: i, t: faultChargeLead))
+                // Only VOICE a shower we'll hear through to the end: close + in sight.
+                // A distant fault still sparks visually, but silently — so the player
+                // never catches the start of a buzz that then dies out to a click.
+                let a = faultAudible(v.pos)
+                let commit = a >= faultCommitLevel
+                if commit { audio.faultBuzz(a) }
+                sparkCharge.append((site: i, t: faultChargeLead, buzz: commit ? a : 0))
             }
             if rng.f(0, 1) < 0.02 {                                 // occasional smoke wisp off a dead panel
                 particles.append(Particle(pos: v.pos, vel: v.dir * 0.1, life: rng.f(0.9, 1.5), maxLife: 1.5,

@@ -200,5 +200,12 @@ struct TerminalEgg {
             "They're justified & ancient",
             "Mu Mu!",
         ]),
+        // ── 7. The Hitchhiker's Guide to the Galaxy — Deep Thought's answer. ──
+        .single(.blankMessage, body: [
+            "The answer to the ultimate question of",
+            "life, the universe, and everything, is...",
+            "",
+            "42!",
+        ]),
     ]
 }

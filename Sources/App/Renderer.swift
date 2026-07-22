@@ -389,9 +389,18 @@ final class Renderer: NSObject, MTKViewDelegate {
     private func enterTerminal() {
         // pick a random UNSEEN egg; once the pool is spent, every terminal shows the
         // Amiga guru meditation (currentEgg = -1). Seen-set is per session (in memory).
-        let unseen = TerminalEgg.all.indices.filter { !seenEggs.contains($0) }
-        if let pick = unseen.randomElement() { seenEggs.insert(pick); currentEgg = pick }
-        else { currentEgg = -1 }
+        // Each PHYSICAL terminal shows one egg: a fresh desk draws the next unseen
+        // egg from the session pool; re-using a desk it already showed (or once the
+        // pool is spent) falls back to the guru meditation.
+        let deskIdx = world?.terminalDeskIndex ?? -1
+        if world?.usedTerminals.contains(deskIdx) == true {
+            currentEgg = -1                                  // this unit's egg is spent → guru
+        } else {
+            let unseen = TerminalEgg.all.indices.filter { !seenEggs.contains($0) }
+            if let pick = unseen.randomElement() { seenEggs.insert(pick); currentEgg = pick }
+            else { currentEgg = -1 }
+            world?.usedTerminals.insert(deskIdx)
+        }
         if currentEgg >= 0, TerminalEgg.all[currentEgg].kind == .miniGame { invaders.reset() }
         terminalReturn = .playing
         termClosing = false
@@ -421,7 +430,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         let live = !termClosing && screenT >= 0.28   // fully zoomed in and not backing out
         if isGame {
             let f = Terminal.frame(canvas, scale: s, t: screenT, guru: false)
-            if live { invaders.update(dt: dt, left: termLeft(), right: termRight(), fire: input.fire) }
+            if live { invaders.update(dt: dt, left: termLeft(), right: termRight(), fire: input.fire, audio: audio) }
             if f.cf > 0.01 { invaders.draw(canvas, f.x0, f.y0, f.sw, f.sh, a: f.cf, t: screenT) }
         } else {
             // LEFT / RIGHT page through a multi-page document (clamped at the ends)

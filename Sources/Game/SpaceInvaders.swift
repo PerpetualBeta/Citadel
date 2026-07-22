@@ -149,6 +149,12 @@ final class SpaceInvaders {
     // input edges
     private var pLeft = false, pRight = false, pFire = false
 
+    // audio — the synth arcade bleeps (nil in the headless harness). Set each
+    // update so the internal event handlers can voice without threading it through.
+    private var audio: AudioEngine?
+    private var marchNote = 0          // 0…3 cycling — the four-note descending march
+    private var ufoWarbleT: Float = 0  // periodic saucer warble timer
+
     // seeded RNG (deterministic → reproducible harness frames)
     private var rng: UInt64 = 0x9E37_79B9_7F4A_7C15
     private func rand() -> Float {
@@ -221,7 +227,8 @@ final class SpaceInvaders {
     }
 
     // ── update ─────────────────────────────────────────────────────────────
-    func update(dt: Float, left: Bool, right: Bool, fire: Bool) {
+    func update(dt: Float, left: Bool, right: Bool, fire: Bool, audio: AudioEngine? = nil) {
+        self.audio = audio
         blinkT += dt
         let leftE = left && !pLeft, rightE = right && !pRight, fireE = fire && !pFire
         defer { pLeft = left; pRight = right; pFire = fire }
@@ -274,6 +281,7 @@ final class SpaceInvaders {
             shotActive = true
             shotX = cannonX
             shotY = cannonY
+            audio?.arcadeShoot()
         }
         advanceShot(dt)
 
@@ -321,6 +329,8 @@ final class SpaceInvaders {
             formX += marchDir * stepX
         }
         animFrame ^= 1
+        marchNote = (marchNote + 1) & 3
+        audio?.arcadeMarch(marchNote)                 // four-note march; tempo = the step rate below
         // faster as the swarm thins (and each wave)
         let slow: Float = 0.55, fast: Float = 0.06
         let frac = Float(aliveCount) / Float(cols * rows)
@@ -338,7 +348,8 @@ final class SpaceInvaders {
             shotY -= d
             if shotY < pfTop - 2 { shotActive = false; break }
             if ufoActive && shotY < pfTop + 8 && abs(shotX - ufoX) < 10 {
-                score += ufoValue; ufoScoreShow = 1.2; ufoActive = false; shotActive = false; break
+                score += ufoValue; ufoScoreShow = 1.2; ufoActive = false; shotActive = false
+                audio?.arcadeUFOHit(); break
             }
             if hitInvaderAt(shotX, shotY) { shotActive = false; break }
             if shieldHit(shotX, shotY) { shotActive = false; break }
@@ -356,6 +367,7 @@ final class SpaceInvaders {
         alive[idx] = false
         aliveCount -= 1
         score += rowPoints[r]
+        audio?.arcadeInvaderKilled()
         if aliveCount <= 0 { phase = .cleared; phaseT = 0 }
         return true
     }
@@ -375,6 +387,7 @@ final class SpaceInvaders {
                 if shieldHit(bombs[i].x, bombs[i].y) { removed = true; break }
                 if phase == .playing && abs(bombs[i].x - cannonX) < cannonW / 2 && bombs[i].y >= cannonY {
                     phase = .playerHit; phaseT = 0
+                    audio?.arcadePlayerHit()
                     removed = true; break
                 }
             }
@@ -414,6 +427,8 @@ final class SpaceInvaders {
         if ufoScoreShow > 0 { ufoScoreShow -= dt }
         if ufoActive {
             ufoX += ufoDir * VW * 0.16 * dt
+            ufoWarbleT -= dt
+            if ufoWarbleT <= 0 { audio?.arcadeUFO(); ufoWarbleT = 0.18 }   // the saucer's telltale warble
             if ufoX < margin - 12 || ufoX > VW - margin + 12 { ufoActive = false; ufoTimer = 10 + rand() * 12 }
             return
         }
