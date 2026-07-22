@@ -280,11 +280,10 @@ enum FrontEnd {
         c.label(value, x, y + uiS(14), size: uiSf(20), color: col, weight: .heavy, shadow: false)
     }
 
-    /// The dossier bust: the mesh portrait (what the game renders) if warmed, else
-    /// the SDF front plate. Both are packed-RGBA with a transparent background.
+    /// The dossier bust: the mesh portrait the game actually renders (packed-RGBA,
+    /// transparent background), cached by MeshPortraits when the renderer warms.
     private static func heroPlate(_ kind: MonsterKind) -> (px: [UInt32], w: Int, h: Int, footY: Int)? {
         if let m = MeshPortraits.plate(kind) { return (m.pixels, m.w, m.h, m.footY) }
-        if let s = IntelPortraits.plate(kind, .front) { return (s.pixels, s.w, s.h, s.footY) }
         return nil
     }
 

@@ -82,7 +82,6 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/UI/TitleArt.swift \
                     Sources/UI/CinematicPlate.swift \
                     Sources/UI/HallArt.swift \
-                    Sources/UI/IntelPortraits.swift \
                     Sources/UI/MeshPortraits.swift \
                     Sources/UI/Terminal.swift \
                     Sources/UI/Automap.swift \

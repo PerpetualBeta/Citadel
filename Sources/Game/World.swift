@@ -134,10 +134,12 @@ final class World {
     var impactShake: Float = 0        // 0…1 heavy-landing jolt (the Queen's topple), read by the renderer's camera
 
     /// The Queen dies as a staged EVENT — rear → convulse → topple → crash;
-    /// the choreography and its phase fences live in CreatureLab, these map
-    /// her normalised timeline to seconds. Drones just crumple.
+    /// these map her normalised death timeline to seconds. Drones just crumple.
     static let queenDeathTime: Float = 2.8
     static let droneDeathTime: Float = 0.45
+    /// Fraction of the Queen's death timeline at which her mass hits the deck —
+    /// the floor-shake / thud and the mesh crash are keyed to this.
+    static let queenImpactT: Float = 0.78
 
     // ── the teleporter ── the LAST floor of a citadel has no deeper floor to
     // ride to: its exit is a pad. Step on (Queen dead + burned), FIRE commits,
@@ -1477,7 +1479,7 @@ final class World {
                 if m.kind == .queen {
                     // the moment the toppling brood-mother CRASHES to the deck:
                     // the floor jumps, dust sheets out, the pool spreads under her
-                    let impact = World.queenDeathTime * CreatureLab.queenImpactT
+                    let impact = World.queenDeathTime * World.queenImpactT
                     if prev < impact && m.stateTime >= impact {
                         impactShake = 1
                         audio.queenFall()                // a real recorded slam, not a synth pop

@@ -121,8 +121,7 @@ final class GPUWorldRenderer {
 
     /// Render the Field Intel dossier busts from the SAME mesh instances the game
     /// draws, and cache them in MeshPortraits — so the codex shows the actual
-    /// creatures, not the SDF sculpts. Only for the castes whose mesh flag is on
-    /// (else the codex falls back to IntelPortraits). Synchronous; call once.
+    /// creatures. Synchronous; call once.
     func renderPortraits() {
         if let q = meshCreature { MeshPortraits.store(.queen, q.portrait(spin: MeshPortraits.spin(.queen), gain: MeshPortraits.gain(.queen))) }
         if let d = meshDrone   { MeshPortraits.store(.alien, d.portrait(spin: MeshPortraits.spin(.alien), gain: MeshPortraits.gain(.alien))) }
@@ -539,18 +538,16 @@ final class GPUWorldRenderer {
         // so keep every queen out of the SDF creature pack (else she'd render twice).
         let allCreatures = visibleCreatures(world)
         func isMeshQueen(_ m: Monster) -> Bool { m.kind == .queen && meshCreature != nil }
-        // gibbed drones (rocket / mine) leave NO corpse — only the gore splatter; route
-        // them to the SDF path, which emits nothing for a gibbed creature (as before).
+        // gibbed drones (rocket / mine) leave NO body — only the gore splatter particles.
         func isMeshDrone(_ m: Monster) -> Bool { m.kind == .alien && meshDrone != nil && !m.gibbed }
         let meshQueens = allCreatures.filter(isMeshQueen)
         let meshDrones = allCreatures.filter(isMeshDrone)
-        let sdfCreatures = allCreatures.filter { !isMeshQueen($0) && !isMeshDrone($0) }
-        // Pack every SDF instance group up front (each is independent of cmons/cshapes),
-        // then reserve the EXACT final capacity from the real counts before appending —
-        // this kills the incremental array reallocations as the eight groups accumulate
-        // (O4). The running shape-range base offsets below still read cshapes.count in
-        // sequence, so they stay correct.
-        var (cmons, cshapes) = GPURaymarch.packCreatures(sdfCreatures)
+        // Creatures are meshes (rasterised after the kernel); nothing renders as an SDF
+        // creature. The shared SDF-instance buffers below start empty and are filled by
+        // the item / prop / drum / socket / mine / projectile packers. The running
+        // shape-range base offsets read cshapes.count in sequence, so they stay correct.
+        var cmons: [GPURaymarch.GMonster] = []
+        var cshapes: [GPURaymarch.GShape] = []
         let (imons, ishapes) = GPURaymarch.packItems(visibleItems(world), time: world.elapsed)
         let (dmons, dshapes) = GPURaymarch.packDebris(visibleDebris(world))            // static rubble piles
         let (fmons, fshapes) = GPURaymarch.packProps(visibleProps(world))              // furniture & fixtures
@@ -691,7 +688,7 @@ final class GPUWorldRenderer {
                     let death: Float
                     if q.state == .dead { death = 1 }
                     else if q.state == .dying {
-                        let f = min(1, (q.stateTime / World.queenDeathTime) / CreatureLab.queenImpactT)
+                        let f = min(1, (q.stateTime / World.queenDeathTime) / World.queenImpactT)
                         death = f * f
                     } else { death = 0 }
                     mc.composite(into: canvas, depth: dp.baseAddress!, eye: eye, dir: p.dir,
