@@ -340,8 +340,6 @@ enum SmokeTest {
             // never blocks the way, and the burst leaves organic debris behind
             check(world.monsters[i].gibbed && world.monsters[i].burn >= 1, "rocket kill gibs the drone (no corpse to burn)")
             check(world.decals.contains { $0.w < -2 }, "gibbing splatters offal decals")
-            for _ in 0..<40 { world.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
-            check(GPURaymarch.poseShapes(world.monsters[i]).isEmpty, "a gibbed drone leaves no rendered corpse")
         }
 
         // 2b. flamethrower: standard issue, FINITE fuel, ignites + clears corpses
@@ -369,9 +367,6 @@ enum SmokeTest {
             check(fw.monsters.contains { $0.state == .dead && $0.burn >= 1 }, "corpse burns to charred remains")
             check(fw.decals.contains { $0.w > 0 && $0.w <= 1 }, "burned-out corpse stamps a scorch decal")
             check(fw.decals.contains { $0.w > 2 }, "burned-out corpse stamps smoldering ash")
-            if let bi = fw.monsters.firstIndex(where: { $0.state == .dead && $0.burn >= 1 }) {
-                check(GPURaymarch.poseShapes(fw.monsters[bi]).isEmpty, "a burned-out corpse renders no solid remains")
-            }
         }
         // a drone KILLED BY FIRE ignites where it drops — no second pass needed
         let iw = World(level: 1, colonyIndex: 0, seed: 137)
@@ -555,27 +550,6 @@ enum SmokeTest {
             }
         }
         check(ringBreaches == 0, "transit boxes are sealed — no diagonal slits (\(ringChecked) checked)")
-
-        // 2g3. the Queen's death choreography must LAND on the corpse pose (the
-        // burn/revive pipeline takes over with no visible pop), and a creature's
-        // world scale + floor plant must be pose-invariant — deriving them from
-        // the current pose made the dying Queen inflate like a balloon.
-        var qm = Monster(kind: .queen, pos: SIMD2(4, 4))
-        qm.state = .dying; qm.stateTime = World.queenDeathTime
-        let endPose = GPURaymarch.poseShapes(qm)
-        qm.state = .dead
-        let corpsePose = GPURaymarch.poseShapes(qm)
-        check(endPose.count == corpsePose.count
-              && zip(endPose, corpsePose).allSatisfy { e, c in
-                  let d = e.a - c.a
-                  return d.x * d.x + d.y * d.y + d.z * d.z < 1e-6 && abs(e.r1 - c.r1) < 1e-3
-              },
-              "the Queen's death lands exactly on the corpse pose")
-        let qAlive = Monster(kind: .queen, pos: SIMD2(4, 4))
-        var qMid = qAlive; qMid.state = .dying; qMid.stateTime = World.queenDeathTime * 0.7
-        let (poseInv, _) = GPURaymarch.packCreatures([qAlive, qMid])
-        check(poseInv.count == 2 && abs(poseInv[0].a.w - poseInv[1].a.w) < 1e-6 && abs(poseInv[0].c.x - poseInv[1].c.x) < 1e-6,
-              "creature scale and floor plant are pose-invariant (no death balloon)")
 
         // 2h. resource props — fuel drums (refuel + shoot-to-detonate) and the
         // deployable proximity mine.

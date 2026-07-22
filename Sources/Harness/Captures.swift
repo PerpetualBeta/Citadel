@@ -203,19 +203,8 @@ enum Captures {
         writePNG(isheet.framebuffer, w: icols * icw, h: irows * icw, scale: 2, to: dir.appendingPathComponent("08-items.png"))
         print("  wrote 08-items.png")
 
-        // monster contact sheet — front views
-        let mcw = 134, mh = 190
-        let msheet = Canvas2D(width: MonsterKind.allCases.count * mcw, height: mh)
-        msheet.clear(packRGBA(20, 12, 16))
-        for (i, k) in MonsterKind.allCases.enumerated() {
-            let spr = Sprites.shared.monster(k).walk[0][0]   // walkA, front view
-            let gx = i * mcw
-            msheet.strokeRect(gx + 1, 1, mcw - 2, mh - 2, packRGBA(56, 40, 44))
-            msheet.blitBitmap(spr.pixels, spr.w, spr.h, gx + (mcw - spr.w) / 2, mh - spr.h - 4)
-            msheet.label(k.displayName, gx + 4, mh - 14, size: 11, color: packRGBA(236, 200, 150), weight: .bold)
-        }
-        writePNG(msheet.framebuffer, w: MonsterKind.allCases.count * mcw, h: mh, scale: 2, to: dir.appendingPathComponent("09-monsters.png"))
-        print("  wrote 09-monsters.png")
+        // (the creatures' dossier busts are the mesh portraits shown in the codex —
+        //  see the Field Intel pages below; there is no SDF monster contact sheet.)
 
         // prop contact sheet — the fuel drum + proximity mine
         let pspr = PropKind.allCases.map { Sprites.shared.prop($0) }

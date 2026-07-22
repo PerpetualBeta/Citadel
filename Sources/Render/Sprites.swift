@@ -95,9 +95,6 @@ private struct Buf {
     func sprite() -> Sprite { Sprite(w: w, h: h, pixels: px) }
 }
 
-enum MFrame { case walkA, walkB, attack, die1, dead }
-struct MonsterSprites { var walk: [[Sprite]]; var attack: [Sprite]; var death: [[Sprite]] }   // inner arrays = 8 rotation views
-
 private let OUT = packRGBA(16, 11, 13)
 
 private struct Build {
@@ -110,7 +107,6 @@ private struct Build {
 final class Sprites {
     static let shared = Sprites()
 
-    private var monsterCache: [Int: MonsterSprites] = [:]
     private var itemCache: [Int: Sprite] = [:]
     private var propCache: [Int: Sprite] = [:]
     private var projCache: [Int: Sprite] = [:]
@@ -128,25 +124,11 @@ final class Sprites {
         for bracket in 0..<5 { for dir in 0..<3 { faces.append(buildFace(bracket, dir)) } }
     }
 
-    // Creatures are drawn NATIVELY by the GPU renderer now — SDF drones and the
-    // mesh Queen — so these billboards go unused on the shipping path (the only
-    // drawThings caller passes includeMonsters:false; the CPU raycaster that once
-    // drew them is gone). The offline bake is the expensive one: 5 frames × 8
-    // angles of SDF raymarch PER creature (~3.8 s, and it used to land on the first
-    // gameplay frame as a multi-second freeze the instant you left the lift). Bake
-    // it lazily so it only ever runs if a caller genuinely asks for a billboard.
-    func monster(_ k: MonsterKind) -> MonsterSprites {
-        if let s = monsterCache[k.rawValue] { return s }
-        let s = buildMonsterSet(k); monsterCache[k.rawValue] = s; return s
-    }
     func item(_ k: ItemKind) -> Sprite { itemCache[k.rawValue]! }
     func weaponIcon(_ k: WeaponKind) -> Sprite { weaponIconCache[k.rawValue]! }
     func prop(_ k: PropKind) -> Sprite { propCache[k.rawValue]! }
     func projectile(_ k: ProjectileKind) -> Sprite { projCache[k.rawValue]! }
     func face(bracket: Int, dir: Int) -> Sprite { faces[max(0, min(4, bracket)) * 3 + max(0, min(2, dir))] }
-
-    // Organic raymarched creatures (CreatureLab → MonsterBake).
-    private func buildMonsterSet(_ k: MonsterKind) -> MonsterSprites { MonsterBake.sprites(k) }
 
     // ── Items — low-poly 3-D meshes (Mesh3D.swift) ────────────────────────────
     private func buildItem(_ k: ItemKind) -> Sprite { MeshItems.sprite(k) }

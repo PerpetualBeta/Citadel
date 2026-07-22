@@ -69,7 +69,7 @@ struct SpriteCompositor {
         let hl = WorldLight.colored ? WorldLight.makeHeadlamp(world, dirX, dirY) : nil
         drawThings(world, into: c, dirX: dirX, dirY: dirY, planeX: planeX, planeY: planeY,
                    flick: flick, lights: lights, hasDyn: !lights.isEmpty, headlamp: hl,
-                   includeMonsters: false, includeItems: false,
+                   includeItems: false,
                    includeProjectiles: includeProjectiles,
                    includeDrums: includeDrums, includeSockets: includeSockets, includeMines: includeMines,
                    depthBuf: depth)   // monsters/items/projectiles/drums/sockets are SDF on the GPU path
@@ -78,14 +78,13 @@ struct SpriteCompositor {
     func drawThings(_ world: World, into c: Canvas2D, dirX: Float, dirY: Float,
                     planeX: Float, planeY: Float, flick: Float, lights: [WorldLight.DynLight], hasDyn: Bool,
                     headlamp: WorldLight.Headlamp? = nil,
-                    includeMonsters: Bool = true, includeItems: Bool = true,
+                    includeItems: Bool = true,
                     includeProjectiles: Bool = true,
                     includeDrums: Bool = true, includeSockets: Bool = true, includeMines: Bool = true,
                     depthBuf: UnsafePointer<Float>? = nil) {
         let p = world.player
         let sprites = Sprites.shared
         var things: [Renderable] = []
-        if includeMonsters { for (i, m) in world.monsters.enumerated() { things.append(Renderable(dist: vlen(m.pos - p.pos), kind: 0, index: i)) } }
         if includeItems { for (i, it) in world.items.enumerated() where !it.taken { things.append(Renderable(dist: vlen(it.pos - p.pos), kind: 1, index: i)) } }
         if includeProjectiles { for (i, pr) in world.projectiles.enumerated() { things.append(Renderable(dist: vlen(pr.pos - p.pos), kind: 2, index: i)) } }
         // world props — drums + sockets are SDF on the GPU path (gated off there);
@@ -126,32 +125,6 @@ struct SpriteCompositor {
             var extraGlow = SIMD3<Float>(0, 0, 0)  // a prop's own light (e.g. a mine's LED)
 
             switch thing.kind {
-            case 0:
-                let m = world.monsters[thing.index]
-                let ms = sprites.monster(m.kind)
-                // 8-rotation view: 0 = facing the player (front), 4 = back
-                let toP = atan2(p.pos.y - m.pos.y, p.pos.x - m.pos.x)
-                var rel = m.dir - toP
-                rel -= (2 * Float.pi) * floor(rel / (2 * Float.pi))
-                let bucket = Int((rel / (2 * Float.pi) * 8).rounded()) % 8
-                switch m.state {
-                case .dead: spr = ms.death[1][bucket]
-                case .dying: spr = (m.stateTime < 0.22 ? ms.death[0] : ms.death[1])[bucket]
-                case .attack: spr = ms.attack[bucket]
-                default: spr = ms.walk[Int(m.animTime * 4) % 2][bucket]
-                }
-                pos = m.pos
-                billboardH = m.def.billboardH
-                if m.painFlash > 0 { tint = packRGBA(255, 235, 225); tintAmt = 0.65 }
-                if m.def.flying && m.alive { vBias = 0.34 }
-                if !m.alive {
-                    groundFade = true                          // soft floor contact (no hard blood edge)
-                    let cxi = Int(m.pos.x), cyi = Int(m.pos.y)
-                    if world.map.inBounds(cxi, cyi),
-                       world.map.floor[world.map.idx(cxi, cyi)] == FlatTex.nukage.rawValue {
-                        dissolve = min(1, m.stateTime * 0.5)   // also eaten by toxic waste, over ~2s
-                    }
-                }
             case 1:
                 let it = world.items[thing.index]
                 spr = sprites.item(it.kind); pos = it.pos; billboardH = 0.42

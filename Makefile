@@ -2,16 +2,16 @@
 # universe. The SECOND native game in the Jorvik suite (after Strataris).
 #
 # Built with swiftc + Metal. The shipping renderer is a GPU SDF raymarcher: a
-# Metal compute kernel sphere-traces the level's distance field, floor/ceiling and
-# native SDF creatures, grades the HDR result (bloom / ACES / teal-amber grade /
-# vignette) and reads it back into a framebuffer; only billboard particles are
-# composited over it on the CPU with per-pixel depth occlusion.
+# Metal compute kernel sphere-traces the level's distance field and floor/ceiling,
+# grades the HDR result (bloom / ACES / teal-amber grade / vignette) and reads it
+# back into a framebuffer; the creatures are rasterised 3-D meshes composited over
+# it, and only billboard particles are composited on the CPU with depth occlusion.
 #
-# Graphics are generated in code (no textures, sprites, fonts or models).
-# AUDIO is the deliberate exception: Citadel ships real open-source sample
-# assets (Resources/Audio/, see CREDITS.md + docs/audio-sourcing.md) — the
-# atmosphere leans too hard on sound to synthesise. The from-scratch synth in
-# AudioEngine.swift remains only as a per-event fallback for missing samples.
+# Graphics are generated in code, with deliberate exceptions: the creature meshes
+# (Resources/*.usdz), the title/Hall hero plates, and AUDIO — Citadel ships real
+# open-source sample assets (Resources/Audio/, see CREDITS.md + docs/audio-
+# sourcing.md), the atmosphere leaning too hard on sound to synthesise. The
+# from-scratch synth in AudioEngine.swift remains a per-event fallback.
 #
 # Release pipeline delegated to the shared `release.mk` from
 # PerpetualBeta/jorvik-release.
@@ -73,7 +73,6 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Render/Sprites.swift \
                     Sources/Render/Mesh3D.swift \
                     Sources/Render/ItemIcons.swift \
-                    Sources/Render/MonsterBake.swift \
                     Sources/Render/MeshCreature.swift \
                     Sources/Render/StaticFX.swift \
                     Sources/Render/Viewmodel.swift \
@@ -93,11 +92,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Harness/AudioProbe.swift \
                     Sources/Harness/Captures.swift \
                     Sources/Harness/RoomShots.swift \
-                    Sources/Harness/ArtPreview.swift \
-                    Sources/Harness/CreatureLab.swift \
                     Sources/Harness/MaterialPreview.swift \
-                    Sources/Harness/BeautyProof.swift \
-                    Sources/Harness/QueenHero.swift \
                     Sources/Harness/QueenMock.swift \
                     Sources/Harness/QueenMeshTest.swift
 

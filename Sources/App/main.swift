@@ -17,8 +17,8 @@ import QuartzCore
 // builds: release.mk defines CITADEL_HARNESS when SIGN_ID is the ad-hoc "-", and
 // omits it for a signed, notarised release. So a shipped Citadel ignores every
 // CITADEL_* variable and goes straight to the game window. The harness TYPES stay
-// compiled (CreatureLab and Captures are load-bearing for the renderer); only
-// these entry points are gated out of release.
+// compiled (Captures is load-bearing for the renderer); only these entry points
+// are gated out of release.
 #if CITADEL_HARNESS
 
 // EVERY harness run is hard-muted before the first AudioEngine can exist:
@@ -27,9 +27,9 @@ import QuartzCore
 // fragile (a forgotten node, an init race, a device-open pop all leak).
 // CITADEL_AUDIOPROBE is exempt by construction: it renders offline.
 for key in ["CITADEL_SMOKE", "CITADEL_FITSHOT", "CITADEL_LOADPROBE", "CITADEL_TIMING",
-            "CITADEL_SHOTS", "CITADEL_ARTPREVIEW", "CITADEL_CREATURES", "CITADEL_MATERIALS",
-            "CITADEL_BEAUTY", "CITADEL_GPU", "CITADEL_AUTOMAP", "CITADEL_ROOMS", "CITADEL_DISPLAYVID",
-            "CITADEL_TITLESHOT", "CITADEL_QUEENHERO", "CITADEL_QUEENMOCK", "CITADEL_QUEENMESH",
+            "CITADEL_SHOTS", "CITADEL_MATERIALS",
+            "CITADEL_AUTOMAP", "CITADEL_ROOMS", "CITADEL_DISPLAYVID",
+            "CITADEL_TITLESHOT", "CITADEL_QUEENMOCK", "CITADEL_QUEENMESH",
             "CITADEL_MESHVERIFY", "CITADEL_DRONEMESH", "CITADEL_TERMSHOT"]
     where ProcessInfo.processInfo.environment[key] != nil {
     setenv("CITADEL_MUTE", "1", 1)
@@ -465,35 +465,8 @@ if let dir = ProcessInfo.processInfo.environment["CITADEL_SHOTS"] {
     exit(0)
 }
 
-if let v = ProcessInfo.processInfo.environment["CITADEL_ARTPREVIEW"] {
-    ArtPreview.run(outDir: v.isEmpty || v == "1" ? nil : v)
-    exit(0)
-}
-
-if let v = ProcessInfo.processInfo.environment["CITADEL_CREATURES"] {
-    CreatureLab.run(gif: v == "gif")
-    exit(0)
-}
-
 if ProcessInfo.processInfo.environment["CITADEL_MATERIALS"] != nil {
     MaterialPreview.run()
-    exit(0)
-}
-
-if let v = ProcessInfo.processInfo.environment["CITADEL_BEAUTY"] {
-    BeautyProof.run(outDir: v.isEmpty || v == "1" ? nil : v)
-    exit(0)
-}
-
-// CITADEL_QUEENHERO[=path|"k=v ..."] → render the QUEEN as an original title
-// hero plate (our creature, cinematic finish), then exit. Title-art R&D only.
-if let v = ProcessInfo.processInfo.environment["CITADEL_QUEENHERO"] {
-    QueenHero.run(outDir: v.isEmpty ? nil : v)
-    exit(0)
-}
-
-if let v = ProcessInfo.processInfo.environment["CITADEL_GPU"] {
-    GPURaymarch.run(outDir: v.isEmpty || v == "1" ? nil : v)
     exit(0)
 }
 
