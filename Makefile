@@ -55,6 +55,8 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Game/Player.swift \
                     Sources/Game/Weapon.swift \
                     Sources/Game/Monster.swift \
+                    Sources/Game/EasterEggs.swift \
+                    Sources/Game/SpaceInvaders.swift \
                     Sources/Game/Item.swift \
                     Sources/Game/Prop.swift \
                     Sources/Game/Projectile.swift \
@@ -82,6 +84,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/UI/HallArt.swift \
                     Sources/UI/IntelPortraits.swift \
                     Sources/UI/MeshPortraits.swift \
+                    Sources/UI/Terminal.swift \
                     Sources/UI/Automap.swift \
                     Sources/UI/Automap3D.swift \
                     Sources/UI/Font.swift \

@@ -30,7 +30,7 @@ for key in ["CITADEL_SMOKE", "CITADEL_FITSHOT", "CITADEL_LOADPROBE", "CITADEL_TI
             "CITADEL_SHOTS", "CITADEL_ARTPREVIEW", "CITADEL_CREATURES", "CITADEL_MATERIALS",
             "CITADEL_BEAUTY", "CITADEL_GPU", "CITADEL_AUTOMAP", "CITADEL_ROOMS", "CITADEL_DISPLAYVID",
             "CITADEL_TITLESHOT", "CITADEL_QUEENHERO", "CITADEL_QUEENMOCK", "CITADEL_QUEENMESH",
-            "CITADEL_MESHVERIFY", "CITADEL_DRONEMESH"]
+            "CITADEL_MESHVERIFY", "CITADEL_DRONEMESH", "CITADEL_TERMSHOT"]
     where ProcessInfo.processInfo.environment[key] != nil {
     setenv("CITADEL_MUTE", "1", 1)
     break
@@ -553,6 +553,46 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_TITLESHOT"] {
     Captures.writePNG(c.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: 1,
                       to: URL(fileURLWithPath: out))
     print("Citadel: wrote title screenshot to \(out)")
+    exit(0)
+}
+
+// CITADEL_TERMSHOT[=dir] → render each terminal easter egg + the guru meditation
+// to PNGs (default ~/Desktop), then exit. Previews the amber CRT without playing.
+if let v = ProcessInfo.processInfo.environment["CITADEL_TERMSHOT"] {
+    let dir = (v.isEmpty || v == "1") ? NSHomeDirectory() + "/Desktop" : v
+    func write(_ c: Canvas2D, _ name: String) {
+        Captures.writePNG(c.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: 1,
+                          to: URL(fileURLWithPath: dir + "/\(name).png"))
+    }
+    func shot(_ egg: TerminalEgg?, _ name: String, page: Int = 0, _ t: Float) {
+        let c = Canvas2D()
+        c.fillRect(0, 0, c.width, c.height, packRGBA(34, 38, 44))   // stand-in room behind the terminal
+        Terminal.draw(c, egg: egg, page: page, scale: 1, t: t)
+        write(c, name)
+    }
+    // the text eggs (page 1) + guru (skip the mini-game — it draws itself, below)
+    for (i, egg) in TerminalEgg.all.enumerated() where egg.kind != .miniGame { shot(egg, "term-\(i)", 0.3) }
+    shot(nil, "term-guru", 0.0)
+    // a later Director's Log page — shows the ◀ PAGE n / N ▶ paging footer
+    shot(TerminalEgg.all[0], "term-log-p2", page: 2, 0.3)
+    // the arcade mini-game — three staged states, in the same CRT
+    ArcadeScores.shared.harnessSeed([
+        ArcadeEntry(name: "ARC", score: 4820), ArcadeEntry(name: "JON", score: 3260),
+        ArcadeEntry(name: "CPL", score: 2140), ArcadeEntry(name: "MUM", score: 1780),
+        ArcadeEntry(name: "DAD", score: 990),
+    ])
+    func shotGame(_ name: String, _ t: Float, _ setup: (SpaceInvaders) -> Void) {
+        let c = Canvas2D()
+        c.fillRect(0, 0, c.width, c.height, packRGBA(34, 38, 44))
+        let g = SpaceInvaders(); setup(g)
+        let f = Terminal.frame(c, scale: 1, t: t, guru: false)
+        g.draw(c, f.x0, f.y0, f.sw, f.sh, a: 1, t: t)
+        write(c, name)
+    }
+    shotGame("inv-play", 0.2) { $0.harnessMidPlay() }
+    shotGame("inv-initials", 0.2) { $0.harnessInitials(score: 3260) }
+    shotGame("inv-scores", 0.2) { $0.harnessScoreboard() }
+    print("Citadel: wrote terminal shots + guru + 3 arcade frames to \(dir)")
     exit(0)
 }
 

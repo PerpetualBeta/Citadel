@@ -138,10 +138,13 @@ final class OptionsSheet: NSObject {
     @objc private func resetScores() {
         let alert = NSAlert()
         alert.messageText = "Reset all high scores?"
-        alert.informativeText = "This permanently clears the Hall of the Fallen."
+        alert.informativeText = "This permanently clears the Hall of the Fallen and the terminal arcade high scores."
         alert.addButton(withTitle: "Reset")
         alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn { highScores.clear() }
+        if alert.runModal() == .alertFirstButtonReturn {
+            highScores.clear()
+            ArcadeScores.shared.clear()   // the arcade table wipes together with the main game's
+        }
     }
 
     @objc private func close() {

@@ -92,6 +92,11 @@ final class World {
     struct Fireball { var pos: SIMD2<Float>; var age: Float = 0; var life: Float; var size: Float; var soot: Float }
     var fireballs: [Fireball] = []
 
+    /// Set by handleUse when the marine activates a computer-desk terminal. The
+    /// Renderer consumes it (clears it) to zoom into the terminal and show an
+    /// easter egg, suspending play while it's read.
+    var terminalUsePending = false
+
     var score = 0
     let level: Int
     let colonyIndex: Int
@@ -629,6 +634,9 @@ final class World {
             }
             return
         }
+        // a computer-desk terminal within reach → read it (easter eggs). The Renderer
+        // zooms into the terminal and suspends play; nothing else happens this press.
+        if nearDeskTerminal(within: 1.5) { terminalUsePending = true; return }
         // probe a couple of points ahead
         let dx = cos(player.dir), dy = sin(player.dir)
         for reach: Float in [0.7, 1.2, 1.7] {
@@ -672,6 +680,17 @@ final class World {
                 beginElevator(audio: audio); return
             }
         }
+    }
+
+    /// True if the marine is stood beside a computer-desk terminal (its easter egg
+    /// is within reach). Desks are set against a wall, so a modest radius reads as
+    /// "at the workstation" without catching a passer-by.
+    private func nearDeskTerminal(within r: Float) -> Bool {
+        for p in props where p.kind == .desk {
+            let dx = p.pos.x - player.pos.x, dy = p.pos.y - player.pos.y
+            if dx * dx + dy * dy < r * r { return true }
+        }
+        return false
     }
 
     /// Drop a proximity mine at the marine's feet (edge-triggered). It arms after

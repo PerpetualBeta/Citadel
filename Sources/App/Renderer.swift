@@ -11,7 +11,7 @@ import Cocoa
 import MetalKit
 import QuartzCore
 
-enum GameState { case title, briefing, intel, riding, playing, paused, automap, teleport, gameOver, highScores }
+enum GameState { case title, briefing, intel, riding, playing, paused, automap, teleport, gameOver, highScores, terminal }
 
 final class Renderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
@@ -68,9 +68,18 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var lastRank = -1
     private var scoresReturn: GameState = .title   // where the Hall returns to (menu view → prior screen; post-game → title)
 
+    // ── terminal easter eggs ──
+    private var seenEggs: Set<Int> = []    // indices into TerminalEgg.all seen THIS session (in-memory → resets each launch)
+    private var currentEgg = -1            // egg on screen, or -1 = GURU MEDITATION (pool exhausted)
+    private var terminalReturn: GameState = .playing
+    private var termClosing = false        // zooming back out
+    private var termPage = 0                // current page of a multi-page document
+    private var pTermL = false, pTermR = false   // LEFT/RIGHT page-turn edge tracking
+    private let invaders = SpaceInvaders() // the arcade mini-game egg (played on the CRT glass)
+
     // edge tracking
     private var pConfirm = false, pEsc = false, pBrief = false, pIntel = false
-    private var pPause = false, pMute = false, pShot = false, pMap = false
+    private var pPause = false, pMute = false, pShot = false, pMap = false, pUse = false
     // the intel codex — current page + page-turn edge tracking (◀ ▶ / strafe keys)
     private var intelPage = 0
     private var pPageL = false, pPageR = false
@@ -163,6 +172,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         case .teleport: tickTeleport(dt)
         case .gameOver: tickGameOver(dt)
         case .highScores: tickHighScores(dt)
+        case .terminal: tickTerminal(dt)
         }
 
         // ── the teleport static bed ── ONE authority drives the loop's volume
@@ -185,7 +195,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private func updateEdges() {
         pConfirm = input.restart; pEsc = input.esc; pBrief = input.briefing
         pIntel = input.intel; pPause = input.pause; pMute = input.mute; pShot = input.screenshot
-        pMap = input.map
+        pMap = input.map; pUse = input.use
     }
 
     // ── states ─────────────────────────────────────────────────────────────
@@ -224,6 +234,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         world.holdRide = pendingWorld == nil
         world.update(dt: dt, input: input, audio: audio)
+        // the marine USEd a computer-desk terminal → zoom in to read an easter egg,
+        // suspending play. (Consume the flag; the .terminal state owns it from here.)
+        if world.terminalUsePending {
+            world.terminalUsePending = false
+            enterTerminal()
+            return
+        }
         let cue = world.audioCue()       // drive the reactive ambient bed from live danger
         audio.setTension(threat: cue.threat, queen: cue.queen, health: cue.health, combat: cue.combat)
         renderWorld(world)
@@ -366,6 +383,62 @@ final class Renderer: NSObject, MTKViewDelegate {
             state = ret; screenT = 0
             if ret == .title { audio.startMusic(.title) }
             if ret == .paused { pausedDrawn = false }       // the Hall overwrote the frozen frame — redraw it
+        }
+    }
+
+    // ── terminal easter eggs ──────────────────────────────────────────────────
+    private func enterTerminal() {
+        // pick a random UNSEEN egg; once the pool is spent, every terminal shows the
+        // Amiga guru meditation (currentEgg = -1). Seen-set is per session (in memory).
+        let unseen = TerminalEgg.all.indices.filter { !seenEggs.contains($0) }
+        if let pick = unseen.randomElement() { seenEggs.insert(pick); currentEgg = pick }
+        else { currentEgg = -1 }
+        if currentEgg >= 0, TerminalEgg.all[currentEgg].kind == .miniGame { invaders.reset() }
+        terminalReturn = .playing
+        termClosing = false
+        termPage = 0
+        pTermL = termLeft(); pTermR = termRight()   // a held move key must not flip the first page
+        state = .terminal; screenT = 0
+        pUse = true          // guard: the same USE press that opened it must not close it
+    }
+
+    // LEFT / RIGHT from any bound source — pages documents, drives the arcade cannon.
+    private func termLeft()  -> Bool { input.turnLeft  || input.strafeLeft  || input.moveX < -0.35 }
+    private func termRight() -> Bool { input.turnRight || input.strafeRight || input.moveX >  0.35 }
+
+    /// Reading a terminal — play is suspended (world not stepped). USE (or ESC)
+    /// again zooms back out. The frozen world stays behind, dimmed.
+    private func tickTerminal(_ dt: Float) {
+        guard let world = world else { state = .title; return }
+        renderWorld(world)                       // frozen backdrop (no world.update → drones don't act)
+        hud.draw(world, into: canvas)
+        let egg: TerminalEgg? = (currentEgg >= 0 && currentEgg < TerminalEgg.all.count) ? TerminalEgg.all[currentEgg] : nil
+        let isGame = egg?.kind == .miniGame
+        // zoom scale — same ease in either direction
+        let s: Float
+        if !termClosing { let z = min(1, screenT / 0.28); s = z * z * (3 - 2 * z) }
+        else            { let z = 1 - min(1, screenT / 0.22); s = z * z * (3 - 2 * z) }
+
+        let live = !termClosing && screenT >= 0.28   // fully zoomed in and not backing out
+        if isGame {
+            let f = Terminal.frame(canvas, scale: s, t: screenT, guru: false)
+            if live { invaders.update(dt: dt, left: termLeft(), right: termRight(), fire: input.fire) }
+            if f.cf > 0.01 { invaders.draw(canvas, f.x0, f.y0, f.sw, f.sh, a: f.cf, t: screenT) }
+        } else {
+            // LEFT / RIGHT page through a multi-page document (clamped at the ends)
+            if live, let e = egg, e.pageCount > 1 {
+                if rising(termRight(), pTermR) { termPage = min(e.pageCount - 1, termPage + 1) }
+                if rising(termLeft(),  pTermL) { termPage = max(0, termPage - 1) }
+            }
+            Terminal.draw(canvas, egg: egg, page: termPage, scale: s, t: screenT)
+        }
+        pTermL = termLeft(); pTermR = termRight()
+
+        // USE / ESC steps back out (never FIRE, so the arcade keeps its trigger)
+        if !termClosing {
+            if rising(input.use, pUse) || rising(input.esc, pEsc) { termClosing = true; screenT = 0 }
+        } else if screenT >= 0.22 {
+            state = terminalReturn; screenT = 0; termClosing = false
         }
     }
 
