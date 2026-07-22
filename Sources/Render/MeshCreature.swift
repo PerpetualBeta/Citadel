@@ -1,4 +1,4 @@
-// Citadel — textured-mesh creature renderer (dev/R&D path).
+// Citadel — textured-mesh creature renderer (the shipping bestiary path).
 //
 // Rasterises a rigless 3D creature mesh (Tripo-from-flux) into the live frame:
 // the raymarch kernel draws the world + perpendicular depth, then this draws the

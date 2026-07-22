@@ -129,17 +129,20 @@ Keyboard always works alongside.
 
 ### Hidden feature flags
 
-Off by default; opt in per machine with `defaults write` (read live):
+Most are off by default; opt in per machine with `defaults write` (read live, so a
+change lands on the next frame — no relaunch):
 
 ```sh
-defaults write cc.jorviksoftware.Citadel Godmode       -bool true   # no damage
-defaults write cc.jorviksoftware.Citadel AllWeapons    -bool true   # full arsenal + ammo at spawn
-defaults write cc.jorviksoftware.Citadel NoClip        -bool true   # walk through walls
-defaults write cc.jorviksoftware.Citadel FastMonsters  -bool true   # nightmare speed
-defaults write cc.jorviksoftware.Citadel RevealMap     -bool true   # automap fully revealed
-defaults write cc.jorviksoftware.Citadel ScreenshotKey -bool true   # F saves a 4× PNG to the Desktop
-defaults write cc.jorviksoftware.Citadel FixedSeed     -int 1234    # pin the level seed for testing
-defaults write cc.jorviksoftware.Citadel StartLevel    -int 9       # warp new runs to a floor (1-indexed; testing)
+defaults write cc.jorviksoftware.Citadel Godmode       -bool  true   # no damage
+defaults write cc.jorviksoftware.Citadel AllWeapons    -bool  true   # full arsenal + ammo at spawn
+defaults write cc.jorviksoftware.Citadel NoClip        -bool  true   # walk through walls
+defaults write cc.jorviksoftware.Citadel FastMonsters  -bool  true   # nightmare speed
+defaults write cc.jorviksoftware.Citadel RevealMap     -bool  true   # automap fully revealed
+defaults write cc.jorviksoftware.Citadel ScreenshotKey -bool  true   # F saves a 1920×1080 PNG to the Desktop
+defaults write cc.jorviksoftware.Citadel FixedSeed     -int   1234   # pin the level seed for testing
+defaults write cc.jorviksoftware.Citadel StartLevel    -int   9      # warp new runs to a floor (1-indexed; testing)
+defaults write cc.jorviksoftware.Citadel OverheadLight -float 1.0    # ceiling-lamp brightness (default 0.5 — the tuned, moody look)
+defaults write cc.jorviksoftware.Citadel GPUFire       -bool  false  # A/B the GPU flame vs the legacy CPU billboards (default on)
 ```
 
 ### Headless harnesses
@@ -156,11 +159,12 @@ CITADEL_SHOTS=docs/screenshots ./.build/Citadel.app/Contents/MacOS/Citadel
 ## Architecture
 
 A real-time GPU signed-distance-field raymarcher (a Metal compute kernel) draws
-the world — the level architecture as a distance field `min`'d with native SDF
-creatures, lit and graded on the GPU — while the HUD and front-end screens
-composite over it in a software 2-D canvas, blit-upscaled nearest-neighbour. See
-**[ARCHITECTURE.md](ARCHITECTURE.md)** for the rendering pipeline and a per-file
-source map.
+the world — the iron-and-steel architecture and the SDF objects (drums, sockets,
+mines, pickups) as one distance field, lit and graded on the GPU — with the alien
+bestiary rasterised in as 3-D meshes over matched depth, and the HUD and
+front-end screens composited over it in a software 2-D canvas, blit-upscaled
+nearest-neighbour. See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the rendering
+pipeline and a per-file source map.
 
 ## Support
 
