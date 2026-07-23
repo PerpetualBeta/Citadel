@@ -10,16 +10,17 @@ descend.
 ![Citadel title screen](docs/screenshots/01-title.png)
 
 **The second *native* game in the Jorvik suite**, and the ground war of the
-saga that opened with [Strataris](https://jorviksoftware.cc) — that was the air
-war; this is the retake on foot.
+saga that opened with [Strataris](https://jorviksoftware.cc/games/strataris) —
+that was the air war; this is the retake on foot.
 
 ## Rendered in code, in real time
 
 Citadel's world is drawn in real time by a **GPU signed-distance-field
 raymarcher** (a Metal compute kernel) — **no textures, no sprites, no level
 files.** The iron-and-steel architecture, the wall-baked pipework and steelwork,
-the fuel drums and recharge panels, the fire, and the pickups are all true 3-D
-SDF geometry, lit and colour-graded on the GPU. The HUD and front-end screens are
+the fuel drums and recharge panels, and the pickups are all true 3-D SDF geometry,
+lit and colour-graded on the GPU; the flames are volumetric, integrated through the
+same kernel. The HUD and front-end screens are
 drawn into a software 2-D canvas and composited on top, then upscaled
 aspect-correct and letterboxed.
 
