@@ -1062,16 +1062,21 @@ enum MapGen {
             }
         }
 
-        // ── CCTV cameras ── ARC IS WATCHING. Mounted high on a wall (decorative, no
-        // collider, no floor clearance needed — they sit near the ceiling), lens
-        // angled down into the room. A handful per floor, on a clear stretch of wall,
-        // spread across rooms so the surveillance state reads everywhere.
-        for (ri, r) in rooms.enumerated() where rng.chance(0.55) {
-            let cs = wallSlots(r, ri)
-            if let cam = cs.first(where: { s in !featureBacked(s) && !placed.contains(where: { vlen($0 - s.pos) < 1.0 }) })
-                       ?? cs.first(where: { !featureBacked($0) }) {
-                props.append(Prop(kind: .camera, pos: cam.pos, yaw: yawFor(cam.inward)))
-                placed.append(cam.pos)
+        // ── CCTV cameras ── ARC IS WATCHING. Mounted HIGH in a room CORNER, angled
+        // diagonally across the room for maximum coverage (decorative, no collider,
+        // keeps its authored height). About half the rooms carry one, so the
+        // surveillance state reads across the floor without becoming wallpaper.
+        for r in rooms where rng.chance(0.55) {
+            let corners: [(x: Int, y: Int, dx: Float, dy: Float)] = [
+                (r.x,             r.y,             1,  1),   // each nestles into the two walls behind it,
+                (r.x + r.w - 1,   r.y,            -1,  1),   // lens facing the room diagonal (dx,dy → centre)
+                (r.x,             r.y + r.h - 1,   1, -1),
+                (r.x + r.w - 1,   r.y + r.h - 1,  -1, -1),
+            ]
+            for c in corners where map.inBounds(c.x, c.y) && map.wall[map.idx(c.x, c.y)] == 0 && map.doors[map.idx(c.x, c.y)] == nil {
+                props.append(Prop(kind: .camera, pos: SIMD2(Float(c.x) + 0.5, Float(c.y) + 0.5), yaw: yawFor(SIMD2(c.dx, c.dy))))
+                placed.append(SIMD2(Float(c.x) + 0.5, Float(c.y) + 0.5))
+                break
             }
         }
 

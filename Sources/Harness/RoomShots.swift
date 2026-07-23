@@ -186,6 +186,37 @@ enum RoomShots {
             break
         }
 
+        // CCTV camera view — mounted HIGH on the wall (near the ceiling), so stand
+        // back and face the wall it's on; it frames in the upper part of the view.
+        for seed in stride(from: UInt64(1), through: UInt64(80), by: 1) {
+            let world = World(level: 1, colonyIndex: 0, seed: seed)
+            world.monsters = []; world.drums = []; world.sockets = []
+            world.props = world.props.filter { $0.kind == .camera }     // clean model check — just the cameras
+            guard let cam0 = world.props.first else { continue }
+            let m = world.map
+            func openLit(_ c: SIMD2<Float>) -> Bool {
+                let x = Int(c.x), y = Int(c.y)
+                guard m.inBounds(x, y), !m.blocksMovement(x, y) else { return false }
+                let col = m.lightColor[m.idx(x, y)]; return col.x * 0.299 + col.y * 0.587 + col.z * 0.114 > 0.35
+            }
+            let inward = SIMD2<Float>(-sin(cam0.yaw), cos(cam0.yaw))     // camera faces this way; stand on this side
+            var cam = cam0.pos, ok = false
+            for back in [Float(2.6), 2.2, 1.8, 1.4] where !ok {
+                let c = cam0.pos + inward * back
+                if openLit(c) { cam = c; ok = true }
+            }
+            guard ok else { continue }
+            world.player.pos = cam
+            world.player.dir = atan2(cam0.pos.y - cam.y, cam0.pos.x - cam.x)
+            world.player.muzzle = 0
+            let canvas = Canvas2D()
+            _ = gpu.render(world, into: canvas)
+            n += 1
+            Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent("00l-camera.png"))
+            print("  wrote 00l-camera.png — CCTV wall camera (seed \(seed))")
+            break
+        }
+
         // terminal-bank view — verify the amber CRT wall: the monitor grid, baked
         // telemetry and the rolling refresh bar. Every office room gets a bank
         // (MapGen.placeTerminalBanks), so scan for one with standing room in

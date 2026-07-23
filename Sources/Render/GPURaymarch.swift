@@ -2147,17 +2147,18 @@ enum GPURaymarch {
                     iBox(SIMD3(0, 0.045, 0), SIMD3(hw - 0.004, 0.045, hd - 0.004), 0.004, darkM, 0.004)]    // base plinth (stands it off the deck)
         case .wallPipe:
             return pipeRunShapes(length: 1)                    // length comes from the Prop at pack time
-        case .camera:                                          // ARC surveillance cam — high on the wall, lens angled DOWN into the room
+        case .camera:                                          // ARC surveillance cam — CORNER-mounted high, lens angled DOWN into the room
             // The status LED is authored OVER-BRIGHT red (>1) so it self-glows via the
             // bright-pass/bloom, exactly like the desk's powered screen. ARC is watching.
-            let body = SIMD3<Float>(0.16, 0.16, 0.19), lensD = SIMD3<Float>(0.05, 0.05, 0.06)
-            let ledOn = SIMD3<Float>(2.4, 0.12, 0.08)
+            let body = SIMD3<Float>(0.17, 0.17, 0.20), hood = SIMD3<Float>(0.09, 0.09, 0.11)
+            let lensD = SIMD3<Float>(0.045, 0.045, 0.05), ledOn = SIMD3<Float>(2.6, 0.10, 0.06)
             let y: Float = 0.80                                // mounted near the ceiling (ceilH ≈ 0.9)
-            return [iBox(SIMD3(0, y + 0.02, -0.075), SIMD3(0.018, 0.018, 0.055), 0.006, steel, d),       // wall bracket stub (−Z)
-                    iBox(SIMD3(0, y - 0.01, 0.0), SIMD3(0.05, 0.04, 0.07), 0.02, body, 0.008),           // camera body
-                    iCone(SIMD3(0, y - 0.02, 0.05), SIMD3(0, y - 0.055, 0.115), 0.03, 0.032, lensD, 0.01), // lens barrel, angled down+out
-                    iSphere(SIMD3(0, y - 0.06, 0.12), 0.026, SIMD3(0.02, 0.02, 0.028), 0.005),           // dark lens glass
-                    iSphere(SIMD3(0.045, y + 0.01, 0.055), 0.009, ledOn, 0.003)]                         // red status LED (self-glowing)
+            return [iBox(SIMD3(0, y + 0.035, -0.09), SIMD3(0.02, 0.02, 0.065), 0.006, steel, d),         // mount arm back into the corner (−Z)
+                    iBox(SIMD3(0, y, 0.0), SIMD3(0.06, 0.05, 0.085), 0.02, body, 0.008),                 // camera body
+                    iBox(SIMD3(0, y + 0.045, 0.03), SIMD3(0.072, 0.012, 0.08), 0.008, hood, 0.006),      // sun hood (the CCTV silhouette)
+                    iCone(SIMD3(0, y - 0.015, 0.06), SIMD3(0, y - 0.065, 0.15), 0.036, 0.04, lensD, 0.01), // lens barrel, angled down+out
+                    iSphere(SIMD3(0, y - 0.07, 0.155), 0.032, SIMD3(0.02, 0.02, 0.03), 0.005),           // dark lens glass
+                    iSphere(SIMD3(0.058, y + 0.005, 0.065), 0.013, ledOn, 0.003)]                        // red status LED (self-glowing)
         }
     }
 
@@ -2286,10 +2287,11 @@ enum GPURaymarch {
             boundR += 0.05
             let start = shapes.count
             shapes.append(contentsOf: sl)
-            // Floor furniture sits feet-on-deck (loY → floor); a WALL pipe is mounted
-            // up the wall, so it must keep its AUTHORED height (yOff 0) — flooring it
-            // dragged the run down into the bunks.
-            let yOff: Float = pr.kind == .wallPipe ? 0 : loY
+            // Floor furniture sits feet-on-deck (loY → floor); WALL-MOUNTED pieces (a
+            // pipe run, a CCTV camera) are authored at their true height up the wall, so
+            // they must keep it (yOff 0) — flooring dragged the run into the bunks / the
+            // camera down onto the deck.
+            let yOff: Float = (pr.kind == .wallPipe || pr.kind == .camera) ? 0 : loY
             mons.append(GMonster(a: SIMD4(pr.pos.x, pr.pos.y, pr.yaw, 1),
                                  b: SIMD4(Float(start), Float(sl.count), boundR, boundCY),
                                  c: SIMD4(yOff, 0, 3, 0)))   // c.z = 3 → opaque industrial prop
