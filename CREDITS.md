@@ -9,8 +9,8 @@ hard on sound to synthesise convincingly).
 
 ## Graphics
 
-The alien meshes and the two cinematic hero plates are **AI-generated from original,
-Citadel-specific prompts** — the creative direction (the biomechanical "bleed"
+The alien meshes, the fallen-colonist meshes, and the two cinematic hero plates are
+**AI-generated from original, Citadel-specific prompts** — the creative direction (the biomechanical "bleed"
 creatures, the marine's-eye framing) is the project's own — and were **checked for
 uniqueness** when created. The source images were generated with **FLUX**; the two
 creature meshes were then converted image-to-3D with **Tripo** (a rigless USDZ plus
@@ -21,6 +21,8 @@ project, under the same terms.
 |---------|-------|-----------------|
 | `queen.usdz` + `queen_basecolor.jpg` | the QUEEN broodmother mesh | FLUX image (Citadel-specific prompt) → Tripo image-to-3D |
 | `drone.usdz` + `drone_basecolor.jpg` | the DRONE mesh | FLUX image (Citadel-specific prompt) → Tripo image-to-3D |
+| `colonist_worker.usdz` + `colonist_worker_basecolor.jpg` | a fallen ARC colonist (worker, navy suit) | FLUX image (Citadel-specific prompt) → Tripo image-to-3D |
+| `colonist_woman.usdz` + `colonist_woman_basecolor.jpg` | a fallen ARC colonist (woman, white suit) | FLUX image (Citadel-specific prompt) → Tripo image-to-3D |
 | `title_bg.png` | title-screen hero plate (the xenomorph) | FLUX image (Citadel-specific prompt) |
 | `highscore_bg.png` | Hall of the Fallen hero plate (the drone) | FLUX image (Citadel-specific prompt) |
 
