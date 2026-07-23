@@ -320,6 +320,10 @@ final class World {
             map.doors[map.entryCell]!.opening = true
             map.doors[map.entryCell]!.stay = 4
         }
+        // RevealMap cheat (documented in the README): the automap renders only
+        // cells the marine has visited, so pre-mark every walkable cell seen — in
+        // one place, so the explored-% and the exit reveal agree with a full map.
+        if FeatureFlags.revealMap { for i in map.visited.indices where map.wall[i] == 0 { map.visited[i] = true } }
         for s in gen.monsters { monsters.append(Monster(kind: s.kind, pos: s.pos)) }
         for s in gen.items { items.append(Item(kind: s.kind, pos: s.pos, bob: rng.f(0, 6.28))) }
         for d in gen.drums { drums.append(Drum(pos: d, fuel: drumFuel, health: drumHealth)) }
