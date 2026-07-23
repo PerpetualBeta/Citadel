@@ -107,7 +107,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     init(device: MTLDevice, view: MTKView, input: InputState, gamepad: Gamepad,
          audio: AudioEngine, highScores: HighScores) {
         self.device = device
-        self.queue = device.makeCommandQueue()!
+        guard let q = device.makeCommandQueue() else { fatalError("Citadel: no Metal command queue — the GPU is unavailable.") }
+        self.queue = q
         self.view = view
         self.input = input
         self.gamepad = gamepad

@@ -279,7 +279,7 @@ final class MeshCreature {
         float cone = smoothstep(0.34, 0.92, cosA);
         float distF = max(0.0, 1.0 - dist / 13.0); distF *= distF;
         float ndl = max(0.0, dot(N, Ld));
-        float3 lamp = float3(0.78, 0.85, 1.0) * (cone * distF * (0.4 + 0.6 * ndl) * 2.6 * g);
+        float3 lamp = float3(\(WorldLight.lampColor.x), \(WorldLight.lampColor.y), \(WorldLight.lampColor.z)) * (cone * distF * (0.4 + 0.6 * ndl) * 2.6 * g);
         float3 amb = float3(0.20, 0.22, 0.28) * ((0.5 + 0.5 * N.y) * g);
         float3 sector = C.sector.rgb * 0.5;
         float death = C.tune.y;

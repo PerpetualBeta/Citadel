@@ -1411,7 +1411,7 @@ enum GPURaymarch {
             //    (+ a small feet-spill) whose gain ramps with how dark the cell he
             //    stands in is: it idles in lit rooms and does the seeing in unlit
             //    ones. Matches the raycaster's lamp (reach 8.5, ~28° inner/66° outer).
-            const float3 LAMP = float3(0.78, 0.85, 1.00);
+            const float3 LAMP = float3(\(WorldLight.lampColor.x), \(WorldLight.lampColor.y), \(WorldLight.lampColor.z));   // = WorldLight.lampColor (single source of truth)
             float3 toH = ro - p; float hd = length(toH);         // lamp at the eye
             float3 Lh = hd > 1e-4 ? toH / hd : float3(0.0, 1.0, 0.0);
             float cosA = dot(-Lh, U.fwd.xyz);                    // angle off the beam axis
@@ -1571,7 +1571,7 @@ enum GPURaymarch {
                     float3 lit = diffAlb * sectFill * ambTint * 0.52;
                     // the marine's own headlamp grazes the weapon from the eye
                     float ndl = max(0.0, dot(n, V));
-                    lit += (diffAlb * ndl + specBP(n, V, V, rough, f0)) * float3(0.78, 0.85, 1.00) * 0.30;
+                    lit += (diffAlb * ndl + specBP(n, V, V, rough, f0)) * float3(\(WorldLight.lampColor.x), \(WorldLight.lampColor.y), \(WorldLight.lampColor.z)) * 0.30;
                     // a presentation fill from the view's upper-left — the flank
                     // the marine sees is the gun's shadow side (rooms light from
                     // above), so every FPS keys its viewmodel or it silhouettes.
