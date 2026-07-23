@@ -1,9 +1,31 @@
 # Citadel — credits
 
-Citadel's code, graphics, and game design are original work. Its **audio** is the
-deliberate exception to the Jorvik "everything generated in code" rule: Citadel
-ships real sampled sound effects, ambient beds, and a title theme, because the
-atmosphere leans too hard on sound to synthesise convincingly.
+Citadel's code and game design are original work, and its world is generated in
+code. Two kinds of bundled asset are the deliberate exceptions to the Jorvik
+"everything generated in code" rule, and both are documented in full below: the
+**graphics** (the alien mesh bestiary and two cinematic hero plates) and the
+**audio** (sampled SFX, ambient beds, and a title theme — the atmosphere leans too
+hard on sound to synthesise convincingly).
+
+## Graphics
+
+The alien meshes and the two cinematic hero plates are **AI-generated from original,
+Citadel-specific prompts** — the creative direction (the biomechanical "bleed"
+creatures, the marine's-eye framing) is the project's own — and were **checked for
+uniqueness** when created. The source images were generated with **FLUX**; the two
+creature meshes were then converted image-to-3D with **Tripo** (a rigless USDZ plus
+a baked base-colour texture). They are distributed freely with the rest of the
+project, under the same terms.
+
+| File(s) | Asset | How it was made |
+|---------|-------|-----------------|
+| `queen.usdz` + `queen_basecolor.jpg` | the QUEEN broodmother mesh | FLUX image (Citadel-specific prompt) → Tripo image-to-3D |
+| `drone.usdz` + `drone_basecolor.jpg` | the DRONE mesh | FLUX image (Citadel-specific prompt) → Tripo image-to-3D |
+| `title_bg.png` | title-screen hero plate (the xenomorph) | FLUX image (Citadel-specific prompt) |
+| `highscore_bg.png` | Hall of the Fallen hero plate (the drone) | FLUX image (Citadel-specific prompt) |
+
+Everything else visual — the architecture, materials, HUD, weapons, objects, fire,
+and the front-end — is generated in code (see [ARCHITECTURE.md](ARCHITECTURE.md)).
 
 All audio assets are **CC0** (public domain), **CC-BY** (attribution), under the **Pixabay Content License** (royalty-free, no attribution required), or **original work synthesised in-house** (the electrical-fault trio). This file
 records every asset, its source, author, and licence. CC0 requires no attribution
