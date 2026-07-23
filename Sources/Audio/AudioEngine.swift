@@ -294,11 +294,15 @@ final class AudioEngine {
         }
 
         loadBank()
-        // CITADEL_MUTE (headless / CI / office): never start the engine, so no
-        // output device is opened and nothing can make a sound — guaranteed silent,
-        // not merely volume-0. Playback helpers all guard on engine.isRunning.
-        // CITADEL_AUDIOPROBE: run the whole graph in OFFLINE manual-rendering
-        // mode — silent, deterministic, and measurable (AudioProbe pumps it).
+        // The CITADEL_* audio env hooks are DEV/harness-only and must never affect a
+        // signed build (main.swift's invariant: a shipped Citadel ignores every
+        // CITADEL_* variable). Gate them behind the same #if that strips the harness.
+        //   CITADEL_MUTE (headless / CI / office): never start the engine, so no output
+        //     device is opened and nothing can make a sound — guaranteed silent, not
+        //     merely volume-0. Playback helpers all guard on engine.isRunning.
+        //   CITADEL_AUDIOPROBE: run the whole graph in OFFLINE manual-rendering mode —
+        //     silent, deterministic, and measurable (AudioProbe pumps it).
+        #if CITADEL_HARNESS
         if ProcessInfo.processInfo.environment["CITADEL_AUDIOPROBE"] != nil {
             try? engine.enableManualRenderingMode(.offline, format: canonical, maximumFrameCount: 4096)
             engine.prepare()
@@ -307,6 +311,10 @@ final class AudioEngine {
             engine.prepare()
             try? engine.start()
         }
+        #else
+        engine.prepare()
+        try? engine.start()
+        #endif
         applyGains()
         if engine.isRunning { for n in sfxPool { n.play() }; queenSnarlNode.play(); queenDeathNode.play(); stingNode.play(); faultNode.play(); distantNode.play(); for n in dripNodes + wadeNodes { n.play() } }   // idle, ready to schedule
         // Warm-up: a player node that's playing but has never rendered a buffer leaves

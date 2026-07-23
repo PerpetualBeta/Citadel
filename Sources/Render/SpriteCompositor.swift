@@ -120,8 +120,8 @@ struct SpriteCompositor {
             var tint: UInt32 = 0, tintAmt: Float = 0
             var vBias: Float = 0
             var emissive = false   // projectiles/cores ignore darkness
-            var dissolve: Float = 0  // a corpse melting into a toxic pool
-            var groundFade = false   // a corpse's soft floor contact
+            let dissolve: Float = 0  // corpses are meshes now — the billboard path never dissolves
+            let groundFade = false   // corpses are meshes now — the billboard path never ground-fades
             var extraGlow = SIMD3<Float>(0, 0, 0)  // a prop's own light (e.g. a mine's LED)
 
             switch thing.kind {
