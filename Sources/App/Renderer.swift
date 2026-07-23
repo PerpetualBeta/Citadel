@@ -84,6 +84,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var intelPage = 0
     private var pPageL = false, pPageR = false
     private var pausedDrawn = false        // pause freezes the frame — render it ONCE, then idle (no GPU raymarch while paused → fans don't spin on a frozen scene)
+    private var backdropBuf: [UInt32] = [] // cached raymarch of the frozen world behind .terminal / .automap
+    private var backdropValid = false      // invalidated whenever the world is stepped (tickPlaying)
 
     private static let blitShaderSource = """
     #include <metal_stdlib>
@@ -224,6 +226,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     private func tickPlaying(_ dt: Float) {
         guard let world = world else { state = .title; return }
+        backdropValid = false                       // the world is advancing — any cached .terminal/.automap backdrop is now stale
         // The moment an exit commits (car dropping / pad charging), the next
         // floor starts building on the background queue; the transition holds
         // until it lands (holdRide keeps the car dropping past its nominal ride).
@@ -331,7 +334,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // reading the map); Tab / the bound pad button or Esc closes it.
     private func tickAutomap(_ dt: Float) {
         guard let world = world else { state = .title; return }
-        renderWorld(world)                         // dimmed world stays as backdrop; no HUD clutter
+        drawFrozenBackdrop(world)                  // dimmed world stays as backdrop; no HUD clutter (cached — no raymarch/frame)
         Automap.draw(world, into: canvas, t: screenT, input: input, dt: dt)
         if rising(input.map, pMap) || rising(input.esc, pEsc) { state = .playing }
     }
@@ -418,7 +421,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// again zooms back out. The frozen world stays behind, dimmed.
     private func tickTerminal(_ dt: Float) {
         guard let world = world else { state = .title; return }
-        renderWorld(world)                       // frozen backdrop (no world.update → drones don't act)
+        drawFrozenBackdrop(world)                // frozen backdrop, cached (no world.update, no per-frame raymarch)
         hud.draw(world, into: canvas)
         let egg: TerminalEgg? = (currentEgg >= 0 && currentEgg < TerminalEgg.all.count) ? TerminalEgg.all[currentEgg] : nil
         let isGame = egg?.kind == .miniGame
@@ -605,6 +608,24 @@ final class Renderer: NSObject, MTKViewDelegate {
         enc.endEncoding()
         cmd.present(drawable)
         cmd.commit()
+    }
+
+    /// The frozen backdrop behind .terminal / .automap: raymarch the (unchanging)
+    /// world ONCE, cache the framebuffer, and thereafter restore the cached pixels
+    /// instead of re-running the ~1M-thread SDF kernel + post pass every frame. The
+    /// world isn't stepped in these states, so the backdrop is byte-identical; only
+    /// the cheap CPU overlay (HUD + CRT, or the dimmed orbit map) redraws on top.
+    /// Same reasoning as the paused fix — the fans must not spin on a static scene.
+    private func drawFrozenBackdrop(_ world: World) {
+        let n = canvas.width * canvas.height
+        if backdropValid && backdropBuf.count == n {
+            backdropBuf.withUnsafeBufferPointer { _ = memcpy(canvas.framebuffer, $0.baseAddress!, n * 4) }
+        } else {
+            renderWorld(world)
+            if backdropBuf.count != n { backdropBuf = [UInt32](repeating: 0, count: n) }
+            backdropBuf.withUnsafeMutableBufferPointer { _ = memcpy($0.baseAddress!, canvas.framebuffer, n * 4) }
+            backdropValid = true
+        }
     }
 
     // ── world 3-D view: the GPU SDF renderer ───────────────────────────────────
