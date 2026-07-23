@@ -9,7 +9,7 @@ import Cocoa
 import MetalKit
 import Sparkle
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow!
     private var view: GameView!
     private var renderer: Renderer!
@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeFirstResponder(view)
         window.setFrame(screenFrame, display: true)
         window.makeKeyAndOrderFront(nil)
+        window.delegate = self                              // for miniaturise → pause
 
         installMenu()
         if FeatureFlags.updater { updater = makeUpdater() }   // auto-check only when opted in
@@ -63,6 +64,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    // ── lifecycle: idle the game + audio when Citadel isn't on screen ──────────
+    // Stop the render/sim loop (MTKView.isPaused) and pause the audio engine
+    // whenever the app is inactive (backgrounded / hidden / Cmd-tabbed away) or the
+    // window is miniaturised — no fans spinning and no sound from a window you can't
+    // see. The sim's dt is clamped (Renderer), so the first resumed frame can't jump.
+    func applicationDidResignActive(_ n: Notification)     { updateRunState() }
+    func applicationDidBecomeActive(_ n: Notification)     { updateRunState() }
+    func windowDidMiniaturize(_ n: Notification)           { updateRunState() }
+    func windowDidDeminiaturize(_ n: Notification)         { updateRunState() }
+
+    private func updateRunState() {
+        guard let view = view else { return }
+        // Run only when actually on screen. isActive + isMiniaturized are synchronous
+        // and reliable (unlike occlusionState, which is racy at launch).
+        let hidden = !NSApp.isActive || (window?.isMiniaturized ?? false)
+        view.isPaused = hidden
+        if hidden { audio.suspend() } else { audio.resume() }
+    }
 
     // ── menu ─────────────────────────────────────────────────────────────────
 

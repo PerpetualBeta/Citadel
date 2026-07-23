@@ -177,6 +177,14 @@ final class AudioEngine {
     var ambientGain: Float { didSet { applyGains() } }
     var muted = false      { didSet { applyGains() } }
 
+    /// Backgrounding: fully idle the engine while Citadel is inactive or its window
+    /// is hidden — no sound leaks from a window you can't see, and the audio thread
+    /// stops. Independent of the M-key `muted` toggle; resume() restores exactly (and
+    /// only) what suspend() paused, so a user-muted or harness-silent engine stays so.
+    private var suspendedByLifecycle = false
+    func suspend() { if engine.isRunning { engine.pause(); suspendedByLifecycle = true } }
+    func resume()  { if suspendedByLifecycle { try? engine.start(); suspendedByLifecycle = false } }
+
     // ── reactive bed: live threat signal from the game ─────────────────────────
     private var tThreat: Float = 0    // 0…1 nearest-drone proximity (pack-weighted)
     private var tQueen: Float = 0     // 0…1 Queen awake & near (dread)
