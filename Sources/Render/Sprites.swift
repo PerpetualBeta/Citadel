@@ -49,15 +49,6 @@ private struct Buf {
             set(i, j, nl > 0.38 ? light : (nl < -0.3 ? dark : base))
         } }
     }
-    /// Vertical metal/flesh cylinder, shaded left(light)→right(dark).
-    mutating func cylinderV(_ cx: Int, _ y0: Int, _ y1: Int, _ hw: Int, _ base: UInt32, _ light: UInt32, _ dark: UInt32) {
-        if y1 < y0 || hw < 1 { return }
-        for y in y0...y1 { for x in (cx - hw)...(cx + hw) {
-            let f = Float(x - (cx - hw)) / Float(2 * hw)
-            set(x, y, f < 0.22 ? light : (f > 0.72 ? dark : base))
-        } }
-        for y in y0...y1 { set(cx - hw + 1, y, light) }
-    }
     mutating func cylinderH(_ x0: Int, _ x1: Int, _ cy: Int, _ hh: Int, _ base: UInt32, _ light: UInt32, _ dark: UInt32) {
         if x1 < x0 || hh < 1 { return }
         for x in x0...x1 { for y in (cy - hh)...(cy + hh) {
@@ -65,20 +56,6 @@ private struct Buf {
             set(x, y, f < 0.25 ? light : (f > 0.72 ? dark : base))
         } }
         for x in x0...x1 { set(x, cy - hh + 1, light) }
-    }
-    mutating func boxBevel(_ x: Int, _ y: Int, _ rw: Int, _ rh: Int, _ base: UInt32, _ light: UInt32, _ dark: UInt32) {
-        for j in y..<(y + rh) { for i in x..<(x + rw) {
-            var c = base
-            if i == x || j == y { c = light } else if i == x + rw - 1 || j == y + rh - 1 { c = dark }
-            set(i, j, c)
-        } }
-    }
-    mutating func shadeFilled(top: Float, bottom: Float) {
-        var minY = h, maxY = -1
-        for y in 0..<h { for x in 0..<w where (px[y * w + x] >> 24) != 0 { if y < minY { minY = y }; if y > maxY { maxY = y } } }
-        if maxY < minY { return }
-        for y in minY...maxY { let f = Float(y - minY) / Float(max(1, maxY - minY)); let m = top + (bottom - top) * f
-            for x in 0..<w { let i = y * w + x; if (px[i] >> 24) != 0 { px[i] = shade(px[i], m) } } }
     }
     mutating func outline(_ color: UInt32) {
         let snap = px
@@ -112,9 +89,6 @@ final class Sprites {
     private var projCache: [Int: Sprite] = [:]
     private var weaponIconCache: [Int: Sprite] = [:]
     private(set) var faces: [Sprite] = []
-
-    private let mMet = packRGBA(104, 108, 122), mLit = packRGBA(168, 172, 188), mDk = packRGBA(48, 50, 60)
-    private let mGrip = packRGBA(96, 70, 48), mGripL = packRGBA(140, 104, 70), mGripD = packRGBA(58, 42, 28)
 
     private init() {
         for k in ItemKind.allCases { itemCache[k.rawValue] = buildItem(k) }

@@ -39,8 +39,6 @@ enum FrontEnd {
     static let amberDim = packRGBA(150, 118, 52)
     static let cold = packRGBA(150, 200, 212)        // ARC — clinical, alien to the warm phosphor
     static let coldDim = packRGBA(104, 150, 162)
-    // a memory-dump glyph set (system-font-safe: hex, Greek, symbols)
-    private static let rainGlyphs = Array("0123456789ABCDEFΣΦΩΔΞΨ<>/=+*").map(String.init)
 
     /// The prompt verb for "confirm", by input device: a connected pad's FIRE
     /// button confirms menus; on the keyboard it's the return key (fire does
@@ -104,44 +102,6 @@ enum FrontEnd {
         }
         credit("Produced by", uiS(356))
         credit("Jorvik Software", uiS(374))
-    }
-
-    /// Deterministic digital-rain derived purely from `t` (the front-end keeps no
-    /// per-frame state): each column streams at its own speed/phase, glyphs flicker
-    /// on a time bucket, the head is bright (rarely crimson), the tail fades to black.
-    private static func terminalRain(_ c: Canvas2D, _ t: Float) {
-        func hash(_ a: Int, _ b: Int = 0) -> Int { var x = (a &* 73856093) ^ (b &* 19349663); x = (x >> 13) ^ x; return x & 0x7fffffff }
-        // fine + dim: the rain reads BEHIND the title, never competing with it
-        let cellW = uiS(11), cellH = uiS(13), tail = 11
-        let cols = W / cellW + 1, rows = H / cellH, cycle = rows + tail
-        let bucket = Int(t * 7)
-        for i in 0..<cols {
-            let hs = hash(i)
-            let speed = 5.5 + Float(hs % 100) / 100 * 9
-            let phase = Float(hs % cycle)
-            let headRow = Int((t * speed + phase).truncatingRemainder(dividingBy: Float(cycle)))
-            let crimsonHead = (hs % 17) == 0
-            let x = i * cellW
-            for k in 0..<tail {
-                let row = headRow - k
-                if row < 0 || row > rows { continue }
-                let g = rainGlyphs[hash(i, row &* 31 &+ bucket) % rainGlyphs.count]
-                let col = k == 0 ? (crimsonHead ? red : mixRGBA(packRGBA(0, 0, 0), amberHi, 0.82))
-                                 : mixRGBA(packRGBA(0, 0, 0), amber, powf(1 - Float(k) / Float(tail), 2.1) * 0.62)
-                c.label(g, x, row * cellH, size: uiSf(11), color: col, weight: .regular, shadow: false, mono: true)
-            }
-        }
-    }
-
-    /// CRT finish over the rain: tube vignette + scanlines (drawn before the UI text,
-    /// so the logo and console stay crisp on top).
-    private static func crtOverlay(_ c: Canvas2D) {
-        for y in 0..<H {
-            let edge = max(0, 1 - Float(min(y, H - 1 - y)) / Float(uiS(80)))
-            if edge > 0 { c.fillRectBlend(0, y, W, 1, packRGBA(0, 0, 0), edge * 0.5) }
-        }
-        var y = 0
-        while y < H { c.fillRectBlend(0, y, W, uiS(1), packRGBA(0, 0, 0), 0.16); y += uiS(2) }
     }
 
 

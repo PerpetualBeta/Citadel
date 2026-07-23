@@ -15,11 +15,6 @@ import Foundation
     return packRGBA(UInt8(clamping: r), UInt8(clamping: g), UInt8(clamping: b), UInt8(clamping: a))
 }
 
-@inline(__always) func packRGBAf(_ r: Float, _ g: Float, _ b: Float, _ a: Float = 1) -> UInt32 {
-    return packRGBA(Int((r * 255).rounded()), Int((g * 255).rounded()),
-                    Int((b * 255).rounded()), Int((a * 255).rounded()))
-}
-
 @inline(__always) func redOf(_ c: UInt32) -> Int   { Int(c & 0xFF) }
 @inline(__always) func greenOf(_ c: UInt32) -> Int { Int((c >> 8) & 0xFF) }
 @inline(__always) func blueOf(_ c: UInt32) -> Int  { Int((c >> 16) & 0xFF) }

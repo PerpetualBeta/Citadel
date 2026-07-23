@@ -64,13 +64,6 @@ struct Player {
         return 4
     }
 
-    /// True if the current weapon can fire right now (has ammo).
-    func currentHasAmmo() -> Bool {
-        let def = current.def
-        if def.ammo == .none { return true }
-        return ammo[def.ammo.rawValue] >= def.ammoPerShot
-    }
-
     @discardableResult
     mutating func giveWeapon(_ w: WeaponKind) -> Bool {
         let isNew = !weapons[w.rawValue]

@@ -267,12 +267,6 @@ final class Canvas2D {
                   color: color, shadow: shadow, alpha: alpha)
     }
 
-    func textCentered(_ s: String, _ y: Int, scale: Int = 1, color: UInt32 = 0xFFFF_FFFF,
-                       shadow: UInt32? = packRGBA(0, 0, 0), alpha: Float = 1) {
-        let x = (width - Font.width(s, scale: scale)) / 2
-        text(s, x, y, scale: scale, color: color, shadow: shadow, alpha: alpha)
-    }
-
     /// Composite a Core Text bitmap (premultiplied RGBA) — used for unicode
     /// high-score names. `out = src + dst*(1-a)`.
     func drawTextImage(_ bmp: TextImage.Bitmap, _ dx: Int, _ dy: Int) {
@@ -303,12 +297,6 @@ final class Canvas2D {
         }
     }
 
-    func drawUnicodeCentered(_ s: String, _ y: Int, fontSize: CGFloat,
-                             _ r: CGFloat, _ g: CGFloat, _ b: CGFloat) {
-        guard let bmp = TextImage.rasterize(s, fontSize: fontSize, r: r, g: g, b: b) else { return }
-        drawTextImage(bmp, (width - bmp.w) / 2, y)
-    }
-
     /// A centred text-entry field with a blinking caret. The caret's slot is
     /// reserved in the centring at ALL times, and the name is placed at a fixed
     /// left origin independent of the caret — so toggling the caret never
@@ -326,10 +314,6 @@ final class Canvas2D {
 
     func labelWidth(_ s: String, size: CGFloat, weight: NSFont.Weight = .regular, mono: Bool = false) -> Int {
         TextImage.cached(s, size: size, weight: weight, color: 0xFFFF_FFFF, mono: mono)?.w ?? 0
-    }
-
-    func labelHeight(_ s: String, size: CGFloat, weight: NSFont.Weight = .regular, mono: Bool = false) -> Int {
-        TextImage.cached(s, size: size, weight: weight, color: 0xFFFF_FFFF, mono: mono)?.h ?? 0
     }
 
     func label(_ s: String, _ x: Int, _ y: Int, size: CGFloat, color: UInt32 = 0xFFFF_FFFF,
