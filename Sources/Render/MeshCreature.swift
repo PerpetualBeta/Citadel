@@ -633,16 +633,22 @@ final class MeshCreature {
         for i in 0..<W * H {
             if alphaOf(mcol[i]) > 2 && mdep[i] < depth[i] {
                 let mc = mcol[i] | 0xFF00_0000
-                // bright FLAME in front of a creature obscures it — the iris contracts,
-                // you can't make out a body through fire. The pixel the mesh is about to
-                // overwrite already holds the bloomed fire; detect ORANGE flame in it
-                // (bright, red ≫ blue — not lamp-white) and keep the fire over the
-                // creature rather than punching a crisp silhouette through the flames.
+                // A blaze in front of the body must overwhelm it exactly as it overwhelms
+                // the world behind it — otherwise a distant charred corpse keeps full
+                // contrast and pops starkly through the flames. The pixel already holds the
+                // bloomed fire; cover the mesh by how much FIRE is in it. Two bands count:
+                // ORANGE flame (red ≫ blue) AND the WHITE/YELLOW-hot cores + bloom (red ≥
+                // blue and very bright) — the old test read those hot pixels as lamp-white
+                // and punched the corpse crisply through the brightest part of the fire.
+                // Cool lamp-light (blue ≥ red) never counts, so a body lit against a cold
+                // wall still reads. Coverage reaches a full 1.0 in a dense blaze.
                 let bg = fb[i]
-                let rr = Float(bg & 0xFF) / 255, bl = Float((bg >> 16) & 0xFF) / 255
-                let brt = max(0, min(1, (rr - 0.45) / 0.40))
-                let fireness = max(0, min(1, (rr - bl) * 1.6)) * (brt * brt * (3 - 2 * brt))
-                fb[i] = fireness > 0.02 ? mixRGBA(mc, bg, min(0.95, fireness)) : mc
+                let rr = Float(bg & 0xFF) / 255, gg = Float((bg >> 8) & 0xFF) / 255, bl = Float((bg >> 16) & 0xFF) / 255
+                let lum = 0.30 * rr + 0.59 * gg + 0.11 * bl
+                let orange = max(0, min(1, (rr - bl) * 1.9))
+                let hot = rr >= bl ? max(0, min(1, (lum - 0.82) / 0.18)) : 0
+                let fireness = max(orange, hot)
+                fb[i] = fireness > 0.02 ? mixRGBA(mc, bg, min(1.0, fireness)) : mc
                 depth[i] = mdep[i]
             }
         }
@@ -830,16 +836,22 @@ final class MeshCreature {
         for i in 0..<W * H {
             if alphaOf(mcol[i]) > 2 && mdep[i] < depth[i] {
                 let mc = mcol[i] | 0xFF00_0000
-                // bright FLAME in front of a creature obscures it — the iris contracts,
-                // you can't make out a body through fire. The pixel the mesh is about to
-                // overwrite already holds the bloomed fire; detect ORANGE flame in it
-                // (bright, red ≫ blue — not lamp-white) and keep the fire over the
-                // creature rather than punching a crisp silhouette through the flames.
+                // A blaze in front of the body must overwhelm it exactly as it overwhelms
+                // the world behind it — otherwise a distant charred corpse keeps full
+                // contrast and pops starkly through the flames. The pixel already holds the
+                // bloomed fire; cover the mesh by how much FIRE is in it. Two bands count:
+                // ORANGE flame (red ≫ blue) AND the WHITE/YELLOW-hot cores + bloom (red ≥
+                // blue and very bright) — the old test read those hot pixels as lamp-white
+                // and punched the corpse crisply through the brightest part of the fire.
+                // Cool lamp-light (blue ≥ red) never counts, so a body lit against a cold
+                // wall still reads. Coverage reaches a full 1.0 in a dense blaze.
                 let bg = fb[i]
-                let rr = Float(bg & 0xFF) / 255, bl = Float((bg >> 16) & 0xFF) / 255
-                let brt = max(0, min(1, (rr - 0.45) / 0.40))
-                let fireness = max(0, min(1, (rr - bl) * 1.6)) * (brt * brt * (3 - 2 * brt))
-                fb[i] = fireness > 0.02 ? mixRGBA(mc, bg, min(0.95, fireness)) : mc
+                let rr = Float(bg & 0xFF) / 255, gg = Float((bg >> 8) & 0xFF) / 255, bl = Float((bg >> 16) & 0xFF) / 255
+                let lum = 0.30 * rr + 0.59 * gg + 0.11 * bl
+                let orange = max(0, min(1, (rr - bl) * 1.9))
+                let hot = rr >= bl ? max(0, min(1, (lum - 0.82) / 0.18)) : 0
+                let fireness = max(orange, hot)
+                fb[i] = fireness > 0.02 ? mixRGBA(mc, bg, min(1.0, fireness)) : mc
                 depth[i] = mdep[i]
             }
         }
