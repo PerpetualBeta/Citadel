@@ -712,7 +712,7 @@ final class AudioEngine {
     /// starving the voice pool. Enqueued as ONE batch (a single lock, not four).
     func arcadeInvaderKilled() {
         addBatch([
-            makeVoice(AudioEngine.noise,   1,   1, 0.035, 0.20, attack: 0.0004, lp: 0.85),   // crack
+            makeVoice(AudioEngine.noise,   1,   1, 0.035, 0.28, attack: 0.0004, lp: 0.85),   // crack
             makeVoice(AudioEngine.square, 620,  90, 0.085, 0.16, attack: 0.001),             // pitch-drop crunch
         ])
     }
@@ -729,7 +729,7 @@ final class AudioEngine {
     /// accumulate a tail in the echo line. Enqueued as one batch.
     func arcadePlayerHit() {
         addBatch([
-            makeVoice(AudioEngine.noise,    1,   1, 0.16, 0.22, attack: 0.001, lp: 0.55),    // blast
+            makeVoice(AudioEngine.noise,    1,   1, 0.16, 0.30, attack: 0.001, lp: 0.55),    // blast
             makeVoice(AudioEngine.triangle, 300, 46, 0.30, 0.20, attack: 0.002),            // wail → sub
         ])
     }
@@ -859,7 +859,10 @@ final class AudioEngine {
                 case AudioEngine.saw: s = 2 * v.phase - 1
                 case AudioEngine.noise:
                     v.rng = v.rng &* 1_664_525 &+ 1_013_904_223
-                    s = Float(v.rng >> 9) / Float(1 << 23) - 1
+                    // top 24 bits (the LCG's good bits) → [0,2) → [-1,1). The old
+                    // `>> 9 / 2^23` spanned to ~4.3e9, slamming the master tanh to +1
+                    // every sample — that hard-clip was the arcade "distortion".
+                    s = Float(v.rng >> 40) / Float(1 << 23) - 1
                 default: s = sinf(2 * .pi * v.phase)
                 }
                 if v.lp < 1 { v.lpState += (s - v.lpState) * v.lp; s = v.lpState }
