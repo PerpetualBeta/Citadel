@@ -806,19 +806,19 @@ final class MeshCreature {
         for i in 0..<W * H {
             if alphaOf(mcol[i]) > 2 && mdep[i] < depth[i] {
                 let mc = mcol[i] | 0xFF00_0000
-                // A blaze in front of the body must overwhelm it exactly as it overwhelms
-                // the world behind it — otherwise a distant charred corpse keeps full
-                // contrast and pops starkly through the flames. Cover the mesh by how much
-                // FIRE is in the pixel behind it: ORANGE flame (red ≫ blue) AND the WHITE/
-                // YELLOW-hot cores + bloom (red ≥ blue and very bright). Cool lamp-light
-                // (blue ≥ red) never counts, so a body lit against a cold wall still reads.
-                // Coverage reaches a full 1.0 in a dense blaze.
+                // A blaze in FRONT of the body should overwhelm it as it overwhelms the
+                // world behind it — but we only have the framebuffer to go on, so the test
+                // must be FIRE-SPECIFIC or an ordinary lit surface behind the body washes it
+                // out (creatures went semi-transparent in front of a bright wall). Real
+                // flame is SATURATED orange: high red, LOW blue, so (red − blue) is large. A
+                // warm/bright wall or floor keeps plenty of blue, so its (red − blue) stays
+                // small and must produce ZERO coverage — the threshold sits well above wall
+                // warmth. Genuine flame (red − blue ≳ 0.4) still washes the body fully.
                 let bg = fb[i]
                 let rr = Float(bg & 0xFF) / 255, gg = Float((bg >> 8) & 0xFF) / 255, bl = Float((bg >> 16) & 0xFF) / 255
-                let lum = 0.30 * rr + 0.59 * gg + 0.11 * bl
-                let orange = max(0, min(1, (rr - bl) * 1.9))
-                let hot = rr >= bl ? max(0, min(1, (lum - 0.82) / 0.18)) : 0
-                let fireness = max(orange, hot)
+                let orange = max(0, min(1, ((rr - bl) - 0.40) / 0.30))   // 0 below Δ0.40 → 1 at Δ0.70
+                let bright = max(0, min(1, (max(rr, gg) - 0.5) / 0.4))   // flame is bright, not a dark red tint
+                let fireness = orange * bright
                 fb[i] = fireness > 0.02 ? mixRGBA(mc, bg, min(1.0, fireness)) : mc
                 depth[i] = mdep[i]
             }
