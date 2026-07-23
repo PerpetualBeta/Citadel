@@ -331,7 +331,7 @@ final class World {
         self.props = gen.props
         // furniture solid-collision boxes — each piece's authored footprint, oriented
         // by its yaw and flush-matched to where it renders against the wall
-        for pr in gen.props where pr.kind != .wallPipe {
+        for pr in gen.props where pr.kind != .wallPipe && pr.kind != .camera {   // camera is high on the wall — decorative, no floor collider
             let (hw, hd) = GPURaymarch.furnitureFootprint(pr.kind)
             let inward = SIMD2<Float>(-sin(pr.yaw), cos(pr.yaw))
             let tangent = SIMD2<Float>(cos(pr.yaw), sin(pr.yaw))

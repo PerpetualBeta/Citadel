@@ -17,6 +17,7 @@ enum FurnitureKind: Int, CaseIterable {
     case chair       // office chair (sits with a desk)
     case locker      // tall steel storage locker (lines walls)
     case wallPipe    // a run of pipes + bracket bolted to a wall (everywhere)
+    case camera      // ARC surveillance camera — mounted HIGH on a wall, angled down into the room (decorative, no collider)
 }
 
 struct Prop {

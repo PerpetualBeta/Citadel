@@ -1062,6 +1062,19 @@ enum MapGen {
             }
         }
 
+        // ── CCTV cameras ── ARC IS WATCHING. Mounted high on a wall (decorative, no
+        // collider, no floor clearance needed — they sit near the ceiling), lens
+        // angled down into the room. A handful per floor, on a clear stretch of wall,
+        // spread across rooms so the surveillance state reads everywhere.
+        for (ri, r) in rooms.enumerated() where rng.chance(0.55) {
+            let cs = wallSlots(r, ri)
+            if let cam = cs.first(where: { s in !featureBacked(s) && !placed.contains(where: { vlen($0 - s.pos) < 1.0 }) })
+                       ?? cs.first(where: { !featureBacked($0) }) {
+                props.append(Prop(kind: .camera, pos: cam.pos, yaw: yawFor(cam.inward)))
+                placed.append(cam.pos)
+            }
+        }
+
         // ── pipe routing ── bake which open cells carry a wall pipe. Pipes run along
         // the walls of SELECTED rooms only (≈60%, for variation), and are kept clear
         // of every OPENING (door / corridor mouth), every wall-prop and the exit — so
