@@ -626,32 +626,7 @@ final class MeshCreature {
         enc.endEncoding()
         cmd.commit(); cmd.waitUntilCompleted()
 
-        mcol.withUnsafeMutableBytes { colTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0) }
-        mdep.withUnsafeMutableBytes { depTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0) }
-
-        let fb = canvas.framebuffer
-        for i in 0..<W * H {
-            if alphaOf(mcol[i]) > 2 && mdep[i] < depth[i] {
-                let mc = mcol[i] | 0xFF00_0000
-                // A blaze in front of the body must overwhelm it exactly as it overwhelms
-                // the world behind it — otherwise a distant charred corpse keeps full
-                // contrast and pops starkly through the flames. The pixel already holds the
-                // bloomed fire; cover the mesh by how much FIRE is in it. Two bands count:
-                // ORANGE flame (red ≫ blue) AND the WHITE/YELLOW-hot cores + bloom (red ≥
-                // blue and very bright) — the old test read those hot pixels as lamp-white
-                // and punched the corpse crisply through the brightest part of the fire.
-                // Cool lamp-light (blue ≥ red) never counts, so a body lit against a cold
-                // wall still reads. Coverage reaches a full 1.0 in a dense blaze.
-                let bg = fb[i]
-                let rr = Float(bg & 0xFF) / 255, gg = Float((bg >> 8) & 0xFF) / 255, bl = Float((bg >> 16) & 0xFF) / 255
-                let lum = 0.30 * rr + 0.59 * gg + 0.11 * bl
-                let orange = max(0, min(1, (rr - bl) * 1.9))
-                let hot = rr >= bl ? max(0, min(1, (lum - 0.82) / 0.18)) : 0
-                let fireness = max(orange, hot)
-                fb[i] = fireness > 0.02 ? mixRGBA(mc, bg, min(1.0, fireness)) : mc
-                depth[i] = mdep[i]
-            }
-        }
+        mergeMeshOverFramebuffer(into: canvas, depth: depth)
     }
 
     // ── dossier portrait ──────────────────────────────────────────────────────
@@ -830,6 +805,16 @@ final class MeshCreature {
         enc.endEncoding()
         cmd.commit(); cmd.waitUntilCompleted()
 
+        mergeMeshOverFramebuffer(into: canvas, depth: depth)
+    }
+
+    /// Read back the mesh offscreen (colour + perp-depth) and merge it over the
+    /// framebuffer with depth occlusion, washing the body out by how much fire sits
+    /// in the pixel behind it, and writing its perp-depth back so particles occlude
+    /// against it. Shared by composite() (queen) and compositeDrones() — these were
+    /// byte-identical copies, so the flame-coverage tweak (9df8725) had to be applied
+    /// to both by hand; now it lives in one place.
+    private func mergeMeshOverFramebuffer(into canvas: Canvas2D, depth: UnsafeMutablePointer<Float>) {
         mcol.withUnsafeMutableBytes { colTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0) }
         mdep.withUnsafeMutableBytes { depTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0) }
         let fb = canvas.framebuffer
@@ -838,13 +823,11 @@ final class MeshCreature {
                 let mc = mcol[i] | 0xFF00_0000
                 // A blaze in front of the body must overwhelm it exactly as it overwhelms
                 // the world behind it — otherwise a distant charred corpse keeps full
-                // contrast and pops starkly through the flames. The pixel already holds the
-                // bloomed fire; cover the mesh by how much FIRE is in it. Two bands count:
-                // ORANGE flame (red ≫ blue) AND the WHITE/YELLOW-hot cores + bloom (red ≥
-                // blue and very bright) — the old test read those hot pixels as lamp-white
-                // and punched the corpse crisply through the brightest part of the fire.
-                // Cool lamp-light (blue ≥ red) never counts, so a body lit against a cold
-                // wall still reads. Coverage reaches a full 1.0 in a dense blaze.
+                // contrast and pops starkly through the flames. Cover the mesh by how much
+                // FIRE is in the pixel behind it: ORANGE flame (red ≫ blue) AND the WHITE/
+                // YELLOW-hot cores + bloom (red ≥ blue and very bright). Cool lamp-light
+                // (blue ≥ red) never counts, so a body lit against a cold wall still reads.
+                // Coverage reaches a full 1.0 in a dense blaze.
                 let bg = fb[i]
                 let rr = Float(bg & 0xFF) / 255, gg = Float((bg >> 8) & 0xFF) / 255, bl = Float((bg >> 16) & 0xFF) / 255
                 let lum = 0.30 * rr + 0.59 * gg + 0.11 * bl
