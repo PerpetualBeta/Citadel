@@ -52,6 +52,22 @@ final class MeshCreature {
 
     static inline float3 rotZ(float3 p, float a) { float c = cos(a), s = sin(a); return float3(c*p.x - s*p.y, s*p.x + c*p.y, p.z); }
     static inline float3 rotX(float3 p, float a) { float c = cos(a), s = sin(a); return float3(p.x, c*p.y - s*p.z, s*p.y + c*p.z); }
+    // Charred remains crumble INWARD + DOWN into a compact grainy mound (heapR wide,
+    // domeH tall, gritZ grain), then a flat smear when trodden (ash > 1). Shared by
+    // both castes — the queen's mound is simply bigger. `seed` = the vertex's rest xy.
+    static inline float3 ashCollapse(float3 lp, float2 seed, float ash, float heapR, float domeH, float gritZ) {
+        float mound = min(ash, 1.0), flat = clamp(ash - 1.0, 0.0, 1.0);
+        float r = length(lp.xy);
+        float2 dir = r > 1e-4 ? lp.xy / r : float2(1.0, 0.0);
+        float grit = fract(sin(dot(seed, float2(91.7, 47.3))) * 4137.1);
+        float tr = min(r, heapR) * 0.6;                       // pull the footprint in tight
+        float td = clamp(1.0 - tr / heapR, 0.0, 1.0);          // 1 centre → 0 rim
+        lp.xy = mix(lp.xy, dir * tr + (grit - 0.5) * 0.05, mound);   // scatter debris a touch
+        lp.z  = mix(lp.z, domeH * td * td + grit * gritZ, mound);    // low dome + grainy top
+        lp.z  *= (1.0 - 0.82 * flat);                         // trodden → kicked flat…
+        lp.xy *= (1.0 + 1.3 * flat);                          // …and spread into a smear
+        return lp;
+    }
 
     vertex VOut vmain(VIn in [[stage_in]], constant Cam& C [[buffer(1)]]) {
         float3 lp = in.pos;
@@ -110,27 +126,10 @@ final class MeshCreature {
             }
             lp.z *= (1.0 - 0.10 * slump);                        // a slight overall settle onto the floor
         }
-        // ash: charred remains crumble INWARD + DOWN into a compact 3-D dust mound
-        // (not a flat splat) — gather every vertex toward a small low dome, with a
-        // per-vertex grit jitter so it reads as dust + debris, not a smooth blob.
+        // ash: charred remains crumble into a compact grainy mound, then a flat smear
+        // when trodden (shared ashCollapse; the queen's mound is the biggest).
         float ash = C.tune.w;                    // 0→1 collapse to a mound · 1→2 tread flat
-        if (ash > 0.001) {
-            float mound = min(ash, 1.0);
-            float flat = clamp(ash - 1.0, 0.0, 1.0);
-            float r = length(lp.xy);
-            float2 dir = r > 1e-4 ? lp.xy / r : float2(1.0, 0.0);
-            float heapR = 0.30;
-            float grit = fract(sin(dot(in.pos.xy, float2(91.7, 47.3))) * 4137.1);
-            float tr = min(r, heapR) * 0.6;                       // pull the footprint in tight
-            float td = clamp(1.0 - tr / heapR, 0.0, 1.0);          // 1 centre → 0 rim
-            float2 targetXY = dir * tr + (grit - 0.5) * 0.05;      // scatter debris a touch
-            float targetZ = 0.22 * td * td + grit * 0.07;          // low dome + grainy top
-            lp.xy = mix(lp.xy, targetXY, mound);
-            lp.z  = mix(lp.z, targetZ, mound);
-            // trodden ON the mound → kicked flat, spread into a low dust smear
-            lp.z  *= (1.0 - 0.82 * flat);
-            lp.xy *= (1.0 + 1.3 * flat);
-        }
+        if (ash > 0.001) lp = ashCollapse(lp, in.pos.xy, ash, 0.30, 0.22, 0.07);
 
         float4 lpp = float4(lp, 1.0);
         float4 wp = C.model * lpp;
@@ -236,23 +235,9 @@ final class MeshCreature {
             lp.xy *= (1.0 - 0.45 * diss);         // shrivel inward
             lp.z  *= (1.0 - 0.50 * diss);         // and down as it's consumed
         }
-        // ASH — crumble to a compact grainy MOUND (as the queen does), then a flat smear
+        // ASH — crumble to a compact grainy mound (as the queen does), then a flat smear
         float ash = C.tune.w;
-        if (ash > 0.001) {
-            float mound = min(ash, 1.0), flat = clamp(ash - 1.0, 0.0, 1.0);
-            float r = length(lp.xy);
-            float2 dd = r > 1e-4 ? lp.xy / r : float2(1.0, 0.0);
-            float heapR = 0.26;
-            float grit = fract(sin(dot(in.pos.xy, float2(91.7, 47.3))) * 4137.1);
-            float tr = min(r, heapR) * 0.6;
-            float td = clamp(1.0 - tr / heapR, 0.0, 1.0);
-            float2 tgt = dd * tr + (grit - 0.5) * 0.05;
-            float tz = 0.18 * td * td + grit * 0.06;
-            lp.xy = mix(lp.xy, tgt, mound);
-            lp.z  = mix(lp.z, tz, mound);
-            lp.z  *= (1.0 - 0.82 * flat);
-            lp.xy *= (1.0 + 1.3 * flat);
-        }
+        if (ash > 0.001) lp = ashCollapse(lp, in.pos.xy, ash, 0.26, 0.18, 0.06);
 
         float4 lpp = float4(lp, 1.0);
         float4 wp = C.model * lpp;
