@@ -2162,7 +2162,7 @@ enum GPURaymarch {
                     iBox(SIMD3(0, y + 0.052 * s, 0.05 * s), SIMD3(0.056 * s, 0.012 * s, 0.15 * s), 0.01 * s, cam, 0.006), // sun hood — overhangs the lens (+Z)
                     iBox(SIMD3(0, y, 0.125 * s), SIMD3(0.04 * s, 0.04 * s, 0.016 * s), 0.006, darkM2, dd),       // black lens bezel (front face)
                     iSphere(SIMD3(0, y, 0.15 * s), 0.03 * s, glass, 0.005),                                      // blue lens glass (protrudes)
-                    iSphere(SIMD3(0.028 * s, y + 0.033 * s, 0.075 * s), 0.011 * s, ledOn, 0.003)]                // red status LED — top-front, visible (LAST — blinks)
+                    iSphere(SIMD3(0.035 * s, y + 0.008 * s, 0.13 * s), 0.02 * s, ledOn, 0.003)]                  // red status LED — on the front bezel beside the lens (LAST — blinks)
         }
     }
 
@@ -2280,8 +2280,8 @@ enum GPURaymarch {
         for pr in props {
             var sl = pr.kind == .wallPipe ? pipeRunShapes(length: pr.length) : furnitureShapes(pr.kind)
             if sl.isEmpty || shapes.count + sl.count > budget { break }
-            if pr.kind == .camera, let li = sl.indices.last {   // BLINK the status LED (last shape): a brief red flash — "recording"
-                let on = time.truncatingRemainder(dividingBy: 1.6) < 0.28
+            if pr.kind == .camera, let li = sl.indices.last {   // BLINK the status LED (last shape): a steady ~0.7 Hz recording pulse
+                let on = time.truncatingRemainder(dividingBy: 1.4) < 0.7
                 sl[li].col = on ? SIMD4(2.8, 0.08, 0.05, sl[li].col.w) : SIMD4(0.16, 0.03, 0.03, sl[li].col.w)
             }
             // Wall pieces sit flush to the wall (bunk/desk/locker stood ~⅓-cell proud
