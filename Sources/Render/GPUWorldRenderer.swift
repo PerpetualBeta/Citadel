@@ -397,6 +397,20 @@ final class GPUWorldRenderer {
                                             colI: SIMD4(c.0, c.1, c.2, it)))
             if out.count >= 16 { break }
         }
+        // CCTV status LEDs — a tiny pulsing RED source on each nearby camera, so the
+        // recording light reads as a glow, not just a dot. Only during the blink's
+        // "on" window (in step with the LED colour pulse in packProps), and only in
+        // spare light slots (combat lights keep priority).
+        if world.elapsed.truncatingRemainder(dividingBy: 1.6) < 0.28 {
+            for pr in world.props where pr.kind == .camera {
+                if out.count >= 16 { break }
+                let dx = pr.pos.x - p.pos.x, dy = pr.pos.y - p.pos.y
+                if dx * dx + dy * dy > 196 { continue }          // only cameras within ~14 units
+                let rad: Float = 1.5
+                out.append(GPURaymarch.GPULight(posR: SIMD4(pr.pos.x, 0.80, pr.pos.y, 1 / (rad * rad)),
+                                                colI: SIMD4(1.0, 0.06, 0.03, 0.9)))
+            }
+        }
         return out
     }
 
