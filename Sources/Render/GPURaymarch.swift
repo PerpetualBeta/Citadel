@@ -2147,18 +2147,22 @@ enum GPURaymarch {
                     iBox(SIMD3(0, 0.045, 0), SIMD3(hw - 0.004, 0.045, hd - 0.004), 0.004, darkM, 0.004)]    // base plinth (stands it off the deck)
         case .wallPipe:
             return pipeRunShapes(length: 1)                    // length comes from the Prop at pack time
-        case .camera:                                          // ARC surveillance cam — CORNER-mounted high, lens angled DOWN into the room
-            // The status LED is authored OVER-BRIGHT red (>1) so it self-glows via the
-            // bright-pass/bloom, exactly like the desk's powered screen. ARC is watching.
-            let body = SIMD3<Float>(0.17, 0.17, 0.20), hood = SIMD3<Float>(0.09, 0.09, 0.11)
-            let lensD = SIMD3<Float>(0.045, 0.045, 0.05), ledOn = SIMD3<Float>(2.6, 0.10, 0.06)
-            let y: Float = 0.80                                // mounted near the ceiling (ceilH ≈ 0.9)
-            return [iBox(SIMD3(0, y + 0.035, -0.09), SIMD3(0.02, 0.02, 0.065), 0.006, steel, d),         // mount arm back into the corner (−Z)
-                    iBox(SIMD3(0, y, 0.0), SIMD3(0.06, 0.05, 0.085), 0.02, body, 0.008),                 // camera body
-                    iBox(SIMD3(0, y + 0.045, 0.03), SIMD3(0.072, 0.012, 0.08), 0.008, hood, 0.006),      // sun hood (the CCTV silhouette)
-                    iCone(SIMD3(0, y - 0.015, 0.06), SIMD3(0, y - 0.065, 0.15), 0.036, 0.04, lensD, 0.01), // lens barrel, angled down+out
-                    iSphere(SIMD3(0, y - 0.07, 0.155), 0.032, SIMD3(0.02, 0.02, 0.03), 0.005),           // dark lens glass
-                    iSphere(SIMD3(0.058, y + 0.005, 0.065), 0.013, ledOn, 0.003)]                        // red status LED (self-glowing)
+        case .camera:                                          // ARC surveillance cam — the classic bullet CCTV on an L-bracket
+            // A light-steel barrel with an overhanging sun HOOD and a blue lens in a
+            // black bezel, mounted high in a corner on a wall-plate → arm → post. The
+            // status LED (LAST shape) is over-bright red so it self-glows via bloom, and
+            // packProps BLINKS it per-frame — ARC is watching. +Z = the way it looks.
+            let cam = SIMD3<Float>(0.60, 0.62, 0.66)           // light steel — a white-grey unit, stands out from the dark set-dressing
+            let darkM2 = SIMD3<Float>(0.04, 0.04, 0.05), glass = SIMD3<Float>(0.12, 0.20, 0.42)
+            let ledOn = SIMD3<Float>(2.8, 0.08, 0.05)
+            let y: Float = 0.78, dd: Float = 0.004
+            return [iBox(SIMD3(0, y, -0.105), SIMD3(0.05, 0.058, 0.014), 0.006, cam, dd),                // wall plate (flush behind the body, −Z)
+                    iBox(SIMD3(0, y - 0.004, -0.055), SIMD3(0.022, 0.024, 0.05), 0.006, cam, dd),        // short arm plate → body (no long stalk)
+                    iBox(SIMD3(0, y, 0.02), SIMD3(0.046, 0.045, 0.115), 0.02, cam, 0.006),               // body — horizontal barrel
+                    iBox(SIMD3(0, y + 0.052, 0.05), SIMD3(0.056, 0.012, 0.15), 0.01, cam, 0.006),        // sun hood — overhangs the lens (+Z)
+                    iBox(SIMD3(0, y, 0.125), SIMD3(0.04, 0.04, 0.016), 0.006, darkM2, dd),               // black lens bezel (front face)
+                    iSphere(SIMD3(0, y, 0.15), 0.03, glass, 0.005),                                      // blue lens glass (protrudes)
+                    iSphere(SIMD3(0.028, y + 0.033, 0.075), 0.011, ledOn, 0.003)]                        // red status LED — top-front, visible (LAST — blinks)
         }
     }
 
@@ -2271,11 +2275,15 @@ enum GPURaymarch {
 
     /// Pack furniture/fixtures into the shared GMonster/GShape buffers (no bob, no
     /// spin — they sit where MapGen placed them, oriented by yaw). Material c.z = 3.
-    static func packProps(_ props: [Prop], budget: Int = 220) -> ([GMonster], [GShape]) {
+    static func packProps(_ props: [Prop], time: Float = 0, budget: Int = 220) -> ([GMonster], [GShape]) {
         var mons: [GMonster] = [], shapes: [GShape] = []
         for pr in props {
             var sl = pr.kind == .wallPipe ? pipeRunShapes(length: pr.length) : furnitureShapes(pr.kind)
             if sl.isEmpty || shapes.count + sl.count > budget { break }
+            if pr.kind == .camera, let li = sl.indices.last {   // BLINK the status LED (last shape): a brief red flash — "recording"
+                let on = time.truncatingRemainder(dividingBy: 1.6) < 0.28
+                sl[li].col = on ? SIMD4(2.8, 0.08, 0.05, sl[li].col.w) : SIMD4(0.16, 0.03, 0.03, sl[li].col.w)
+            }
             // Wall pieces sit flush to the wall (bunk/desk/locker stood ~⅓-cell proud
             // before — "approx 1m" off). A free-standing chair keeps its placement.
             if pr.againstWall && pr.kind != .wallPipe { flushToWall(&sl) }

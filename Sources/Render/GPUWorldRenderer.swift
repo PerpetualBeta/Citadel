@@ -550,7 +550,7 @@ final class GPUWorldRenderer {
         var cshapes: [GPURaymarch.GShape] = []
         let (imons, ishapes) = GPURaymarch.packItems(visibleItems(world), time: world.elapsed)
         let (dmons, dshapes) = GPURaymarch.packDebris(visibleDebris(world))            // static rubble piles
-        let (fmons, fshapes) = GPURaymarch.packProps(visibleProps(world))              // furniture & fixtures
+        let (fmons, fshapes) = GPURaymarch.packProps(visibleProps(world), time: world.elapsed)   // furniture & fixtures (time → blinking cam LED)
         let (umons, ushapes) = GPURaymarch.packDrums(visibleDrums(world))              // fuel barrels (SDF — were sprites)
         let (smons, sshapes) = GPURaymarch.packSockets(visibleSockets(world))          // recharge panels (SDF — were sprites)
         let (nmons, nshapes) = GPURaymarch.packMines(visibleMines(world))              // deployed mines (SDF — were sprites)
