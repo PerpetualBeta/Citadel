@@ -408,10 +408,10 @@ final class GPUWorldRenderer {
                 if dx * dx + dy * dy > 196 { continue }          // only cameras within ~14 units
                 // The camera body is shoved flush to the wall, so its LED sits ~0.36
                 // behind the cell centre — put the glow AT the camera, not mid-room.
-                let cyaw = cos(pr.yaw), syaw = sin(pr.yaw), lz: Float = -0.36
+                let cyaw = cos(pr.yaw), syaw = sin(pr.yaw), lz: Float = -0.34
                 let wx = pr.pos.x - lz * syaw, wz = pr.pos.y + lz * cyaw
                 let rad: Float = 1.0
-                out.append(GPURaymarch.GPULight(posR: SIMD4(wx, 0.80, wz, 1 / (rad * rad)),
+                out.append(GPURaymarch.GPULight(posR: SIMD4(wx, 0.82, wz, 1 / (rad * rad)),
                                                 colI: SIMD4(1.0, 0.05, 0.03, 0.5)))
             }
         }

@@ -201,7 +201,7 @@ enum RoomShots {
             }
             let inward = SIMD2<Float>(-sin(cam0.yaw), cos(cam0.yaw))     // camera faces this way; stand on this side
             var cam = cam0.pos, ok = false
-            for back in [Float(2.6), 2.2, 1.8, 1.4] where !ok {
+            for back in [Float(1.7), 1.4, 1.1] where !ok {   // stand close — the cam is high, so a near view looks up at it
                 let c = cam0.pos + inward * back
                 if openLit(c) { cam = c; ok = true }
             }

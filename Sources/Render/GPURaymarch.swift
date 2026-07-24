@@ -2153,16 +2153,14 @@ enum GPURaymarch {
             // status LED (LAST shape) is over-bright red so it self-glows via bloom, and
             // packProps BLINKS it per-frame — ARC is watching. +Z = the way it looks.
             let cam = SIMD3<Float>(0.60, 0.62, 0.66)           // light steel — a white-grey unit, stands out from the dark set-dressing
-            let darkM2 = SIMD3<Float>(0.04, 0.04, 0.05), glass = SIMD3<Float>(0.12, 0.20, 0.42)
-            let ledOn = SIMD3<Float>(2.8, 0.08, 0.05)
-            let y: Float = 0.78, dd: Float = 0.004, s: Float = 0.5   // s scales the whole unit around the mount height — tune size here
-            return [iBox(SIMD3(0, y, -0.105 * s), SIMD3(0.05 * s, 0.058 * s, 0.014 * s), 0.006, cam, dd),        // wall plate (flush behind the body, −Z)
-                    iBox(SIMD3(0, y - 0.004 * s, -0.055 * s), SIMD3(0.022 * s, 0.024 * s, 0.05 * s), 0.006, cam, dd),  // short arm plate → body
-                    iBox(SIMD3(0, y, 0.02 * s), SIMD3(0.046 * s, 0.045 * s, 0.115 * s), 0.02 * s, cam, 0.006),   // body — horizontal barrel
-                    iBox(SIMD3(0, y + 0.052 * s, 0.05 * s), SIMD3(0.056 * s, 0.012 * s, 0.15 * s), 0.01 * s, cam, 0.006), // sun hood — overhangs the lens (+Z)
-                    iBox(SIMD3(0, y, 0.125 * s), SIMD3(0.04 * s, 0.04 * s, 0.016 * s), 0.006, darkM2, dd),       // black lens bezel (front face)
-                    iSphere(SIMD3(0, y, 0.15 * s), 0.03 * s, glass, 0.005),                                      // blue lens glass (protrudes)
-                    iSphere(SIMD3(0.035 * s, y + 0.008 * s, 0.13 * s), 0.02 * s, ledOn, 0.003)]                  // red status LED — on the front bezel beside the lens (LAST — blinks)
+            let glass = SIMD3<Float>(0.12, 0.20, 0.42), ledOn = SIMD3<Float>(2.8, 0.08, 0.05)
+            let y: Float = 0.85, dd: Float = 0.004, s: Float = 0.5   // y = mount height (near the ceiling); s scales the unit
+            return [iBox(SIMD3(0, y, -0.105 * s), SIMD3(0.05 * s, 0.055 * s, 0.014 * s), 0.006, cam, dd),         // wall plate (flush, −Z)
+                    iBox(SIMD3(0, y, -0.055 * s), SIMD3(0.02 * s, 0.02 * s, 0.05 * s), 0.006, cam, dd),           // short arm to the barrel
+                    iCone(SIMD3(0, y + 0.02 * s, -0.02 * s), SIMD3(0, y - 0.055 * s, 0.135 * s), 0.05 * s, 0.044 * s, cam, 0.006),  // barrel — angled DOWN-forward to watch the room
+                    iBox(SIMD3(0, y + 0.05 * s, 0.03 * s), SIMD3(0.058 * s, 0.011 * s, 0.135 * s), 0.008, cam, 0.006),   // flat sun hood on top (overhangs)
+                    iSphere(SIMD3(0, y - 0.07 * s, 0.16 * s), 0.03 * s, glass, 0.005),                            // blue lens — at the barrel's low-forward end
+                    iSphere(SIMD3(0.03 * s, y - 0.055 * s, 0.115 * s), 0.022 * s, ledOn, 0.003)]                  // red status LED — protruding, front-underside, seen from below (LAST — blinks)
         }
     }
 
