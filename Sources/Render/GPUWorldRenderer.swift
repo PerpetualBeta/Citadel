@@ -323,7 +323,9 @@ final class GPUWorldRenderer {
 
     /// Muzzle flash + projectile glows as point lights for the GPU kernel
     /// (mirrors WorldLight.gatherLights, at eye height in 3-D).
-    private func gatherDynLights(_ world: World) -> [GPURaymarch.GPULight] {
+    // Pure function of `world` (muzzle/flame/elevator/teleport/blast/pyre/projectile point lights) —
+    // STATIC so the raster path reuses it too. (M6: relocate to GPURaymarch alongside packLights.)
+    static func gatherDynLights(_ world: World) -> [GPURaymarch.GPULight] {
         var out: [GPURaymarch.GPULight] = []
         let p = world.player
         if p.muzzle > 0 && world.flameJet.t <= 0 {   // the flamethrower has its own warm light (below) — no cold muzzle flash
@@ -542,7 +544,7 @@ final class GPUWorldRenderer {
         // always-on room fixtures, so feeding them the fixtures too double-lit them
         // into a washed, low-contrast silver. Transient lights just keep them from
         // going stark-black against a plasma-/flame-lit background.
-        let meshLights = Array(gatherDynLights(world).prefix(12))
+        let meshLights = Array(Self.gatherDynLights(world).prefix(12))
         var dyn = emit
         dyn.append(contentsOf: meshLights)
         if dyn.count > 16 { dyn = Array(dyn.prefix(16)) }

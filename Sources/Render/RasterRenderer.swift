@@ -79,6 +79,9 @@ final class RasterRenderer {
     private let meshDrone: MeshCreature?
     private var colonistMeshes: [Int: MeshCreature] = [:]
     private var colonistTried: Set<Int> = []
+    private let spriteCompositor = SpriteCompositor()   // M5: CPU billboards/particles (gibs/sparks/smoke/ash + projectiles) over the frame
+    private var bedMesh: [PVert]?                        // imported Institutional Bed (bed.obj) → local-space PVerts, centred on XZ, base at y=0
+    private var bedTried = false
 
     init?(device: MTLDevice) {
         guard let queue = device.makeCommandQueue() else { return nil }
@@ -158,7 +161,12 @@ final class RasterRenderer {
             let r = max(0.5, l.radius)
             lights.append(Light(posR: SIMD4(l.pos.x, l.pos.y, l.pos.z, 1 / (r * r)), colI: SIMD4(l.color, l.intensity)))
         }
-        if lights.count > 64 { lights = Array(lights.prefix(64)) }         // stable-order safety cap (NEVER player-sorted)
+        if lights.count > 48 { lights = Array(lights.prefix(48)) }         // reserve room for the transient FX lights below (stable-order, NEVER player-sorted)
+        // M5: transient COMBAT lights (muzzle flash, flamethrower, blasts, burning pyres, projectiles) —
+        // a pure function of `world`, so the same builder the raymarch path uses lights the raster world.
+        let dynLights = GPUWorldRenderer.gatherDynLights(world)
+        lights.append(contentsOf: dynLights)
+        if lights.count > 64 { lights = Array(lights.prefix(64)) }
         if lights.isEmpty { lights = [Light(posR: SIMD4(0, -99, 0, 1), colI: SIMD4(0, 0, 0, 0))] }   // dummy so setFragmentBytes has length>0 (dr2>=1 skips it)
         // Shadows: the nearest overhead lamp CELLS select which lamps CAST (the selection may follow
         // the player, but pool BRIGHTNESS no longer does — the shadow only darkens up-facing surfaces,
@@ -177,12 +185,16 @@ final class RasterRenderer {
         let headFwd = simd_normalize(SIMD3<Float>(cos(p.dir), -0.4, sin(p.dir)))   // headlamp aimed slightly down (lights the floor ahead)
         let headInt: Float = FeatureFlags.headlamp ? 1.7 : 0                       // gentle assist (doesn't flood the pools); 0 → off
         let camFwd = SIMD3<Float>(cosf(p.dir), 0, sinf(p.dir))                     // TRUE camera forward (matches MeshCreature's fwd) → perp-depth
+        // M5 aftermath decals (blood/scorch/papers/ash/offal) — world.decals (x,z,radius,w) fed to the
+        // floor fragment; capped for the setFragmentBytes lane, dummy when empty so the bind has length>0.
+        var decalArr: [SIMD4<Float>] = world.decals.isEmpty ? [SIMD4(0, -99, 0, 0)] : Array(world.decals.prefix(72))
+        let nDecals = world.decals.isEmpty ? 0 : decalArr.count
         var cam = Cam(
             mvp: camMVP(eye: eye, dir: p.dir, near: 0.03, far: 64),
             lmvp0: lmvps[0], lmvp1: lmvps[1], lmvp2: lmvps[2],
             eye: SIMD4(eye, 1),
             params: SIMD4(Float(lights.count), Float(shadowN), Float(mapW), Float(mapH)),
-            amb: SIMD4(0, 0, 0, 0.07),                          // ambient scale (baked-field fill only; no sourceless light)
+            amb: SIMD4(Float(nDecals), world.elapsed, 0, 0.07),  // x = decal count · y = time (ash-ember flicker) · w = baked-field scale
             headFwd: SIMD4(headFwd, headInt),                   // the marine's headlamp — a broad pool, tilted DOWN to light footing
             shX: shX, shZ: shZ,                                 // shadowed lamp cells (integer) for the analytic loop's shadow match
             camFwd: SIMD4(camFwd, 0)
@@ -232,6 +244,7 @@ final class RasterRenderer {
             me.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
             me.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
             me.setFragmentBytes(&lights, length: MemoryLayout<Light>.stride * lights.count, index: 2)
+            me.setFragmentBytes(&decalArr, length: MemoryLayout<SIMD4<Float>>.stride * decalArr.count, index: 3)   // aftermath decals
             me.setFragmentTexture(shadowArr, index: 0)
             me.setFragmentTexture(fieldTex, index: 1)
             me.setFragmentTexture(lampMaskTex, index: 2)   // analytic overhead lamp presence
@@ -246,9 +259,25 @@ final class RasterRenderer {
 
         colTex.getBytes(canvas.framebuffer, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
 
-        // ── M4 creatures: composite the animated meshes over the lit world, occluded by
-        // the perp-depth just rendered. Reuses MeshCreature verbatim (its camera == ours). ──
-        compositeCreatures(world, into: canvas, eye: eye, dir: p.dir)
+        // ── M4 creatures + M5 particles/projectiles: both composite over the lit world against the
+        // scene's perp-depth. Read it back ONCE here (shared) if anything needs it; creatures merge
+        // first (writing their depth back), then the CPU sprite compositor draws particles + projectile
+        // billboards on top, occluded by both the world AND the creatures. ──
+        let needDepth = !world.monsters.isEmpty || !world.colonists.isEmpty
+                     || !world.particles.isEmpty || !world.projectiles.isEmpty
+        if needDepth {
+            perpScratch.withUnsafeMutableBytes {
+                perpTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
+            }
+        }
+        compositeCreatures(world, into: canvas, eye: eye, dir: p.dir, dynLights: dynLights)
+        if !world.particles.isEmpty {
+            perpScratch.withUnsafeBufferPointer { dp in
+                spriteCompositor.overlayThings(world, into: canvas, depth: dp.baseAddress,
+                                               includeProjectiles: false,      // projectiles are emissive orb+streak meshes (buildProps)
+                                               includeDrums: false, includeSockets: false, includeMines: false)   // those are raster prop meshes
+            }
+        }
         return true
     }
 
@@ -257,7 +286,8 @@ final class RasterRenderer {
     /// writing its own depth so later layers occlude correctly — mirrors GPUWorldRenderer's order.
     /// Lit by the creature shader's own sector+camera fill (dynamic lights + wall-clip are deferred:
     /// mapW/H = 0 disables the clip, an empty light list still lights them). Corpses render too.
-    private func compositeCreatures(_ world: World, into canvas: Canvas2D, eye: SIMD3<Float>, dir: Float) {
+    private func compositeCreatures(_ world: World, into canvas: Canvas2D, eye: SIMD3<Float>, dir: Float,
+                                    dynLights: [GPURaymarch.GPULight]) {
         let p = world.player
         let fwd = SIMD2<Float>(cosf(dir), sinf(dir))
         // visible + capped creature set (nearest 10, Queen floated to front, behind-camera dropped)
@@ -284,11 +314,11 @@ final class RasterRenderer {
 
         guard !queens.isEmpty || !drones.isEmpty || !colonists.isEmpty else { return }
 
-        // scene perp-depth → CPU (the mesh merge tests + writes against it)
-        perpScratch.withUnsafeMutableBytes {
-            perpTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
-        }
-        let noLights: [GPURaymarch.GPULight] = []   // dynamic muzzle/flame lights on creatures: deferred to M5
+        // perpScratch already holds the scene perp-depth (read back in render()); the mesh merge
+        // tests + writes against it so later creatures/particles occlude correctly.
+        // M5: creatures take the transient COMBAT lights only (nearest 12) — their baked `sector`
+        // already stands in for the room fixtures, so feeding those too would double-light them.
+        let creatureLights = Array(dynLights.prefix(12))
         perpScratch.withUnsafeMutableBufferPointer { dp in
             let depth = dp.baseAddress!
             // fallen colonists first (deck layer), batched per variant
@@ -300,7 +330,7 @@ final class RasterRenderer {
                                                   sector: WorldLight.lightAt(world.map, $0.pos.x, $0.pos.y))
                     }
                     mesh.compositeColonists(into: canvas, depth: depth, eye: eye, camDir: dir, instances: insts,
-                                            lights: noLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
+                                            lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
                 }
             }
             // the mesh Queen(s)
@@ -312,7 +342,7 @@ final class RasterRenderer {
                     else { death = 0 }
                     mc.composite(into: canvas, depth: depth, eye: eye, dir: dir, pos: q.pos, faceTarget: p.pos,
                                  sector: WorldLight.lightAt(world.map, q.pos.x, q.pos.y), time: world.elapsed, map: world.map,
-                                 death: death, burn: q.burn, ashed: q.ashed, lights: noLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
+                                 death: death, burn: q.burn, ashed: q.ashed, lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
                 }
             }
             // the drone pack, one batched pass
@@ -330,7 +360,7 @@ final class RasterRenderer {
                                                   sector: WorldLight.lightAt(world.map, m.pos.x, m.pos.y))
                 }
                 md.compositeDrones(into: canvas, depth: depth, eye: eye, camDir: dir, instances: insts,
-                                   lights: noLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
+                                   lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
             }
         }
     }
@@ -682,6 +712,61 @@ final class RasterRenderer {
         for s in shapes { tessShape(s, rough: 0.42, metal: 0.40, xf, xn, into: &v) }
     }
 
+    /// Parse the imported bed OBJ (positions + faces) into local-space PVerts with flat normals and a
+    /// height-split material (steel frame low, pale mattress high), centred on XZ with its base at y=0.
+    /// Cached; a failed load is remembered. (Institutional Bed 5, archibase.net — asset exception.)
+    private func loadBed() -> [PVert]? {
+        if let m = bedMesh { return m }
+        if bedTried { return nil }
+        bedTried = true
+        guard let url = Bundle.main.url(forResource: "bed", withExtension: "obj"),
+              let txt = try? String(contentsOf: url, encoding: .utf8) else { print("RasterRenderer: bed.obj not found"); return nil }
+        var pos: [SIMD3<Float>] = []; var tris: [(Int, Int, Int)] = []
+        for line in txt.split(separator: "\n") {
+            let f = line.split(separator: " ")
+            guard f.count >= 4 else { continue }
+            if f[0] == "v" {
+                pos.append(SIMD3(Float(f[1]) ?? 0, Float(f[2]) ?? 0, Float(f[3]) ?? 0))
+            } else if f[0] == "f" {
+                func vi(_ s: Substring) -> Int { (Int(s.split(separator: "/")[0]) ?? 0) - 1 }   // OBJ is 1-indexed; strip v/vt/vn
+                tris.append((vi(f[1]), vi(f[2]), vi(f[3])))
+            }
+        }
+        guard !pos.isEmpty, !tris.isEmpty else { return nil }
+        for i in pos.indices { let p = pos[i]; pos[i] = SIMD3(p.x, p.z, -p.y) }   // .3DS is Z-up → rotate to the game's Y-up (its 1.63 axis is HEIGHT: a two-tier bunk)
+        var lo = pos[0], hi = pos[0]
+        for p in pos { lo = simd_min(lo, p); hi = simd_max(hi, p) }
+        let ctr = SIMD3<Float>((lo.x + hi.x) * 0.5, lo.y, (lo.z + hi.z) * 0.5)   // centre XZ, floor to y=0
+        let split = lo.y + (hi.y - lo.y) * 0.55                                  // below = steel frame · above = pale mattress
+        let frame = Mat(a: SIMD3(0.26, 0.28, 0.32), r: 0.38, m: 0.70, e: .zero)   // dark steel frame/legs (reads as metal, not washed)
+        let sheet = Mat(a: SIMD3(0.66, 0.70, 0.74), r: 0.78, m: 0.02, e: .zero)   // pale institutional mattress/sheet
+        func vert(_ p: SIMD3<Float>, _ n: SIMD3<Float>, _ m: Mat) -> PVert {
+            PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
+                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z)
+        }
+        var out: [PVert] = []; out.reserveCapacity(tris.count * 3)
+        for (a, b, c) in tris where a >= 0 && b >= 0 && c >= 0 && a < pos.count && b < pos.count && c < pos.count {
+            let pa = pos[a] - ctr, pb = pos[b] - ctr, pc = pos[c] - ctr
+            var n = simd_cross(pb - pa, pc - pa); let l = simd_length(n); n = l > 1e-6 ? n / l : SIMD3(0, 1, 0)
+            let m = ((pa.y + pb.y + pc.y) / 3 + ctr.y) < split ? frame : sheet
+            out += [vert(pa, n, m), vert(pb, n, m), vert(pc, n, m)]
+        }
+        bedMesh = out
+        return out
+    }
+
+    /// Emit an imported mesh (local PVerts, base at y=0) at a prop: uniform scale, yaw about +Y, translate.
+    private func emitMesh(_ mesh: [PVert], pos: SIMD2<Float>, yaw: Float, scale: Float, into v: inout [PVert]) {
+        let cy = cosf(yaw), sy = sinf(yaw)
+        for pv in mesh {
+            let lx = pv.px * scale, ly = pv.py * scale, lz = pv.pz * scale
+            let nx = pv.nx, nz = pv.nz
+            v.append(PVert(px: pos.x + lx * cy - lz * sy, py: ly, pz: pos.y + lx * sy + lz * cy,
+                           nx: nx * cy - nz * sy, ny: pv.ny, nz: nx * sy + nz * cy,
+                           ar: pv.ar, ag: pv.ag, ab: pv.ab, rough: pv.rough, metal: pv.metal, er: pv.er, eg: pv.eg, eb: pv.eb))
+        }
+    }
+
     private func buildProps(_ world: World, into v: inout [PVert]) {
         let pp = world.player.pos, dir = world.player.dir
         let fwd = SIMD2<Float>(cosf(dir), sinf(dir))
@@ -693,6 +778,12 @@ final class RasterRenderer {
         }
         // furniture / fixtures / pipe runs / the reel-to-reel (material: rough painted metal)
         for pr in world.props where visible(pr.pos, 20) {
+            // BEDS: the imported Institutional Bed MESH replaces the SDF platform bunk (yaw +90° so the
+            // bed's length runs along the prop's local Z, head at the wall like the old bunk).
+            if pr.kind == .bunk, let bed = loadBed() {
+                emitMesh(bed, pos: pr.pos, yaw: pr.yaw + .pi / 2, scale: 0.55, into: &v)   // ~0.90 m tall (1.63·0.55) → fits under the y=1 ceiling
+                continue
+            }
             var sl: [GPURaymarch.GShape]
             var floored = true
             if pr.kind == .wallPipe {
@@ -736,6 +827,22 @@ final class RasterRenderer {
             let floatH: Float = 0.18 + sinf(t * 2 + phase) * 0.04    // gentle bob (mirrors packItems)
             let yaw = t * 0.8 + phase                                // slow spin
             emitItem(sl, pos: it.pos, yaw: yaw, scale: 0.55, floatH: floatH, into: &v)
+        }
+        // ── PROJECTILES (M5): a bright emissive HEAD ORB + a tapering STREAK stretched along the flight
+        // direction (mirrors GPURaymarch.packProjectiles), at eye height — so a bolt reads as a bolt of
+        // energy and a rocket streaks nose-forward, not as a flat camera-facing sprite. Emissive (col
+        // over-bright → propMat self-lit); each also casts a dynamic light (gathered above). ────────────
+        let eyeY: Float = 0.5
+        for pr in world.projectiles where visible(pr.pos, 40) {
+            let r = GPURaymarch.projRadius(pr.kind), col = GPURaymarch.projColor(pr.kind)
+            let speed = simd_length(pr.vel)
+            let dirU = speed > 0.001 ? pr.vel / speed : SIMD2<Float>(1, 0)
+            let head = SIMD3<Float>(pr.pos.x, eyeY, pr.pos.y)
+            let tail = head - SIMD3<Float>(dirU.x, 0, dirU.y) * min(0.8, speed * 0.045)
+            tessShape(GPURaymarch.iSphere(head, r, col * 2.6, 0.01), rough: 0.4, metal: 0.0, { $0 }, { $0 }, into: &v)
+            if simd_distance(head, tail) > 0.05 {
+                tessShape(GPURaymarch.iCone(head, tail, r * 0.9, r * 0.2, col * 1.5, 0.02), rough: 0.4, metal: 0.0, { $0 }, { $0 }, into: &v)
+            }
         }
     }
 
@@ -842,6 +949,7 @@ final class RasterRenderer {
     struct RROut { float4 color [[color(0)]]; float perp [[color(1)]]; };
     fragment RROut rr_fragment(VOut in [[stage_in]], constant Cam& C [[buffer(1)]],
                                 constant Light* lights [[buffer(2)]],
+                                constant float4* decals [[buffer(3)]],
                                 depth2d_array<float> smap [[texture(0)]], texture2d<float> field [[texture(1)]],
                                 texture2d<float> lampMask [[texture(2)]]){
         float3 alb=in.alb; float rough=in.rgh, metal=in.mtl;
@@ -853,6 +961,55 @@ final class RasterRenderer {
         float3 T=normalize(abs(gn.y)<0.9?cross(float3(0,1,0),gn):float3(1,0,0)), B=cross(gn,T);
         float3 N=normalize(gn - (tn.y*T+tn.z*B)*0.3);
         float grime=tn.x; rough=clamp(rough+(grime-0.5)*0.32,0.05,1.0); alb *= (0.74+0.48*grime);
+
+        // ── M5 aftermath DECALS on FLOOR fragments (blood/scorch/scattered-papers/ash/offal) — ported
+        // from the raymarch floor blend; modifies alb (+ a self-lit term) BEFORE the PBR lighting below.
+        // Cheap AABB→circle reject so uncovered floor pixels pay almost nothing (nD>0 across the deck). ──
+        float decalEmis = 0.0;
+        int nD = int(C.amb.x);
+        if(nD > 0 && gn.y > 0.5){
+            float dtime = C.amb.y, dn = -1.0;
+            for(int di=0; di<nD; di++){
+                float4 dc = decals[di];
+                float2 dxz = in.wp.xz - dc.xy; float rad = max(dc.z, 0.05);
+                if(abs(dxz.x) >= rad || abs(dxz.y) >= rad) continue;
+                float dd2 = dot(dxz, dxz); if(dd2 >= rad*rad) continue;
+                if(dn < 0.0) dn = 0.5 + 0.5*fbm(in.wp.xz*3.3 + 5.0);
+                float rr = sqrt(dd2)/rad;
+                float fall = (1.0 - smoothstep(0.15, 1.0, rr)) * (0.62 + 0.38*dn);   // solid core, noise erodes the rim
+                if(dc.w > 3.0){                                               // scattered papers
+                    float st = clamp(dc.w - 3.0, 0.0, 1.0);
+                    float2 q = in.wp.xz - dc.xy; float cover = 0.0, tone = 0.9;
+                    for(int sk=0; sk<6; sk++){
+                        float s = float(sk)*1.7 + dc.x*3.1 + dc.y*5.7;
+                        float2 cc = (float2(fract(sin(s*12.9)*4137.1), fract(sin(s*78.2)*2619.7)) - 0.5) * (dc.z*1.2);
+                        float ang = fract(sin(s*37.7)*7351.3) * 6.2831853;
+                        float2 hs = float2(0.085 + 0.05*fract(sin(s*5.3)*1234.5), 0.11 + 0.06*fract(sin(s*9.1)*9182.3));
+                        float2 dq = q - cc;
+                        float2 lp2 = float2(dq.x*cos(ang) + dq.y*sin(ang), -dq.x*sin(ang) + dq.y*cos(ang));
+                        float ins = smoothstep(-0.004, 0.004, min(hs.x - abs(lp2.x), hs.y - abs(lp2.y)));
+                        if(ins > cover){ cover = ins; tone = 0.86 + 0.16*fract(sin(s*3.3)*111.1); }
+                    }
+                    cover *= st;
+                    alb = mix(alb, float3(0.86,0.84,0.77)*tone, cover); decalEmis += cover*0.20;
+                } else if(dc.w > 2.0){                                        // smoldering ash + live embers
+                    float st = clamp(dc.w - 2.0, 0.0, 1.0), lump = vnoise(in.wp.xz*26.0);
+                    float ash = smoothstep(0.45, 0.70, lump)*fall*st;
+                    alb = mix(alb, float3(0.07,0.065,0.06), min(1.0, ash*1.8));
+                    float fleck = smoothstep(0.80, 0.95, lump)*fall*st, glowT = 0.55 + 0.45*sin(dtime*2.3 + lump*37.0);
+                    alb = mix(alb, float3(0.9,0.35,0.08), fleck*glowT*0.8); decalEmis += fleck*glowT*0.5;
+                } else if(dc.w >= 0.0){ alb *= 1.0 - 0.93*fall*dc.w;          // scorch → charred black
+                } else if(dc.w > -2.0){ float b = clamp(fall*(-dc.w)*1.1, 0.0, 1.0);   // blood → dark wet pool
+                    alb = mix(alb, float3(0.13,0.014,0.011), b);
+                } else {                                                      // offal (gibbed remains)
+                    float st = clamp(-(dc.w+2.0), 0.0, 1.0), lump = vnoise(in.wp.xz*22.0);
+                    float meat = smoothstep(0.55, 0.75, lump)*fall*st;
+                    alb = mix(alb, float3(0.30,0.035,0.03), min(1.0, meat*1.7));
+                    float glisten = smoothstep(0.74, 0.92, lump)*fall*st;
+                    alb = mix(alb, float3(0.52,0.10,0.08), glisten);
+                }
+            }
+        }
 
         float3 Vv=normalize(C.eye.xyz-in.wp); float ndv=max(dot(N,Vv),1e-3);
         float3 f0=mix(float3(0.04),alb,metal), diffCol=alb*(1-metal), col=float3(0);
@@ -942,7 +1099,7 @@ final class RasterRenderer {
         float ao = clamp(0.55+0.45*grime, 0.35, 1.0);
         col += baked * C.amb.w * alb * ao;
         col += f0 * baked * 0.6 * pow(1.0-ndv,3.0) * (1.0-rough);                    // env-ish spec off the baked field
-        col += in.emis;                                                              // self-lit fixtures
+        col += in.emis + decalEmis;                                                  // self-lit fixtures + decal embers/papers
 
         if(C.eye.w>0.5){
             col *= 0.9;
@@ -1143,6 +1300,76 @@ final class RasterRenderer {
                 _ = rr.render(world, into: canvas)
                 Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-creature-clip.png"))
                 print("RASTERSHOT: wrote raster-creature-clip.png (drone on wall face at \(cx),\(cy))")
+                break search
+            } }
+        }
+
+        // EFFECTS check (M5): spawn fire + spark + smoke particles and a plasma bolt in front of the
+        // camera and confirm the CPU sprite compositor draws them over the lit world, depth-occluded.
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
+            search: for cy in 3..<(m.h - 5) { for cx in 3..<(m.w - 3) where op(cx, cy) {
+                guard op(cx, cy + 1), op(cx, cy + 2), op(cx, cy + 3) else { continue }
+                let o = SIMD2<Float>(Float(cx) + 0.5, Float(cy) + 0.5)   // effect origin, 3 cells ahead of the camera
+                for i in 0..<12 { let a = Float(i)                       // rising flame column (additive age-ramp)
+                    world.particles.append(Particle(pos: o + SIMD2(sinf(a) * 0.12, cosf(a * 1.3) * 0.12), vel: .zero,
+                        life: 0.6, maxLife: 0.8, color: 0, size: 1.5, height: 0.25 + a * 0.05, rise: 0.4, maxAlpha: 1, fire: true)) }
+                for i in 0..<8 { let a = Float(i) * 0.8                  // sparks (additive coloured glints)
+                    world.particles.append(Particle(pos: o, vel: SIMD2(cosf(a), sinf(a)) * 2, life: 0.4, maxLife: 0.5,
+                        color: packRGBA(255, 200, 90), size: 1, height: 0.5, rise: 0, maxAlpha: 1, fire: true)) }
+                for i in 0..<6 { let a = Float(i)                       // smoke wisps (soft alpha)
+                    world.particles.append(Particle(pos: o + SIMD2(0, 0.08 * a), vel: .zero, life: 1.0, maxLife: 1.2,
+                        color: packRGBA(64, 64, 70), size: 2.2, height: 0.9 + a * 0.1, rise: 0.3, maxAlpha: 0.5, fire: false)) }
+                world.projectiles.append(Projectile(pos: o + SIMD2(0.5, 0), vel: SIMD2(0, -4), kind: .plasma, damage: 20, fromPlayer: true, life: 2))
+                world.projectiles.append(Projectile(pos: o + SIMD2(-0.7, 0.2), vel: SIMD2(-7, 0), kind: .rocket, damage: 60, fromPlayer: true, life: 3))   // fast, sideways → verify the streak points along travel
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy + 3) + 0.5)
+                world.player.dir = -.pi / 2
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-effects.png"))
+                print("RASTERSHOT: wrote raster-effects.png (fire/spark/smoke + plasma bolt at \(cx),\(cy))")
+                break search
+            } }
+        }
+
+        // DECALS check (M5): stamp blood / scorch / scattered-papers on the floor of a lamp-lit room and
+        // frame them — confirm the floor fragment blends each type (dark wet pool / charred black / pale
+        // sheets) with soft noise-eroded edges, lit by the pool, on the raster floor.
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
+            search: for cy in 4..<(m.h - 4) { for cx in 4..<(m.w - 4) where cx % 4 == 2 && cy % 4 == 2 && op(cx, cy) {
+                guard op(cx - 1, cy), op(cx + 1, cy), op(cx, cy + 1), op(cx, cy + 2), op(cx, cy + 3) else { continue }
+                world.decals = [
+                    SIMD4(Float(cx - 1) + 0.5, Float(cy) + 0.5, 0.6, -1.6),   // blood (w in −2…0)
+                    SIMD4(Float(cx)     + 0.5, Float(cy) + 0.5, 0.7,  1.0),   // scorch (w 0…2)
+                    SIMD4(Float(cx + 1) + 0.5, Float(cy) + 0.5, 0.6,  3.7),   // scattered papers (w>3)
+                ]
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy + 3) + 0.5)
+                world.player.dir = -.pi / 2
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-decals.png"))
+                print("RASTERSHOT: wrote raster-decals.png (blood/scorch/papers at \(cx),\(cy))")
+                break search
+            } }
+        }
+
+        // BED check: force a .bunk prop into a lamp-lit room and frame it — verify the imported
+        // Institutional Bed mesh loads, orients, scales, sits on the floor, and is lit like the world.
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
+            search: for cy in 4..<(m.h - 4) { for cx in 4..<(m.w - 4) where cx % 4 == 2 && cy % 4 == 2 && op(cx, cy) {
+                guard op(cx, cy + 1), op(cx, cy + 2), op(cx, cy + 3) else { continue }
+                world.props = [Prop(kind: .bunk, pos: SIMD2(Float(cx) + 0.5, Float(cy) + 0.5), yaw: 0)]
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy + 3) + 0.5)
+                world.player.dir = -.pi / 2
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-bed.png"))
+                print("RASTERSHOT: wrote raster-bed.png (institutional bed at \(cx),\(cy))")
                 break search
             } }
         }

@@ -161,8 +161,8 @@ final class MeshCreature {
 
         // NARROW the stance — the raw mesh stands crab-wide; draw the feet toward the
         // centreline so it reads as a lean prowler, not a splay-legged crab.
-        float footW = 1.0 - smoothstep(0.0, 0.32, Zn);
-        lp.xy *= mix(1.0, 0.58, footW);
+        float footW = 1.0 - smoothstep(0.0, 0.40, Zn);
+        lp.xy *= mix(1.0, 0.45, footW);
 
         // prowl gait — LEG-driven and low; no whole-body bounce
         float legW = 1.0 - smoothstep(0.12, 0.46, Zn);
@@ -588,7 +588,7 @@ final class MeshCreature {
                    map: GameMap, death: Float, burn: Float, ashed: Float,
                    lights: [GPURaymarch.GPULight] = [],
                    wallField: MTLTexture?, mapW: Float, mapH: Float) {
-        let height = Self.f("MeshQueenHeight", 1.0)
+        let height = Self.f("MeshQueenHeight", 0.92)
         let lightGain = Self.f("MeshQueenLight", 1.75)
         let animSpeed = Self.f("MeshQueenAnimSpeed", 1.4)
         let deathC = max(0, min(1, death))
@@ -791,7 +791,7 @@ final class MeshCreature {
                          lights: [GPURaymarch.GPULight] = [],
                          wallField: MTLTexture?, mapW: Float, mapH: Float) {
         guard !instances.isEmpty else { return }
-        let height = Self.f("MeshDroneHeight", 1.0)
+        let height = Self.f("MeshDroneHeight", 0.90)
         let lightGain = Self.f("MeshDroneLight", 1.9)
         let scale = height / localHeight
         let fwd = SIMD3<Float>(cos(camDir), 0, sin(camDir))

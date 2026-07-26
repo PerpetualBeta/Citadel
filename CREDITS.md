@@ -3,9 +3,9 @@
 Citadel's code and game design are original work, and its world is generated in
 code. Two kinds of bundled asset are the deliberate exceptions to the Jorvik
 "everything generated in code" rule, and both are documented in full below: the
-**graphics** (the alien mesh bestiary and two cinematic hero plates) and the
-**audio** (sampled SFX, ambient beds, and a title theme — the atmosphere leans too
-hard on sound to synthesise convincingly).
+**graphics** (the alien mesh bestiary, two cinematic hero plates, and one imported
+furniture model) and the **audio** (sampled SFX, ambient beds, and a title theme —
+the atmosphere leans too hard on sound to synthesise convincingly).
 
 ## Graphics
 
@@ -25,6 +25,25 @@ project, under the same terms.
 | `colonist_woman.usdz` + `colonist_woman_basecolor.jpg` | a fallen ARC colonist (woman, white suit) | FLUX image (Citadel-specific prompt) → Tripo image-to-3D |
 | `title_bg.png` | title-screen hero plate (the xenomorph) | FLUX image (Citadel-specific prompt) |
 | `highscore_bg.png` | Hall of the Fallen hero plate (the drone) | FLUX image (Citadel-specific prompt) |
+
+### Imported models
+
+One piece of furniture is a **third-party downloaded model** rather than AI-generated
+or code-synthesised — the dormitory bunk, imported so the rasterised renderer draws a
+real bed mesh instead of an SDF platform. It is re-materialled in code (a height split
+into a dark-steel frame and a pale institutional mattress); only the geometry is imported.
+
+| File | Asset | Source |
+|------|-------|--------|
+| `bed.obj` | dormitory bunk (two-tier institutional bed) | *Institutional Bed 5*, [archibase.net](https://archibase.net) |
+
+ArchiBase distributes community-contributed models for visualisation, design, and art.
+Its terms are informal — objects remain "the property of their respective owners," may
+be "freely modified or elaborated," with no explicit redistribution grant and a
+remove-on-request stance — so this is a weaker provenance than the CC0/CC-BY assets
+elsewhere in this file. It is credited here for that reason. If the licence footing ever
+matters, the mesh can be regenerated via the same FLUX → Tripo route as the bestiary, or
+rebuilt procedurally.
 
 Everything else visual — the architecture, materials, HUD, weapons, objects, fire,
 and the front-end — is generated in code (see [ARCHITECTURE.md](ARCHITECTURE.md)).

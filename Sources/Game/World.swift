@@ -1855,6 +1855,18 @@ final class World {
                 }
                 projectiles.remove(at: i)
             } else {
+                // rocket EXHAUST: a flame puff (+ occasional smoke) trailing the warhead, so it reads
+                // as a rocket under power rather than a bare bolt. Visual only.
+                if p.kind == .rocket {
+                    let dv = vlen(p.vel), back = dv > 0.001 ? p.vel / dv : SIMD2<Float>(0, 0)
+                    let tp = p.pos - back * 0.22
+                    particles.append(Particle(pos: tp, vel: -back * 0.3, life: 0.28, maxLife: 0.28, color: 0,
+                                              size: 0.9, height: 0.5, rise: 0.0, maxAlpha: 0.95, fire: true))
+                    if rng.chance(0.6) {
+                        particles.append(Particle(pos: tp, vel: -back * 0.2, life: 0.7, maxLife: 0.7,
+                                                  color: packRGBA(70, 70, 76), size: 1.3, height: 0.5, rise: 0.25, maxAlpha: 0.4))
+                    }
+                }
                 projectiles[i] = p; i += 1
             }
         }
