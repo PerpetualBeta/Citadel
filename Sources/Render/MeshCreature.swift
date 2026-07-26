@@ -282,15 +282,26 @@ final class MeshCreature {
                         texture2d<float> wallField [[texture(1)]],
                         constant MLight* lights [[buffer(2)]],
                         constant Cam& C [[buffer(1)]]) {
-        // WALL CLIP — discard fragments inside a wall so an extremity is cut at the
-        // surface instead of poking through (a live drone's reach, or a corpse's head
-        // near a door). Safe for corpses now they collapse COMPACT within the cleared
-        // radius, so this only trims a small intrusion — it can't slice a whole body.
-        // (eye.w = map width, fwd.w = map height; 0 in the warm pass → clip disabled.)
+        // WALL CLIP — trim the flesh that laps into a wall so an extremity is cut at the
+        // surface instead of poking through (a live drone's reach, or a corpse's head near
+        // a door). A HARD cut sawed limbs into a ragged edge with floating detached stubs
+        // as a creature pressed a wall (reads as "merging into the wall"); instead we DITHER
+        // the discard across a band, so the intruding flesh dissolves into the wall — an
+        // ordered 4×4 Bayer threshold on the pixel coord (no alpha blend, pure discard, so
+        // the shared merge is untouched). (eye.w = map width, fwd.w = map height; 0 in the
+        // warm pass → clip disabled.)
         if (C.eye.w > 0.5) {
             constexpr sampler ws(filter::linear, address::clamp_to_edge);
             float wd = wallField.sample(ws, in.wpos.xz / float2(C.eye.w, C.fwd.w)).r;
-            if (wd < 0.06) discard_fragment();
+            float a = smoothstep(0.02, 0.24, wd);       // 0 at/inside the wall → 1 well clear of it
+            if (a < 0.999) {
+                const float bayer[16] = { 0.5/16.0,  8.5/16.0,  2.5/16.0, 10.5/16.0,
+                                         12.5/16.0,  4.5/16.0, 14.5/16.0,  6.5/16.0,
+                                          3.5/16.0, 11.5/16.0,  1.5/16.0,  9.5/16.0,
+                                         15.5/16.0,  7.5/16.0, 13.5/16.0,  5.5/16.0 };
+                int2 pp = int2(in.clip.xy) & 3;
+                if (a < bayer[pp.y * 4 + pp.x]) discard_fragment();
+            }
         }
         constexpr sampler s(filter::linear, address::repeat);
         float3 alb = albedo.sample(s, in.uv).rgb;
