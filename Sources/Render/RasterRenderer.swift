@@ -31,6 +31,7 @@ final class RasterRenderer {
         var shX: SIMD4<Float>       // shadowed lamp CELL x for slices 0,1,2 (.w unused; -1 = none)
         var shZ: SIMD4<Float>       // shadowed lamp CELL z for slices 0,1,2 (.w unused; -1 = none)
         var camFwd: SIMD4<Float>    // TRUE camera forward (cos,0,sin) — the main pass writes perp-depth = dot(wp-eye, camFwd) so mesh creatures composite with correct occlusion
+        var water: SIMD4<Float>     // M6 liquids: x = global flood level (lowest floor drowns) · yz = this level's puddle-field offset (World.waterOff) · w unused
     }
     typealias Light = GPURaymarch.GPULight   // posR=(x,y,z,1/r²)  colI=(rgb,intensity)
 
@@ -62,6 +63,8 @@ final class RasterRenderer {
     private var fieldTex: MTLTexture?          // baked per-cell incident light (map.lightColor)
     private var lampMaskData: [UInt8] = []     // per-cell R8: 0 = solid wall · 128 = open · 255 = open + overhead lamp
     private var lampMaskTex: MTLTexture?       // ^ the fragment fetches this to find its lamps AND walk line-of-sight
+    private var floorIdData: [UInt8] = []      // M6 per-cell R8: the FlatTex id of each open floor cell (nukage=3/rock=7/blood=8 drive the liquid treatment); 0 elsewhere
+    private var floorIdTex: MTLTexture?        // ^ the floor fragment fetches this by integer cell to know whether it's toxic pool / pooling rock / flooded deck
     private var distTex: MTLTexture?           // rg32Float wall-distance field (.r) — the mesh-creature wall-clip trims limbs at wall faces
     private var mapW = 1, mapH = 1
     private var lampCells: [SIMD2<Float>] = [] // centres of the overhead ceiling lamps (even/even open cells)
@@ -133,7 +136,7 @@ final class RasterRenderer {
     func render(_ world: World, into canvas: Canvas2D) -> Bool {
         let id = ObjectIdentifier(world)
         if worldID != id { prepareLevel(world); worldID = id }
-        guard let vbuf, nVerts > 0, let fieldTex, let lampMaskTex else { return false }
+        guard let vbuf, nVerts > 0, let fieldTex, let lampMaskTex, let floorIdTex else { return false }
 
         // ── camera from the live player (matches the raymarcher's basis) ──
         let p = world.player
@@ -197,7 +200,8 @@ final class RasterRenderer {
             amb: SIMD4(Float(nDecals), world.elapsed, 0, 0.07),  // x = decal count · y = time (ash-ember flicker) · w = baked-field scale
             headFwd: SIMD4(headFwd, headInt),                   // the marine's headlamp — a broad pool, tilted DOWN to light footing
             shX: shX, shZ: shZ,                                 // shadowed lamp cells (integer) for the analytic loop's shadow match
-            camFwd: SIMD4(camFwd, 0)
+            camFwd: SIMD4(camFwd, 0),
+            water: SIMD4(Lighting.floodLevel(level: world.level), world.waterOff.x, world.waterOff.y, 0)   // M6: flood + this level's puddle-field offset (matches the raymarch/CPU field)
         )
 
         // ── per-frame prop mesh: tessellate the visible furniture/drums/sockets/mines/debris
@@ -248,6 +252,7 @@ final class RasterRenderer {
             me.setFragmentTexture(shadowArr, index: 0)
             me.setFragmentTexture(fieldTex, index: 1)
             me.setFragmentTexture(lampMaskTex, index: 2)   // analytic overhead lamp presence
+            me.setFragmentTexture(floorIdTex, index: 3)    // M6 per-cell floor id → liquid surface treatment
             me.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: nVerts)
             if nDynVerts > 0 {                                    // the visible props, lit by the same forward pass
                 me.setVertexBuffer(dynBuf, offset: 0, index: 0)
@@ -398,6 +403,13 @@ final class RasterRenderer {
         let mt = device.makeTexture(descriptor: md)
         lampMaskData.withUnsafeBytes { mt?.replace(region: MTLRegionMake2D(0, 0, mapW, mapH), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: mapW) }
         lampMaskTex = mt
+        // M6 floor-id mask (R8) — the floor fragment fetches this by integer cell to tell toxic pool
+        // (nukage) / pooling rock / flooded deck apart, and give each the animated liquid surface.
+        let fid = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Uint, width: mapW, height: mapH, mipmapped: false)
+        fid.usage = [.shaderRead]; fid.storageMode = .managed
+        let ft = device.makeTexture(descriptor: fid)
+        floorIdData.withUnsafeBytes { ft?.replace(region: MTLRegionMake2D(0, 0, mapW, mapH), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: mapW) }
+        floorIdTex = ft
         // wall-distance field (same builder the raymarcher uses) — the mesh-creature wall-clip samples
         // this (normalised by mapW/mapH) and discards fragments inside a wall, so a creature's swaying
         // limbs/tentacles are TRIMMED at a wall face instead of merging into a convex corner.
@@ -413,6 +425,7 @@ final class RasterRenderer {
         var v: [PVert] = []; v.reserveCapacity(map.w * map.h * 12)
         lampCells.removeAll(keepingCapacity: true)
         lampMaskData = [UInt8](repeating: 0, count: map.w * map.h)   // per-cell lamp-presence, stamped at the same site as the housing
+        floorIdData = [UInt8](repeating: 0, count: map.w * map.h)     // M6 per-cell floor id (nukage/rock/blood drive the liquid treatment in the fragment)
         func openGeo(_ x: Int, _ y: Int) -> Bool {
             guard map.inBounds(x, y) else { return false }
             let i = map.idx(x, y); return map.wall[i] == 0 || map.doors[i] != nil
@@ -464,6 +477,7 @@ final class RasterRenderer {
             for x in 0..<map.w where openGeo(x, y) {
                 let i = map.idx(x, y), fx = Float(x), fz = Float(y)
                 lampMaskData[i] = 128   // this cell is OPEN (128) — used by the shader's line-of-sight walk (solid cells stay 0); lamp cells are bumped to 255 below
+                floorIdData[i] = UInt8(truncatingIfNeeded: map.floor[i])   // M6: the fragment reads this to give nukage/rock/blood cells the liquid surface
                 blendedSurface(x, y, 0, SIMD3(0, 1, 0)) { map.floor[$0] }
                 blendedSurface(x, y, 1, SIMD3(0, -1, 0)) { map.ceil[$0] }
                 if !openGeo(x - 1, y) { quad(SIMD3(fx, 0, fz), SIMD3(fx, 0, fz + 1), SIMD3(fx, 1, fz + 1), SIMD3(fx, 1, fz), SIMD3(1, 0, 0), wallTexAt(map, x - 1, y)) }
@@ -681,6 +695,25 @@ final class RasterRenderer {
         for i in shapes.indices { shapes[i].a.z += dz; if shapes[i].b.w >= 0 { shapes[i].b.z += dz } }
     }
 
+    /// Emit an axis-aligned box [lo,hi] with flat outward normals and material `m`. Winding is
+    /// irrelevant (the passes cull .none) — only the NORMALS must point out. Used for door leaves.
+    private func emitAABB(_ lo: SIMD3<Float>, _ hi: SIMD3<Float>, _ m: Mat, into v: inout [PVert]) {
+        func vert(_ p: SIMD3<Float>, _ n: SIMD3<Float>) -> PVert {
+            PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
+                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z)
+        }
+        func face(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>, _ d: SIMD3<Float>, _ n: SIMD3<Float>) {
+            v += [vert(a, n), vert(b, n), vert(c, n), vert(a, n), vert(c, n), vert(d, n)]
+        }
+        let x0 = lo.x, y0 = lo.y, z0 = lo.z, x1 = hi.x, y1 = hi.y, z1 = hi.z
+        face(SIMD3(x0, y0, z1), SIMD3(x1, y0, z1), SIMD3(x1, y1, z1), SIMD3(x0, y1, z1), SIMD3(0, 0, 1))    // +Z
+        face(SIMD3(x1, y0, z0), SIMD3(x0, y0, z0), SIMD3(x0, y1, z0), SIMD3(x1, y1, z0), SIMD3(0, 0, -1))   // −Z
+        face(SIMD3(x1, y0, z1), SIMD3(x1, y0, z0), SIMD3(x1, y1, z0), SIMD3(x1, y1, z1), SIMD3(1, 0, 0))    // +X
+        face(SIMD3(x0, y0, z0), SIMD3(x0, y0, z1), SIMD3(x0, y1, z1), SIMD3(x0, y1, z0), SIMD3(-1, 0, 0))   // −X
+        face(SIMD3(x0, y1, z1), SIMD3(x1, y1, z1), SIMD3(x1, y1, z0), SIMD3(x0, y1, z0), SIMD3(0, 1, 0))    // +Y top
+        face(SIMD3(x0, y0, z0), SIMD3(x1, y0, z0), SIMD3(x1, y0, z1), SIMD3(x0, y0, z1), SIMD3(0, -1, 0))   // −Y bottom
+    }
+
     /// Tessellate a prop's local shapes into `v`, applying the kernel's LOCAL→WORLD
     /// transform inverted: XZ rotation about +yaw, translate to `pos`, drop the lowest
     /// authored point to the floor when `floored` (yOff = loY; wall-pipes/sockets keep
@@ -775,6 +808,33 @@ final class RasterRenderer {
             if d > maxD { return false }
             if d > 1.5 && simd_dot(rel / d, fwd) < -0.5 { return false }   // strongly behind → skip (saves tessellation)
             return true
+        }
+        // DOORS + the elevator front — a door cell is geometry-OPEN (you walk/shoot through as it parts),
+        // so buildMesh draws its jambs but never the LEAF: doors (and the elevator, whose front IS a door
+        // cell) rendered as empty gaps though they still operated. Emit the sliding centre-split leaves
+        // here, per-frame (they animate): two half-panels that retract from the cell centre into the jambs.
+        let dmap = world.map
+        for (i, dstate) in dmap.doors {
+            let cx = i % dmap.w, cy = i / dmap.w
+            if !visible(SIMD2(Float(cx) + 0.5, Float(cy) + 0.5), 26) { continue }
+            let part = min(1, dstate.open / GameMap.passThreshold)         // 0 closed … 1 fully parted
+            let halfOpen = 0.5 * (1 - part)                                // each leaf's remaining half-width
+            if halfOpen < 0.012 { continue }                              // fully open → nothing to draw
+            let lx = dmap.inBounds(cx - 1, cy) && dmap.wall[dmap.idx(cx - 1, cy)] != 0
+            let rx = dmap.inBounds(cx + 1, cy) && dmap.wall[dmap.idx(cx + 1, cy)] != 0
+            let slideX = lx && rx                                         // both side walls solid → slides along X (mirrors doorSlidesAlongX)
+            let mat = wallMat(WallTex(rawValue: dmap.wall[i]) ?? .doorPanel)
+            let t: Float = 0.07                                          // leaf half-thickness (through-axis)
+            let fx = Float(cx), fz = Float(cy)
+            if slideX {
+                let zc = fz + 0.5
+                emitAABB(SIMD3(fx, 0, zc - t),            SIMD3(fx + halfOpen, 1, zc + t), mat, into: &v)   // left leaf → its jamb
+                emitAABB(SIMD3(fx + 1 - halfOpen, 0, zc - t), SIMD3(fx + 1, 1, zc + t), mat, into: &v)      // right leaf → its jamb
+            } else {
+                let xc = fx + 0.5
+                emitAABB(SIMD3(xc - t, 0, fz),            SIMD3(xc + t, 1, fz + halfOpen), mat, into: &v)   // near leaf
+                emitAABB(SIMD3(xc - t, 0, fz + 1 - halfOpen), SIMD3(xc + t, 1, fz + 1), mat, into: &v)      // far leaf
+            }
         }
         // furniture / fixtures / pipe runs / the reel-to-reel (material: rough painted metal)
         for pr in world.props where visible(pr.pos, 20) {
@@ -898,7 +958,7 @@ final class RasterRenderer {
     constant float  kLampInvR2 = \(1 / (RasterRenderer.lampPoolRadius * RasterRenderer.lampPoolRadius));   // 1/radius²
     constant float  kLampY     = \(RasterRenderer.lampLightY);
 
-    struct Cam { float4x4 mvp; float4x4 lmvp[3]; float4 eye; float4 params; float4 amb; float4 headFwd; float4 shX; float4 shZ; float4 camFwd; };
+    struct Cam { float4x4 mvp; float4x4 lmvp[3]; float4 eye; float4 params; float4 amb; float4 headFwd; float4 shX; float4 shZ; float4 camFwd; float4 water; };
     struct Light { float4 posR; float4 colI; };          // posR=(x,y,z,1/r²)  colI=(rgb,intensity)
     struct PV { float px,py,pz, nx,ny,nz, ar,ag,ab, rough, metal, er,eg,eb; };
     struct VOut { float4 clip [[position]]; float3 wp; float3 wn; float3 alb; float rgh; float mtl; float3 emis; };
@@ -909,6 +969,16 @@ final class RasterRenderer {
         float a=h21(i),b=h21(i+float2(1,0)),c=h21(i+float2(0,1)),d=h21(i+float2(1,1));
         return mix(mix(a,b,f.x),mix(c,d,f.x),f.y); }
     float fbm(float2 p){ float s=0,a=0.5; for(int i=0;i<5;i++){ s+=a*vnoise(p); p*=2.03; a*=0.5;} return s; }
+    // ── M6 standing water: the INTEGER-hash value-noise puddle field, byte-identical to
+    // Lighting.puddle / GPURaymarch.puddleField, so the raster water pools EXACTLY where the
+    // game wades + drips and the raymarcher draws it (the fixtureBusted lockstep trick). ──
+    uint  rIhash(int x,int y){ uint h=uint(x)*374761393u+uint(y)*668265263u; h=(h^(h>>13))*1274126177u; return h^(h>>16); }
+    float rIhash01(int x,int y){ return float(rIhash(x,y)&0xFFFFu)/65535.0; }
+    float rInoise2(float2 q){ float2 i=floor(q),f=fract(q); f=f*f*(3-2*f); int2 c=int2(i);
+        float a=rIhash01(c.x,c.y),b=rIhash01(c.x+1,c.y),cc=rIhash01(c.x,c.y+1),d=rIhash01(c.x+1,c.y+1);
+        return mix(mix(a,b,f.x),mix(cc,d,f.x),f.y); }
+    float rPuddleField(float2 xz){ return 0.65*rInoise2(xz*0.55)+0.35*rInoise2(xz*1.9+31.0); }
+    float rPuddleMask(float f){ return smoothstep(0.50,0.60,f); }
     float3 triNoise(float3 wp, float3 n, float scale){
         float3 an=abs(n); an/=(an.x+an.y+an.z);
         float2 uvX=wp.zy*scale, uvY=wp.xz*scale, uvZ=wp.xy*scale; float e=0.35/scale;
@@ -951,7 +1021,7 @@ final class RasterRenderer {
                                 constant Light* lights [[buffer(2)]],
                                 constant float4* decals [[buffer(3)]],
                                 depth2d_array<float> smap [[texture(0)]], texture2d<float> field [[texture(1)]],
-                                texture2d<float> lampMask [[texture(2)]]){
+                                texture2d<float> lampMask [[texture(2)]], texture2d<uint> floorId [[texture(3)]]){
         float3 alb=in.alb; float rough=in.rgh, metal=in.mtl;
         float3 gn=normalize(in.wn);
         // Surfaces are CONTINUOUS — no per-metre panel grid (that read as tiled squares). Large-scale
@@ -1008,6 +1078,45 @@ final class RasterRenderer {
                     float glisten = smoothstep(0.74, 0.92, lump)*fall*st;
                     alb = mix(alb, float3(0.52,0.10,0.08), glisten);
                 }
+            }
+        }
+
+        // ── M6 LIQUIDS on FLOOR fragments: toxic pools (nukage), blood pools, the drowned lowest
+        // floor, and floor-7's rock puddles — an animated wet surface. The floor id (read by integer
+        // cell) tells liquid from pooling-rock; the flood scalar drowns the lowest floor; the puddle
+        // field (byte-identical to the game's, so you splash exactly where you see water) says where
+        // the rock pools. Mirrors the raymarch floor-liquid blend: churn the normal, glaze it glossy,
+        // darken + cool the bed, and (nukage) pulse the glow. Applied BEFORE the PBR lighting below. ──
+        float3 waterEmis = float3(0.0);
+        if(gn.y > 0.5){
+            uint2 fc = uint2(clamp(int2(floor(in.wp.xz)), int2(0), int2(int(C.params.z)-1, int(C.params.w)-1)));
+            int fid = int(floorId.read(fc).r);
+            bool liquid = (fid == 3 || fid == 8);                       // nukage / blood — liquid at any depth
+            float flood = C.water.x, dtime = C.amb.y;
+            float wet = max(flood, liquid ? 1.0 : 0.0);                 // the lowest floor drowns (flood); pools always wet
+            if(!liquid && fid == 7 && wet < 0.01){                      // floor-7 rock: water finds its way down → it POOLS
+                float pf = rPuddleField(in.wp.xz + C.water.yz);
+                float pool = rPuddleMask(pf);
+                float damp = smoothstep(0.36, 0.50, pf) * (1.0 - pool);
+                alb *= 1.0 - 0.22 * damp;                              // a damp soaked-in margin rings each pool
+                wet = pool;
+            }
+            if(liquid){                                                // hazard pool — a live rippling glassy surface
+                float2 q = in.wp.xz;
+                float2 w1 = q*3.1 + float2(dtime*0.55, dtime*-0.41);
+                float2 w2 = q*6.9 + float2(dtime*-0.33, dtime*0.49);
+                float e = 0.09;
+                float gx = (fbm(w1+float2(e,0))-fbm(w1-float2(e,0))) + 0.5*(fbm(w2+float2(e,0))-fbm(w2-float2(e,0)));
+                float gz = (fbm(w1+float2(0,e))-fbm(w1-float2(0,e))) + 0.5*(fbm(w2+float2(0,e))-fbm(w2-float2(0,e)));
+                N = normalize(N + float3(gx,0,gz)*2.4);                 // churning ripples from flowing noise
+                if(fid == 3){ float pulse = fbm(q*1.6 + float2(dtime*0.5, dtime*0.37));
+                    waterEmis += in.emis * (pulse - 0.5); }             // nukage: base·(0.5+pulse) via a delta on the always-added in.emis → an irregular pulse
+                alb *= 0.55; rough = 0.10; metal = 0.0;                 // glassy hazard liquid
+            } else if(wet > 0.01){                                      // standing water — the drowned deck / floor-7 pools
+                float2 q = in.wp.xz;
+                N = normalize(N + float3(cos(q.x*5.1 + dtime*1.1), 0.0, cos(q.y*4.7 - dtime*1.3)) * (0.14*wet));   // slow standing ripples
+                alb = mix(alb, alb*float3(0.30,0.34,0.42), wet);        // water darkens + cools the bed under it
+                rough = mix(rough, 0.08, wet); metal = 0.0;             // glazes the deck glossy
             }
         }
 
@@ -1099,7 +1208,7 @@ final class RasterRenderer {
         float ao = clamp(0.55+0.45*grime, 0.35, 1.0);
         col += baked * C.amb.w * alb * ao;
         col += f0 * baked * 0.6 * pow(1.0-ndv,3.0) * (1.0-rough);                    // env-ish spec off the baked field
-        col += in.emis + decalEmis;                                                  // self-lit fixtures + decal embers/papers
+        col += in.emis + decalEmis + waterEmis;                                      // self-lit fixtures + decal embers/papers + pulsing nukage
 
         if(C.eye.w>0.5){
             col *= 0.9;
@@ -1281,25 +1390,49 @@ final class RasterRenderer {
             } }
         }
 
-        // WALL-CLIP check (M4 corner-merge fix): stand a drone straddling a wall boundary (body centre ON
-        // the wall face) so its INSIDE half must be discarded by the distance-field clip → a clean vertical
-        // cut at the wall, not a drone drawn on top of it. Confirms the clip trims limbs at convex corners.
+        // WALL-CLIP check (M4 corner-merge fix + the close-up merge Jonathan flagged 2026-07-26): stand a
+        // drone straddling a wall boundary (body centre ON the wall face) with the camera CLOSE and head-on,
+        // so its INSIDE half must be discarded by the distance-field clip → a clean cut at the wall, not a
+        // drone smeared into it. The close framing matches the in-game case (a drone right in the player's face).
         do {
             let world = World(level: 1, colonyIndex: 0, seed: 3)
             let m = world.map
             func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
             func solid(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] != 0 && m.doors[m.idx(x, y)] == nil }
-            search: for cy in 3..<(m.h - 6) { for cx in 4..<(m.w - 3)
+            search: for cy in 3..<(m.h - 3) { for cx in 4..<(m.w - 4)
                 where op(cx, cy) && solid(cx - 1, cy) {                 // open cell with a SOLID west neighbour (wall face at x = cx)
-                guard op(cx, cy + 1), op(cx, cy + 2), op(cx, cy + 3) else { continue }
+                guard op(cx + 1, cy), op(cx + 2, cy), op(cx + 3, cy) else { continue }   // open run EAST for the camera to stand back
                 var drone = Monster(kind: .alien, pos: SIMD2(Float(cx), Float(cy) + 0.5))   // centre ON the wall face → west half is inside the wall
-                drone.dir = .pi / 2; drone.state = .chase
-                world.monsters = [drone]
-                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy + 3) + 0.5)
-                world.player.dir = -.pi / 2
+                drone.dir = 0; drone.state = .chase
+                world.monsters = [drone]; world.props = []; world.drums = []; world.items = []; world.sockets = []
+                world.player.pos = SIMD2(Float(cx + 3) + 0.5, Float(cy) + 0.5)             // ~3 cells EAST, head-on
+                world.player.dir = .pi                                                     // face WEST → drone big in frame, west wall right behind it
                 _ = rr.render(world, into: canvas)
                 Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-creature-clip.png"))
                 print("RASTERSHOT: wrote raster-creature-clip.png (drone on wall face at \(cx),\(cy))")
+                break search
+            } }
+        }
+
+        // WALL-MERGE repro (Jonathan 2026-07-26): a drone whose body pokes LATERALLY into a SIDE wall,
+        // framed like the in-game shot (wall running away on the right, creature extent lapping into it).
+        // The clip should cut the drone at the side-wall face; a smear across the wall means it isn't.
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
+            func solid(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] != 0 && m.doors[m.idx(x, y)] == nil }
+            search: for cy in 4..<(m.h - 3) { for cx in 4..<(m.w - 4)
+                where op(cx, cy) && solid(cx + 1, cy) && op(cx, cy - 1) {   // open cell, SOLID east neighbour (side wall at x = cx+1), open north
+                guard op(cx, cy + 1), op(cx, cy + 2), op(cx, cy + 3) else { continue }
+                var drone = Monster(kind: .alien, pos: SIMD2(Float(cx) + 0.85, Float(cy) + 0.5))   // pushed EAST → its right side laps into the side wall
+                drone.dir = -.pi / 2; drone.state = .chase
+                world.monsters = [drone]; world.props = []; world.drums = []; world.items = []; world.sockets = []
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy + 3) + 0.5)   // ~3 cells SOUTH, side wall recedes on the right
+                world.player.dir = -.pi / 2                                       // face NORTH toward the drone
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-wallmerge.png"))
+                print("RASTERSHOT: wrote raster-wallmerge.png (drone lapping a side wall at \(cx),\(cy))")
                 break search
             } }
         }
@@ -1372,6 +1505,149 @@ final class RasterRenderer {
                 print("RASTERSHOT: wrote raster-bed.png (institutional bed at \(cx),\(cy))")
                 break search
             } }
+        }
+
+        // TOXIC-POOL check (M6): flood a 5×5 patch of nukage floor cells in a cleared room, centred OFF the
+        // overhead-lamp grid (cx%4==0,cy%4==0 — the point farthest from any lamp) so the lamp doesn't wash
+        // the surface white and the pool's OWN green shows — verify the raster floor fragment gives it the
+        // LIQUID surface: green self-glow that PULSES, churning ripples off the normal, glassy low roughness.
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
+            func clear() { world.props = []; world.drums = []; world.deployedMines = []; world.sockets = []; world.items = [] }
+            search: for cy in 6..<(m.h - 8) { for cx in 6..<(m.w - 6) where cx % 4 == 0 && cy % 4 == 0 && op(cx, cy) {
+                guard op(cx, cy + 1), op(cx, cy + 2), op(cx, cy + 3), op(cx, cy + 4), op(cx, cy + 5), op(cx - 1, cy), op(cx + 1, cy) else { continue }
+                clear()
+                for py in (cy - 2)...(cy + 2) { for px in (cx - 2)...(cx + 2) where op(px, py) {
+                    m.floor[m.idx(px, py)] = FlatTex.nukage.rawValue
+                } }
+                world.elapsed = 3.0                                                   // a non-zero phase so the ripples/glow are mid-animation
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy + 5) + 0.5)        // stand back so the pool is seen at a GRAZING angle (head-on + close, the bright headlamp washes the green out)
+                world.player.dir = -.pi / 2
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-toxic.png"))
+                print("RASTERSHOT: wrote raster-toxic.png (nukage pool at \(cx),\(cy))")
+                break search
+            } }
+        }
+
+        // STANDING-WATER check (M6): force a 9×9 rock floor in a cleared lamp-lit room — the shared puddle
+        // field pools water across roughly half of it, so this frames the representative "water finds its
+        // way down" look: dark cool glazed puddles with damp margins, on dry rock, all lit. (The floor-8
+        // FLOOD path is the same fragment code with a global wet=0.85 instead of the pooled mask.)
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
+            search: for cy in 7..<(m.h - 8) { for cx in 7..<(m.w - 7) where cx % 4 == 2 && cy % 4 == 2 && op(cx, cy) {
+                guard op(cx, cy + 1), op(cx, cy + 2), op(cx, cy + 3), op(cx, cy + 4), op(cx, cy + 5) else { continue }
+                world.props = []; world.drums = []; world.deployedMines = []; world.sockets = []; world.items = []
+                for py in (cy - 3)...(cy + 3) { for px in (cx - 3)...(cx + 3) where op(px, py) {
+                    m.floor[m.idx(px, py)] = FlatTex.rock.rawValue
+                } }
+                world.elapsed = 3.0
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy + 5) + 0.5)
+                world.player.dir = -.pi / 2
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-water.png"))
+                print("RASTERSHOT: wrote raster-water.png (rock puddles at \(cx),\(cy))")
+                break search
+            } }
+        }
+
+        // STEAM check (M6): seat a floor grate and spawn a rising steam PLUME (staggered heights, so one
+        // frame shows the column) — confirm the CPU sprite compositor draws the faint grey steam over the
+        // lit world, dispersing as it climbs, out of a visible vent grate. (Steam = fire:false particles.)
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
+            search: for cy in 5..<(m.h - 6) { for cx in 5..<(m.w - 5) where cx % 4 == 2 && cy % 4 == 2 && op(cx, cy) {
+                guard op(cx, cy + 1), op(cx, cy + 2), op(cx, cy + 3), op(cx - 1, cy), op(cx + 1, cy),
+                      op(cx - 1, cy + 1), op(cx + 1, cy + 1) else { continue }         // a genuinely open bay so the plume isn't lost against a near wall
+                world.monsters = []; world.props = []; world.drums = []; world.items = []   // clear so the plume reads against the deck
+                m.floor[m.idx(cx, cy)] = FlatTex.grate.rawValue                        // the vent's visible source
+                let base = SIMD2<Float>(Float(cx) + 0.5, Float(cy) + 0.5)
+                for k in 0..<50 {                                                      // a plume frozen mid-rise (dense so the compositor's output is unmistakable): height climbs, it spreads + thins
+                    let t = Float(k) / 49.0, a = Float(k) * 0.7
+                    world.particles.append(Particle(pos: base + SIMD2(sinf(a) * (0.10 + t * 0.30), cosf(a * 1.3) * (0.10 + t * 0.30)),
+                        vel: .zero, life: 1.5, maxLife: 1.9, color: packRGBA(210, 214, 220),
+                        size: 6 + t * 7, height: 0.05 + t * 0.85, rise: 0.5, maxAlpha: 0.5 * (1.0 - t * 0.4), fire: false))
+                }
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy + 2) + 0.5)
+                world.player.dir = -.pi / 2
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-steam.png"))
+                print("RASTERSHOT: wrote raster-steam.png (steam vent at \(cx),\(cy))")
+                break search
+            } }
+        }
+
+        // DOOR check (parity fix): find a door cell with an open through-side, stand 3 cells back facing
+        // it and render it PART-OPEN — verify the sliding centre-split leaves now DRAW (they were never
+        // emitted, so doors vanished though they operated: you saw straight through the doorway). The gap
+        // between the two panels proves it's a door, not a wall.
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+            for (i, _) in m.doors {
+                let cx = i % m.w, cy = i / m.w
+                let slideX = (m.inBounds(cx - 1, cy) && m.wall[m.idx(cx - 1, cy)] != 0)
+                          && (m.inBounds(cx + 1, cy) && m.wall[m.idx(cx + 1, cy)] != 0)
+                let tx = slideX ? 0 : 1, ty = slideX ? 1 : 0                          // through-axis (open passage) direction
+                var placed = false
+                for sgn in [1, -1] where !placed {                                    // stand on whichever through-side is open
+                    guard op(cx + tx * sgn, cy + ty * sgn), op(cx + tx * 3 * sgn, cy + ty * 3 * sgn) else { continue }
+                    m.doors[i] = DoorState(open: 0.30)                               // part-open → the centre-split gap shows
+                    world.player.pos = SIMD2(Float(cx + tx * 3 * sgn) + 0.5, Float(cy + ty * 3 * sgn) + 0.5)
+                    world.player.dir = atan2(Float(-ty * sgn), Float(-tx * sgn))     // face the door
+                    _ = rr.render(world, into: canvas)
+                    Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-door.png"))
+                    print("RASTERSHOT: wrote raster-door.png (\(slideX ? "X" : "Z")-slide door at \(cx),\(cy), part-open)")
+                    placed = true
+                }
+                if placed { break }
+            }
+        }
+
+        // ELEVATOR check (parity fix): frame the exit elevator — its front IS a door cell, so it vanished
+        // with the rest. Stand 3 cells back on its open through-side, force it closed → verify the
+        // machined-steel car front renders as a solid leaf (was an open gap into the shaft).
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+            let i = m.exitCell
+            if i >= 0, m.doors[i] != nil {
+                let cx = i % m.w, cy = i / m.w
+                world.monsters = []; world.props = []; world.drums = []   // the Queen spawns AT the exit elevator — clear her so she doesn't fill the view
+                let slideX = (m.inBounds(cx - 1, cy) && m.wall[m.idx(cx - 1, cy)] != 0)
+                          && (m.inBounds(cx + 1, cy) && m.wall[m.idx(cx + 1, cy)] != 0)
+                let tx = slideX ? 0 : 1, ty = slideX ? 1 : 0
+                var placed = false
+                for sgn in [-1, 1] where !placed {                                    // the room is on the open through-side of the shaft
+                    let dist = op(cx + tx * 4 * sgn, cy + ty * 4 * sgn) ? 4
+                             : (op(cx + tx * 3 * sgn, cy + ty * 3 * sgn) ? 3 : (op(cx + tx * 2 * sgn, cy + ty * 2 * sgn) ? 2 : 0))
+                    guard dist > 0 else { continue }
+                    world.player.pos = SIMD2(Float(cx + tx * dist * sgn) + 0.5, Float(cy + ty * dist * sgn) + 0.5)
+                    world.player.dir = atan2(Float(-ty * sgn), Float(-tx * sgn))     // face the elevator
+                    // CLOSED then OPEN — the pair PROVES the leaf: closed hides the car (grey steel front),
+                    // open reveals the lit interior. Before the fix BOTH looked the same (open gap → no leaf).
+                    m.doors[i] = DoorState()                                          // closed
+                    _ = rr.render(world, into: canvas)
+                    Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-elevator.png"))
+                    m.doors[i] = DoorState(open: 1.0)                                 // fully parted
+                    _ = rr.render(world, into: canvas)
+                    Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-elevator-open.png"))
+                    print("RASTERSHOT: wrote raster-elevator.png + raster-elevator-open.png (exit elevator at \(cx),\(cy), dist \(dist))")
+                    placed = true
+                }
+                if !placed { print("RASTERSHOT: elevator check skipped (no open standoff)") }
+            } else {
+                print("RASTERSHOT: elevator check skipped (no exit-cell door)")
+            }
         }
     }
     #endif
