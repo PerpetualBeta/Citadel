@@ -17,7 +17,8 @@ enum FurnitureKind: Int, CaseIterable {
     case chair       // office chair (sits with a desk)
     case locker      // tall steel storage locker (lines walls)
     case wallPipe    // a run of pipes + bracket bolted to a wall (everywhere)
-    case camera      // ARC surveillance camera — mounted HIGH on a wall, angled down into the room (decorative, no collider)
+    case papers      // records spilled across the deck in the panic — a flat scatter of sheets (decorative, no collider)
+    case tapeDeck    // control-room reel-to-reel recorder — "THE SIGNAL" archive; USE (face it) to play the recording
 }
 
 struct Prop {
@@ -29,4 +30,26 @@ struct Prop {
     // (a bunk/desk/locker stood ~⅓ of a cell — "approx 1m" — off the wall before).
     // A chair is free-standing in front of its desk, so it keeps its placed position.
     var againstWall: Bool = true
+}
+
+// A FALLEN COLONIST — one of the ARC workers the swarm overran, left where they
+// died. Not a monster and not SDF furniture: a real human mesh (see CREDITS)
+// rasterised into the lair and TOPPLED into a corpse procedurally (the engine is
+// rigless), so `seed` freezes a per-body pose and `yaw` the direction it fell.
+// No collider — the marine steps over the dead. `burn`/`ashed` let a torched body
+// char and crumble like a creature. Placed by MapGen, stored on the World, drawn
+// by MeshCreature.compositeColonists. Doubles as both spawn record and live state.
+struct Colonist {
+    var pos: SIMD2<Float>
+    var yaw: Float
+    var seed: Float           // 0…1 → per-body pose variation
+    var variant: Int          // index into Colonist.modelNames (-1 = unassigned; World assigns a session-unique model)
+    var burn: Float = 0        // 0…1 scorched
+    var ashed: Float = 0       // 0…2 crumbled → trodden flat
+
+    /// The seven rigged human meshes (see CREDITS). A survivor is assigned ONE of
+    /// these per placement; the World roster guarantees no two are seen in a session.
+    static let modelNames = ["colonist_director", "colonist_woman", "colonist_worker",
+                             "colonist_marine", "colonist_civ_a", "colonist_civ_b", "colonist_man"]
+    static var modelCount: Int { modelNames.count }
 }

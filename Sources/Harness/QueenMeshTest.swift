@@ -352,4 +352,43 @@ enum QueenMeshTest {
         UserDefaults.standard.removeObject(forKey: "MeshQueenHeadYaw")
         print("Citadel: mesh live-verify — queen \(qpos) (found=\(found))")
     }
+
+    // CITADEL_CORPSES → drive the REAL live renderer at each fallen colonist in a
+    // generated level, standing off with a clear line, to judge the procedural
+    // topple/slump pose + lair lighting on the corpse meshes headlessly.
+    static func verifyColonists(outDir: String?) {
+        guard let device = MTLCreateSystemDefaultDevice() else { print("Citadel: no Metal device"); return }
+        let dir = URL(fileURLWithPath: outDir ?? NSHomeDirectory() + "/Desktop/Citadel-Colonist")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let world = World(level: 6, colonyIndex: 4, seed: 4242)
+        world.monsters = []; world.drums = []; world.sockets = []
+        let map = world.map
+        func open(_ p: SIMD2<Float>) -> Bool { map.wallAt(Int(p.x), Int(p.y)) == 0 }
+        // find an open target cell with a clear stand-off in front of it
+        var target = SIMD2<Float>(0, 0), stand = SIMD2<Float>(0, 0), found = false
+        scan: for y in 2..<(map.h - 2) { for x in 2..<(map.w - 2) {
+            let t = SIMD2<Float>(Float(x) + 0.5, Float(y) + 0.5)
+            guard open(t) else { continue }
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let d = SIMD2<Float>(Float(dx), Float(dy))
+                if open(t + d) && open(t + d * 2) && open(t + d * 3) { target = t; stand = t + d * 2.6; found = true; break scan }
+            }
+        } }
+        guard found else { print("Citadel: no standoff for colonist verify"); return }
+        let canvas = Canvas2D()
+        guard let gpu = GPUWorldRenderer(device: device) else { print("Citadel: no GPU renderer"); return }
+        let faceAng = atan2(target.y - stand.y, target.x - stand.x)
+        let inward = simd_normalize(stand - target)
+        world.player.pos = stand; world.player.dir = faceAng; world.player.muzzle = 0
+        // one of every variant, at the same spot + pose seed, facing the camera
+        for v in 0..<Colonist.modelCount {
+            world.colonists = [Colonist(pos: target, yaw: atan2(-inward.x, inward.y), seed: 0.5, variant: v)]
+            _ = gpu.render(world, into: canvas)
+            let name = String(format: "colonist-%d-%@.png", v, Colonist.modelNames[v])
+            Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: 1,
+                              to: dir.appendingPathComponent(name))
+            print("  wrote \(name)")
+        }
+        print("Citadel: colonist verify — \(Colonist.modelCount) variants to \(dir.path)")
+    }
 }

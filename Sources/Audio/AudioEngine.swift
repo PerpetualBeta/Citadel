@@ -44,6 +44,8 @@ final class AudioEngine {
         case musicTitle, bedDrone, bedPulse, bedTension, bedSwarm
         case elevatorMove, elevatorDoor, elevatorShut
         case faultHum, faultBuzz, faultCrackle   // electrical-fault: proximity hum LOOP, pre-spark buzz, spark crackle
+        case signalDeep          // THE SIGNAL — the intercepted transmission, played from the reel-to-reel deck (one-shot)
+        case signalFar           // THE SIGNAL, distant — the sourceless bleed heard from the deep floors (loops, ambient bus)
 
         var base: String {
             switch self {
@@ -77,13 +79,15 @@ final class AudioEngine {
             case .faultHum: return "fault_hum"
             case .faultBuzz: return "fault_buzz"
             case .faultCrackle: return "fault_crackle"
+            case .signalDeep: return "signal_deep"
+            case .signalFar: return "signal_far"
             }
         }
         // bus: 0 music, 1 sfx, 2 ambient.
         var bus: Int {
             switch self {
             case .musicTitle: return 0
-            case .bedDrone, .bedPulse, .bedTension, .bedSwarm, .drip, .fault, .faultHum, .faultBuzz, .faultCrackle: return 2
+            case .bedDrone, .bedPulse, .bedTension, .bedSwarm, .drip, .fault, .faultHum, .faultBuzz, .faultCrackle, .signalFar: return 2
             default: return 1
             }
         }
@@ -91,7 +95,7 @@ final class AudioEngine {
         // ambient-bus ONE-SHOTS, so loop is spelled out rather than bus-derived
         var loop: Bool {
             switch self {
-            case .musicTitle, .bedDrone, .bedPulse, .bedTension, .bedSwarm, .faultHum: return true
+            case .musicTitle, .bedDrone, .bedPulse, .bedTension, .bedSwarm, .faultHum, .signalFar: return true
             default: return false
             }
         }
@@ -110,6 +114,8 @@ final class AudioEngine {
             case .faultHum: return 0.34       // quietened relative to the ambient bed
             case .faultBuzz: return 0.24      // pre-spark buzz — kept low; only fires when close
             case .faultCrackle: return 0.32   // the spark itself
+            case .signalDeep: return 0.9      // the reel-to-reel playback — front and clear
+            case .signalFar: return 0.45      // the distant bleed — under the bed
             default: return 0.8
             }
         }
@@ -692,6 +698,7 @@ final class AudioEngine {
     func locked()      { play(.locked)      { self.synthLocked() } }
     func pickup()      { play(.pickup)      { self.synthPickup() } }
     func secret()      { play(.secret)      { self.synthSecret() } }
+    func playSignal()  { play(.signalDeep)  { } }              // reel-to-reel: the intercepted transmission (one-shot)
     func exit()        { play(.exit)        { self.synthExit() } }
     func playerPain()  { play(.playerPain)  { self.synthPlayerPain() } }
     func playerDeath() { play(.playerDeath) { self.synthPlayerDeath() } }
@@ -755,8 +762,8 @@ final class AudioEngine {
         trigger(wave: AudioEngine.square, f0: 1100, f1: 1900, dur: 0.14, amp: 0.16, attack: 0.05)
     }
 
-    func startMusic(_ m: MusicMode, depth: Int = 1) {
-        alog("startMusic \(m) depth=\(depth)")
+    func startMusic(_ m: MusicMode, depth: Int = 1, farSignalGain: Float = 0) {
+        alog("startMusic \(m) depth=\(depth) farSignal=\(farSignalGain)")
         mode = m; levelDepth = depth
         stopAllLoops()
         seqTime = 0; seqStep = 0
@@ -773,6 +780,10 @@ final class AudioEngine {
                 for s in [Sound.bedDrone, .bedPulse, .bedTension, .bedSwarm] { _ = startLoop(s, volume: 0) }
             }
             _ = startLoop(.faultHum, volume: 0)     // electrical-fault proximity hum; World drives its volume each frame
+            // THE FAR SIGNAL — in the depths, the intercepted transmission bleeds
+            // through with no source you can walk to. Fades up as you descend (the
+            // caller scales the gain by depth); silent above the deep floors.
+            if farSignalGain > 0 { _ = startLoop(.signalFar, volume: farSignalGain) }
         }
     }
     func stopMusic() { mode = .none; stopAllLoops() }

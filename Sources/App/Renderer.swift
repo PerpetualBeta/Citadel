@@ -24,6 +24,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // The world's 3-D view is drawn by the GPU SDF renderer — the only renderer
     // (the CPU raycaster was removed once the GPU path reached parity).
     private var gpuWorldRenderer: GPUWorldRenderer?
+    private var rasterRenderer: RasterRenderer?      // built alongside the raymarcher; selected by FeatureFlags.rasterRenderer
 
     let canvas = Canvas2D()
     private let hud = HUD()
@@ -118,6 +119,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         buildPipeline(view: view)
         buildTexture()
         gpuWorldRenderer = GPUWorldRenderer(device: device)
+        rasterRenderer = RasterRenderer(device: device)
         gpuWorldRenderer?.prewarm()      // build the level-independent GPU resources now (title is up), not on the first fire-press
         warmKernel()                     // …and pay the kernel's first-dispatch compile now too
         gpuWorldRenderer?.warmPortraits()  // …and the mesh dossier busts the codex shows
@@ -347,10 +349,16 @@ final class Renderer: NSObject, MTKViewDelegate {
     private func tickTeleport(_ dt: Float) {
         guard let world = world else { state = .title; return }
         StaticFX.fill(canvas, t: screenT)
-        FrontEnd.teleportCard(canvas, world: world, t: screenT)
+        // When the SIXTH (last) citadel of the cluster falls, the descent rolls back
+        // to DEMETER — the loop payoff: a bigger trilogy-hook beat instead of the
+        // ordinary planet-jump card (see FrontEnd.clusterCard).
+        let clusterFallen = Progression.building(world.level) % Progression.planets.count == Progression.planets.count - 1
+                            && Progression.isLastFloor(world.level)
+        if clusterFallen { FrontEnd.clusterCard(canvas, world: world, t: screenT) }
+        else { FrontEnd.teleportCard(canvas, world: world, t: screenT) }
         // (the static's sound is the looping noise bed — one volume authority
         // in tick() drives it through charge → hold → burn-off seamlessly)
-        let minHold: Float = 2.6                       // the story beat needs to land
+        let minHold: Float = clusterFallen ? 5.2 : 2.6   // the cluster beat holds longer
         if screenT >= minHold, let w = pendingWorld {
             arrivalStatic = 1
             // arrival: a quiet falling tone under the fading static
@@ -509,7 +517,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         deathTimer = 0
         state = .playing
         audio.elevatorMove(false)
-        audio.startMusic(.level, depth: level)
+        // THE FAR SIGNAL fades in across the DEPTHS — the last `deepFloors` floors of
+        // each citadel (the deck-free floors, where the player already knows the sound).
+        // Faint as you enter them, full at the deepest, so reaching the bottom is the payoff.
+        let deepFloors = 3
+        let intoDepths = Progression.floorInBuilding(level) - (Progression.floorsPerBuilding - deepFloors)
+        let farGain = max(0, min(1, Float(intoDepths) / Float(deepFloors)))
+        audio.startMusic(.level, depth: level, farSignalGain: farGain)
     }
 
     private func nextLevel() {
@@ -635,6 +649,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             canvas.fillRect(0, 0, RenderConfig.width, RenderConfig.height, packRGBA(4, 4, 6))
             return
         }
+        if FeatureFlags.rasterRenderer, rasterRenderer?.render(world, into: canvas) == true { return }
         gpuWorldRenderer?.render(world, into: canvas)
     }
 

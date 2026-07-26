@@ -205,7 +205,11 @@ enum GPURaymarch {
                     float3 v = lp - sh.bnd.xyz;
                     if (rhs <= 0.0 || dot(v, v) >= rhs * rhs) continue;
                     float sd;
-                    if (sh.b.w < -2.5) {                          // flat-capped cylinder (drums) — FLAT top + bottom
+                    if (sh.b.w < -3.5) {                          // z-axis flat-cap cylinder — a disc FACING the room (reel faces)
+                        float3 q = lp - sh.a.xyz;
+                        float2 dcy = float2(length(q.xy) - (sh.a.w - sh.b.x), abs(q.z) - (sh.b.y - sh.b.x));
+                        sd = min(max(dcy.x, dcy.y), 0.0) + length(max(dcy, 0.0)) - sh.b.x;
+                    } else if (sh.b.w < -2.5) {                   // flat-capped cylinder (drums) — FLAT top + bottom
                         float3 q = lp - sh.a.xyz;
                         float2 dcy = float2(length(q.xz) - (sh.a.w - sh.b.x), abs(q.y) - (sh.b.y - sh.b.x));
                         sd = min(max(dcy.x, dcy.y), 0.0) + length(max(dcy, 0.0)) - sh.b.x;
@@ -264,7 +268,11 @@ enum GPURaymarch {
                     float3 v = lp - sh.bnd.xyz;
                     if (rhs <= 0.0 || dot(v, v) >= rhs * rhs) continue;
                     float sd;
-                    if (sh.b.w < -2.5) {
+                    if (sh.b.w < -3.5) {                          // z-axis flat-cap cylinder — disc facing the room (reels)
+                        float3 q = lp - sh.a.xyz;
+                        float2 dcy = float2(length(q.xy) - (sh.a.w - sh.b.x), abs(q.z) - (sh.b.y - sh.b.x));
+                        sd = min(max(dcy.x, dcy.y), 0.0) + length(max(dcy, 0.0)) - sh.b.x;
+                    } else if (sh.b.w < -2.5) {
                         float3 q = lp - sh.a.xyz;
                         float2 dcy = float2(length(q.xz) - (sh.a.w - sh.b.x), abs(q.y) - (sh.b.y - sh.b.x));
                         sd = min(max(dcy.x, dcy.y), 0.0) + length(max(dcy, 0.0)) - sh.b.x;
@@ -1293,14 +1301,53 @@ enum GPURaymarch {
                     }
                     int nD = int(U.extra.x);
                     if (nD > 0 && id != 2u && id != 3u && id != 8u) {
-                        float dn = 0.5 + 0.5 * fbm2(p.xz * 3.3 + 5.0);          // one irregular-edge sample, shared
+                        // This loop runs for EVERY floor pixel, so the common case — a pixel
+                        // that no decal covers — must be nearly free. Reject with a cheap
+                        // AABB test (no sqrt), then a squared-radius test; take the sqrt and
+                        // the shared fbm2 edge-noise ONLY for a pixel a decal actually covers.
+                        // (Ambient aftermath makes nD>0 across the whole floor, so an eager
+                        // per-pixel fbm2 here — computed even for uncovered pixels — was the
+                        // frame-rate/fan regression, not the decal COUNT.)
+                        float dn = -1.0;                                        // lazily sampled on the first covering decal
                         for (int di = 0; di < nD; di++) {
                             float4 dc = decals[di];
-                            float rr = length(p.xz - dc.xy) / max(dc.z, 0.05);
-                            if (rr >= 1.0) continue;
+                            float2 dxz = p.xz - dc.xy;
+                            float rad = max(dc.z, 0.05);
+                            if (abs(dxz.x) >= rad || abs(dxz.y) >= rad) continue;   // AABB reject — no sqrt
+                            float d2 = dot(dxz, dxz);
+                            if (d2 >= rad * rad) continue;                          // circle reject (squared)
+                            if (dn < 0.0) dn = 0.5 + 0.5 * fbm2(p.xz * 3.3 + 5.0); // edge noise — once per covered pixel
+                            float rr = sqrt(d2) / rad;
                             float edge = 1.0 - smoothstep(0.15, 1.0, rr);
                             float fall = edge * (0.62 + 0.38 * dn);             // solid core, noise erodes the rim
-                            if (dc.w > 2.0) {
+                            if (dc.w > 3.0) {
+                                // SCATTERED PAPERS (strength w−3) — records spilled FLAT
+                                // on the deck. Zero thickness (a decal, not geometry, so it
+                                // can't read as books): a rotated lattice of pale rectangular
+                                // sheets, some cells empty, so it reads as a loose spread.
+                                // A handful of individual sheets, each at its OWN random
+                                // position, angle and size (seeded by the decal + sheet
+                                // index), overlapping — a real scatter, not a tidy grid.
+                                float st = clamp(dc.w - 3.0, 0.0, 1.0);
+                                float2 q = p.xz - dc.xy;
+                                float cover = 0.0, tone = 0.9;
+                                for (int sk = 0; sk < 6; sk++) {
+                                    float s = float(sk) * 1.7 + dc.x * 3.1 + dc.y * 5.7;
+                                    float2 c = (float2(fract(sin(s * 12.9) * 4137.1), fract(sin(s * 78.2) * 2619.7)) - 0.5) * (dc.z * 1.2);
+                                    float a = fract(sin(s * 37.7) * 7351.3) * 6.2831853;   // per-sheet rotation
+                                    float2 hs = float2(0.085 + 0.05 * fract(sin(s * 5.3) * 1234.5),
+                                                       0.11 + 0.06 * fract(sin(s * 9.1) * 9182.3));   // A4-ish, varied
+                                    float2 d = q - c;
+                                    float2 lp2 = float2(d.x * cos(a) + d.y * sin(a), -d.x * sin(a) + d.y * cos(a));
+                                    float ins = smoothstep(-0.004, 0.004, min(hs.x - abs(lp2.x), hs.y - abs(lp2.y)));
+                                    if (ins > cover) { cover = ins; tone = 0.86 + 0.16 * fract(sin(s * 3.3) * 111.1); }
+                                }
+                                cover *= st;
+                                float3 paper = float3(0.86, 0.84, 0.77) * tone;
+                                alb = mix(alb, paper, cover);
+                                emis += cover * 0.20;                          // faint self-lift so the sheets read on a dark deck
+                            }
+                            else if (dc.w > 2.0) {
                                 // SMOLDERING ASH (strength w−2) — a burned-out corpse:
                                 // chunky charcoal patches, live embers glowing in the
                                 // thickest lumps and flickering as they die. Flat — the
@@ -1910,6 +1957,14 @@ enum GPURaymarch {
     static func iCylinder(_ c: SIMD3<Float>, r: Float, halfH: Float, round: Float, _ col: SIMD3<Float>, _ k: Float = 0.01) -> GShape {
         GShape(a: SIMD4(c.x, c.y, c.z, r), b: SIMD4(round, halfH, 0, -3), col: SIMD4(col.x, col.y, col.z, k))
     }
+    /// A flat-capped cylinder whose axis is local +Z (FORWARD) — a thin disc FACING
+    /// the room, where iCylinder's Y-axis disc lies flat and foreshortens. Radius `r`
+    /// in the local XY plane, half-length `halfL` along Z. Shapes are evaluated in
+    /// prop-local space, so this composes with the prop's yaw (it always faces the
+    /// room). Encoded with the sentinel b.w = -4. Used for the reel-to-reel faces.
+    static func iDisc(_ c: SIMD3<Float>, r: Float, halfL: Float, round: Float, _ col: SIMD3<Float>, _ k: Float = 0.006) -> GShape {
+        GShape(a: SIMD4(c.x, c.y, c.z, r), b: SIMD4(round, halfL, 0, -4), col: SIMD4(col.x, col.y, col.z, k))
+    }
 
     /// Procedural 3-D design for each pickup (local space, feet ≈ y0). Each kind
     /// is built from a few crisply-coloured parts (low smin `k` on the detail so
@@ -1997,6 +2052,7 @@ enum GPURaymarch {
     }
 
     private static func shapeYExtent(_ sh: GShape) -> (lo: Float, hi: Float) {
+        if sh.b.w < -3.5 { return (sh.a.y - sh.a.w, sh.a.y + sh.a.w) }                      // z-disc (radius spans Y)
         if sh.b.w < -2.5 { return (sh.a.y - sh.b.y, sh.a.y + sh.b.y) }                      // cylinder (half-height b.y)
         if sh.b.w < -1.5 { return (sh.a.y - sh.b.y - sh.a.w, sh.a.y + sh.b.y + sh.a.w) }   // box
         if sh.b.w < 0   { return (sh.a.y - sh.a.w, sh.a.y + sh.a.w) }                       // sphere
@@ -2101,6 +2157,56 @@ enum GPURaymarch {
     // iBox/iCone/iSphere parts as the pickups, but flagged opaque (c.z = 3) so the
     // kernel shades them as lit industrial steel — a powered terminal screen is
     // authored over-bright so it self-glows.
+    // The reel-to-reel deck, factored out so packProps can rebuild it live: `spin`
+    // rotates the spoke-windows (advanced each frame while playing) and `playing`
+    // lights the REC LED bright red instead of a dim standby ember.
+    static func tapeDeckShapes(spin: Float, playing: Bool) -> [GShape] {
+        let top = SIMD3<Float>(0.37, 0.38, 0.41), steel = SIMD3<Float>(0.40, 0.42, 0.47)
+        let chassis = SIMD3<Float>(0.17, 0.18, 0.21), panel = SIMD3<Float>(0.22, 0.23, 0.27)
+        let flange = SIMD3<Float>(0.60, 0.63, 0.68), tape = SIMD3<Float>(0.06, 0.05, 0.045)
+        let hubc = SIMD3<Float>(0.42, 0.44, 0.48)
+        let plate = SIMD3<Float>(0.72, 0.70, 0.63)
+        let amberEm = SIMD3<Float>(1.45, 1.15, 0.52), redEm = SIMD3<Float>(2.6, 0.10, 0.06), grnEm = SIMD3<Float>(0.12, 2.1, 0.5)
+        let recEm: SIMD3<Float> = playing ? SIMD3(3.4, 0.12, 0.07) : SIMD3(0.42, 0.05, 0.04)  // bright when rolling, dim standby ember when idle
+        var s: [GShape] = [
+            iBox(SIMD3(0, 0.30, 0), SIMD3(0.36, 0.018, 0.19), 0.008, top, 0.005),            // desk top
+            iBox(SIMD3(0, 0.15, -0.15), SIMD3(0.34, 0.15, 0.018), 0.004, top * 0.8, 0.005),  // modesty panel (wall side)
+            iBox(SIMD3(-0.30, 0.15, 0.13), SIMD3(0.025, 0.15, 0.025), 0.004, steel, 0.003),  // legs
+            iBox(SIMD3(0.30, 0.15, 0.13), SIMD3(0.025, 0.15, 0.025), 0.004, steel, 0.003),
+            iBox(SIMD3(0, 0.352, 0.02), SIMD3(0.30, 0.036, 0.13), 0.012, chassis, 0.006),    // deck chassis (controls)
+            iBox(SIMD3(0, 0.51, -0.07), SIMD3(0.30, 0.135, 0.02), 0.012, panel, 0.006),      // upright reel panel
+            iBox(SIMD3(0, 0.44, -0.048), SIMD3(0.155, 0.006, 0.006), 0.002, tape, 0.001),    // tape path between reels
+            iBox(SIMD3(0, 0.44, -0.045), SIMD3(0.03, 0.02, 0.014), 0.004, hubc, 0.003),      // head block
+            iBox(SIMD3(-0.10, 0.352, 0.151), SIMD3(0.055, 0.03, 0.004), 0.006, amberEm, 0.002),  // VU meters (emissive)
+            iBox(SIMD3(0.10, 0.352, 0.151), SIMD3(0.055, 0.03, 0.004), 0.006, amberEm, 0.002),
+            iSphere(SIMD3(0.24, 0.38, 0.15), 0.010, recEm, 0.002),                           // REC LED (bright while playing)
+            iSphere(SIMD3(-0.24, 0.38, 0.15), 0.009, grnEm, 0.002),                          // power LED
+        ]
+        // two reels standing on the panel, faces toward the player (+Z): a metal
+        // flange, a hub boss, and 3 dark spoke-windows (the tape pack showing).
+        // Each reel is a genuine flat DISC facing the player (iDisc — a forward-
+        // axis flat-cap cylinder), so it reads as a circle, not a foreshortened
+        // sliver or a domed blob. A hub boss + 3 dark spoke-windows sit proud on
+        // the face; `spin` rotates the windows so the reel turns when playing.
+        for (cx, a0) in [(Float(-0.15), Float(0.4)), (Float(0.15), Float(1.25))] {
+            let rc = SIMD3<Float>(cx, 0.545, -0.05)                                          // on the panel face, disc toward the room
+            s.append(iDisc(rc, r: 0.10, halfL: 0.012, round: 0.004, flange, 0.004))          // flange disc
+            s.append(iDisc(rc + SIMD3(0, 0, 0.014), r: 0.032, halfL: 0.010, round: 0.004, hubc, 0.003))  // hub boss (proud)
+            for k in 0..<3 {
+                let a = a0 + spin + Float(k) * (2 * Float.pi / 3)
+                let wp = rc + SIMD3(cos(a) * 0.052, sin(a) * 0.052, 0.010)
+                s.append(iDisc(wp, r: 0.023, halfL: 0.010, round: 0.003, tape, 0.002))       // dark spoke window (proud)
+            }
+        }
+        // warning placards along the top of the panel, facing the player:
+        // "THE SIGNAL" (amber) + "DO NOT OVERWRITE" (red)
+        s.append(iBox(SIMD3(-0.13, 0.66, -0.048), SIMD3(0.10, 0.026, 0.004), 0.004, plate, 0.003))
+        s.append(iBox(SIMD3(-0.13, 0.66, -0.044), SIMD3(0.088, 0.011, 0.004), 0.002, amberEm, 0.002))
+        s.append(iBox(SIMD3(0.14, 0.66, -0.048), SIMD3(0.11, 0.026, 0.004), 0.004, plate, 0.003))
+        s.append(iBox(SIMD3(0.14, 0.66, -0.044), SIMD3(0.098, 0.011, 0.004), 0.002, redEm, 0.002))
+        return s
+    }
+
     static func furnitureShapes(_ kind: FurnitureKind) -> [GShape] {
         let steel = SIMD3<Float>(0.40, 0.42, 0.47), darkM = SIMD3<Float>(0.13, 0.13, 0.16)
         let d: Float = 0.0025
@@ -2145,22 +2251,18 @@ enum GPURaymarch {
                     iBox(SIMD3(0, 0.70, hd + 0.006), SIMD3(0.062, 0.05, 0.006), 0.003, vent, d),            // vent grille near the top
                     iBox(SIMD3(0.084, 0.45, hd + 0.012), SIMD3(0.012, 0.065, 0.012), 0.004, darkM, d),      // vertical latch handle (right edge)
                     iBox(SIMD3(0, 0.045, 0), SIMD3(hw - 0.004, 0.045, hd - 0.004), 0.004, darkM, 0.004)]    // base plinth (stands it off the deck)
+        case .papers:                                          // paper is too THIN to read as SDF (it came out like stacked
+            return []                                          // books). It renders as a FLAT floor DECAL instead — see World.buildAftermath.
+        case .tapeDeck:                                        // the control-room reel-to-reel: "THE SIGNAL" archive
+            // A desk carrying an UPRIGHT broadcast deck — the two reels stand on a
+            // vertical front panel FACING the player (flat-on-top reels foreshorten to
+            // slivers from standing height), each a metal flange with a hub + 3 spoke
+            // windows showing the dark tape pack beneath. Below: a head block + tape
+            // path, glowing VU meters, status LEDs, and two warning placards. The
+            // spoke-windows are spun by packProps when the deck is playing.
+            return tapeDeckShapes(spin: 0, playing: false)
         case .wallPipe:
             return pipeRunShapes(length: 1)                    // length comes from the Prop at pack time
-        case .camera:                                          // ARC surveillance cam — the classic bullet CCTV on an L-bracket
-            // A light-steel barrel with an overhanging sun HOOD and a blue lens in a
-            // black bezel, mounted high in a corner on a wall-plate → arm → post. The
-            // status LED (LAST shape) is over-bright red so it self-glows via bloom, and
-            // packProps BLINKS it per-frame — ARC is watching. +Z = the way it looks.
-            let cam = SIMD3<Float>(0.60, 0.62, 0.66)           // light steel — a white-grey unit, stands out from the dark set-dressing
-            let glass = SIMD3<Float>(0.12, 0.20, 0.42), ledOn = SIMD3<Float>(2.8, 0.08, 0.05)
-            let y: Float = 0.85, dd: Float = 0.004, s: Float = 0.5   // y = mount height (near the ceiling); s scales the unit
-            return [iBox(SIMD3(0, y, -0.105 * s), SIMD3(0.05 * s, 0.055 * s, 0.014 * s), 0.006, cam, dd),         // wall plate (flush, −Z)
-                    iBox(SIMD3(0, y, -0.055 * s), SIMD3(0.02 * s, 0.02 * s, 0.05 * s), 0.006, cam, dd),           // short arm to the barrel
-                    iCone(SIMD3(0, y + 0.02 * s, -0.02 * s), SIMD3(0, y - 0.055 * s, 0.135 * s), 0.05 * s, 0.044 * s, cam, 0.006),  // barrel — angled DOWN-forward to watch the room
-                    iBox(SIMD3(0, y + 0.05 * s, 0.03 * s), SIMD3(0.058 * s, 0.011 * s, 0.135 * s), 0.008, cam, 0.006),   // flat sun hood on top (overhangs)
-                    iSphere(SIMD3(0, y - 0.07 * s, 0.16 * s), 0.03 * s, glass, 0.005),                            // blue lens — at the barrel's low-forward end
-                    iSphere(SIMD3(0.03 * s, y - 0.055 * s, 0.115 * s), 0.022 * s, ledOn, 0.003)]                  // red status LED — protruding, front-underside, seen from below (LAST — blinks)
         }
     }
 
@@ -2233,6 +2335,7 @@ enum GPURaymarch {
     }
 
     private static func shapeZExtent(_ sh: GShape) -> (lo: Float, hi: Float) {
+        if sh.b.w < -3.5 { return (sh.a.z - sh.b.y, sh.a.z + sh.b.y) }                      // z-disc (half-length b.y along Z)
         if sh.b.w < -2.5 { return (sh.a.z - sh.a.w, sh.a.z + sh.a.w) }                      // cylinder (radius a.w)
         if sh.b.w < -1.5 { return (sh.a.z - sh.b.z - sh.a.w, sh.a.z + sh.b.z + sh.a.w) }   // box
         if sh.b.w < 0   { return (sh.a.z - sh.a.w, sh.a.z + sh.a.w) }                       // sphere
@@ -2273,15 +2376,19 @@ enum GPURaymarch {
 
     /// Pack furniture/fixtures into the shared GMonster/GShape buffers (no bob, no
     /// spin — they sit where MapGen placed them, oriented by yaw). Material c.z = 3.
-    static func packProps(_ props: [Prop], time: Float = 0, budget: Int = 220) -> ([GMonster], [GShape]) {
+    static func packProps(_ props: [Prop], time: Float = 0, signalDeck: SIMD2<Float>? = nil, budget: Int = 220) -> ([GMonster], [GShape]) {
         var mons: [GMonster] = [], shapes: [GShape] = []
         for pr in props {
-            var sl = pr.kind == .wallPipe ? pipeRunShapes(length: pr.length) : furnitureShapes(pr.kind)
-            if sl.isEmpty || shapes.count + sl.count > budget { break }
-            if pr.kind == .camera, let li = sl.indices.last {   // BLINK the status LED (last shape): a steady ~0.7 Hz recording pulse
-                let on = time.truncatingRemainder(dividingBy: 1.4) < 0.7
-                sl[li].col = on ? SIMD4(2.8, 0.08, 0.05, sl[li].col.w) : SIMD4(0.16, 0.03, 0.03, sl[li].col.w)
+            var sl: [GShape]
+            if pr.kind == .wallPipe {
+                sl = pipeRunShapes(length: pr.length)
+            } else if pr.kind == .tapeDeck, let dk = signalDeck, abs(dk.x - pr.pos.x) < 0.3, abs(dk.y - pr.pos.y) < 0.3 {
+                sl = tapeDeckShapes(spin: time * 2.6, playing: true)   // this deck is rolling — reels turn, REC lit
+            } else {
+                sl = furnitureShapes(pr.kind)
             }
+            if sl.isEmpty { continue }                          // a decal-only prop (papers) has no SDF — SKIP it, don't break the loop (that dropped every prop packed after it → furniture popped in/out)
+            if shapes.count + sl.count > budget { break }
             // Wall pieces sit flush to the wall (bunk/desk/locker stood ~⅓-cell proud
             // before — "approx 1m" off). A free-standing chair keeps its placement.
             if pr.againstWall && pr.kind != .wallPipe { flushToWall(&sl) }
@@ -2293,11 +2400,10 @@ enum GPURaymarch {
             boundR += 0.05
             let start = shapes.count
             shapes.append(contentsOf: sl)
-            // Floor furniture sits feet-on-deck (loY → floor); WALL-MOUNTED pieces (a
-            // pipe run, a CCTV camera) are authored at their true height up the wall, so
-            // they must keep it (yOff 0) — flooring dragged the run into the bunks / the
-            // camera down onto the deck.
-            let yOff: Float = (pr.kind == .wallPipe || pr.kind == .camera) ? 0 : loY
+            // Floor furniture sits feet-on-deck (loY → floor); a WALL-MOUNTED pipe run
+            // is authored at its true height up the wall, so it must keep it (yOff 0) —
+            // flooring dragged the run down into the bunks.
+            let yOff: Float = pr.kind == .wallPipe ? 0 : loY
             mons.append(GMonster(a: SIMD4(pr.pos.x, pr.pos.y, pr.yaw, 1),
                                  b: SIMD4(Float(start), Float(sl.count), boundR, boundCY),
                                  c: SIMD4(yOff, 0, 3, 0)))   // c.z = 3 → opaque industrial prop

@@ -64,6 +64,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Game/Rng.swift \
                     Sources/Render/GPURaymarch.swift \
                     Sources/Render/GPUWorldRenderer.swift \
+                    Sources/Render/RasterRenderer.swift \
                     Sources/Render/Canvas2D.swift \
                     Sources/Render/Pixel.swift \
                     Sources/Render/Textures.swift \
@@ -74,6 +75,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Render/Mesh3D.swift \
                     Sources/Render/ItemIcons.swift \
                     Sources/Render/MeshCreature.swift \
+                    Sources/Render/HumanoidRig.swift \
                     Sources/Render/StaticFX.swift \
                     Sources/Render/Viewmodel.swift \
                     Sources/UI/HUD.swift \
@@ -94,7 +96,9 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Harness/RoomShots.swift \
                     Sources/Harness/MaterialPreview.swift \
                     Sources/Harness/QueenMock.swift \
-                    Sources/Harness/QueenMeshTest.swift
+                    Sources/Harness/QueenMeshTest.swift \
+                    Sources/Harness/RigProbe.swift \
+                    Sources/Harness/ProofRoom.swift
 
 PACKAGE_TYPE     := zip
 ALSO_SHIP_PKG    := true

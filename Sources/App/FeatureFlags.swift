@@ -28,12 +28,43 @@ enum FeatureFlags {
     static var revealMap: Bool  { d.bool(forKey: "RevealMap") }   // automap fully revealed
     static var fastMonsters: Bool { d.bool(forKey: "FastMonsters") } // -nightmare- speed
 
+    /// Rasterised world renderer (dev, in progress) — real triangle meshes + PBR +
+    /// a shadow-mapped key light, built ALONGSIDE the SDF raymarcher. Off by default;
+    /// flip to A/B against the raymarcher live:
+    ///   defaults write cc.jorviksoftware.Citadel RasterRenderer -bool true
+    static var rasterRenderer: Bool { d.bool(forKey: "RasterRenderer") }
+
+    /// The marine's headlamp in the rasterised renderer. Default ON; disable to judge
+    /// the world lit purely by its OWN fixtures (lamps + emissive + baked propagation):
+    ///   defaults write cc.jorviksoftware.Citadel Headlamp -bool false
+    static var headlamp: Bool { d.object(forKey: "Headlamp") == nil ? true : d.bool(forKey: "Headlamp") }
+
     /// Volumetric GPU fire — the flamethrower jet and corpse pyres rendered as
     /// procedural, domain-warped flame tongues in the raymarch kernel (plus their
     /// flickering firelight), instead of the old CPU additive-orb billboards.
     /// Default ON; set false to A/B against the legacy CPU flame:
     ///   defaults write cc.jorviksoftware.Citadel GPUFire -bool false
     static var gpuFire: Bool { d.object(forKey: "GPUFire") == nil ? true : d.bool(forKey: "GPUFire") }
+
+    /// Fallen colonists — the dead ARC workers scattered through the ruined colony
+    /// (human meshes toppled into corpses). Default ON; set false to strip them:
+    ///   defaults write cc.jorviksoftware.Citadel FallenColonists -bool false
+    static var fallenColonists: Bool { d.object(forKey: "FallenColonists") == nil ? true : d.bool(forKey: "FallenColonists") }
+
+    /// Scattered papers — the flat floor-decal spread of spilled records near
+    /// office desks. Default ON; set false to strip them (a perf A/B — the decal
+    /// runs a small per-covered-pixel sheet loop):
+    ///   defaults write cc.jorviksoftware.Citadel ScatteredPapers -bool false
+    static var scatteredPapers: Bool { d.object(forKey: "ScatteredPapers") == nil ? true : d.bool(forKey: "ScatteredPapers") }
+
+    /// Environmental AFTERMATH — the permanent seeded decals (doorway/scattered
+    /// blood, scorch scars, spilled papers) that make a floor read as a fallen
+    /// colony from the moment you arrive. They are NEVER evicted, so the per-floor-
+    /// pixel decal loop runs from frame one of every level (at RC1 it stayed
+    /// dormant until combat). Default ON; set false to test the loop's cost —
+    /// this is the single biggest new fixed per-pixel cost since RC1:
+    ///   defaults write cc.jorviksoftware.Citadel Aftermath -bool false
+    static var aftermath: Bool { d.object(forKey: "Aftermath") == nil ? true : d.bool(forKey: "Aftermath") }
 
     /// Overhead-lamp brightness. Scales the ceiling lamps as a UNIT — their
     /// emissive glow AND the warm pools they cast onto the world and the weapon —

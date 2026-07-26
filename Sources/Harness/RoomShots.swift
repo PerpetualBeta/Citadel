@@ -186,35 +186,63 @@ enum RoomShots {
             break
         }
 
-        // CCTV camera view — mounted HIGH on the wall (near the ceiling), so stand
-        // back and face the wall it's on; it frames in the upper part of the view.
-        for seed in stride(from: UInt64(1), through: UInt64(80), by: 1) {
-            let world = World(level: 1, colonyIndex: 0, seed: seed)
+        // Scattered-papers view — records spilled flat on the deck near an office desk.
+        // Stand a short way off and look at them so the floor fills the lower frame.
+        for seed in stride(from: UInt64(1), through: UInt64(160), by: 1) {
+            let world = World(level: 2, colonyIndex: 0, seed: seed)
             world.monsters = []; world.drums = []; world.sockets = []
-            world.props = world.props.filter { $0.kind == .camera }     // clean model check — just the cameras
-            guard let cam0 = world.props.first else { continue }
+            guard let pp = world.props.first(where: { $0.kind == .papers }) else { continue }
             let m = world.map
             func openLit(_ c: SIMD2<Float>) -> Bool {
                 let x = Int(c.x), y = Int(c.y)
                 guard m.inBounds(x, y), !m.blocksMovement(x, y) else { return false }
-                let col = m.lightColor[m.idx(x, y)]; return col.x * 0.299 + col.y * 0.587 + col.z * 0.114 > 0.35
+                let col = m.lightColor[m.idx(x, y)]; return col.x * 0.299 + col.y * 0.587 + col.z * 0.114 > 0.3
             }
-            let inward = SIMD2<Float>(-sin(cam0.yaw), cos(cam0.yaw))     // camera faces this way; stand on this side
-            var cam = cam0.pos, ok = false
-            for back in [Float(1.7), 1.4, 1.1] where !ok {   // stand close — the cam is high, so a near view looks up at it
-                let c = cam0.pos + inward * back
-                if openLit(c) { cam = c; ok = true }
+            var cam = pp.pos, ok = false
+            for r: Float in [1.8, 1.6, 2.0, 1.4] where !ok {   // a lit standpoint that still frames the flat decal ahead of the gun
+                for a in stride(from: Float(0), to: 6.28, by: 0.4) {
+                    let c = pp.pos + SIMD2<Float>(cos(a), sin(a)) * r
+                    if openLit(c) { cam = c; ok = true; break }
+                }
             }
             guard ok else { continue }
             world.player.pos = cam
-            world.player.dir = atan2(cam0.pos.y - cam.y, cam0.pos.x - cam.x)
+            world.player.dir = atan2(pp.pos.y - cam.y, pp.pos.x - cam.x) + 0.42   // aim off to a side so the flat decal clears the gun
             world.player.muzzle = 0
             let canvas = Canvas2D()
             _ = gpu.render(world, into: canvas)
             n += 1
-            Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent("00l-camera.png"))
-            print("  wrote 00l-camera.png — CCTV wall camera (seed \(seed))")
+            Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent("00m-papers.png"))
+            print("  wrote 00m-papers.png — scattered papers near a desk (seed \(seed))")
             break
+        }
+
+        // reel-to-reel deck — find a MapGen-PLACED one (in a control/ops room) and
+        // stand in front of it: verifies placement AND shows it in real context.
+        // Model shot: inject a deck against a wall in a BRIGHT room and stand in front.
+        // (MapGen placement into control/ops rooms is verified separately — populate()
+        // logs a deck for every floor that has a terminal-bank room with space.)
+        outerDeck: for seed in stride(from: UInt64(1), through: UInt64(120), by: 1) {
+            let world = World(level: 1, colonyIndex: 0, seed: seed)
+            world.monsters = []; world.drums = []; world.sockets = []; world.decals = []
+            let m = world.map
+            func openLit(_ x: Int, _ y: Int) -> Bool {
+                guard m.inBounds(x, y), !m.blocksMovement(x, y) else { return false }
+                let c = m.lightColor[m.idx(x, y)]; return c.x * 0.299 + c.y * 0.587 + c.z * 0.114 > 0.45
+            }
+            for y in 1..<(m.h - 1) { for x in 1..<(m.w - 1) where openLit(x, y) {
+                for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)] {
+                    guard m.blocksMovement(x - dx, y - dy), openLit(x + dx, y + dy), openLit(x + 2 * dx, y + 2 * dy) else { continue }
+                    let pos = SIMD2<Float>(Float(x) + 0.5, Float(y) + 0.5)
+                    world.props = [Prop(kind: .tapeDeck, pos: pos, yaw: atan2(-Float(dx), Float(dy)), againstWall: true)]
+                    let cam = pos + SIMD2<Float>(Float(dx), Float(dy)) * 1.35
+                    world.player.pos = cam; world.player.dir = atan2(pos.y - cam.y, pos.x - cam.x); world.player.muzzle = 0
+                    let canvas = Canvas2D(); _ = gpu.render(world, into: canvas); n += 1
+                    Captures.writePNG(canvas.framebuffer, w: W, h: H, scale: 1, to: dir.appendingPathComponent("00n-tapedeck.png"))
+                    print("  wrote 00n-tapedeck.png — reel-to-reel deck model (seed \(seed))")
+                    break outerDeck
+                }
+            }}
         }
 
         // terminal-bank view — verify the amber CRT wall: the monitor grid, baked

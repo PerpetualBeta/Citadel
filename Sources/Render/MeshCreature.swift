@@ -251,6 +251,30 @@ final class MeshCreature {
         return o;
     }
 
+    // ── FALLEN COLONIST — the mesh arrives already POSED: HumanoidRig skins the rig
+    // into the authored survivor pose on the CPU at load, so the vertex stage just
+    // carries it to the world through the model matrix (Z-up local; z=0 = the deck).
+    // The only deform left here is the shared ash crumble, so a torched survivor
+    // collapses like the creatures. misc.z = 1 flags a corpse to fmain (no ova-
+    // emissive, a lit pallor instead of the creature death-darken).
+    vertex VOut vmainColonist(VIn in [[stage_in]], constant Cam& C [[buffer(1)]]) {
+        float3 lp = in.pos;
+        float3 nrm = in.nrm;
+        float ash = C.tune.w;
+        if (ash > 0.001) lp = ashCollapse(lp, in.pos.xy, ash, 0.24, 0.10, 0.05);
+
+        float4 lpp = float4(lp, 1.0);
+        float4 wp = C.model * lpp;
+        VOut o;
+        o.clip = C.mvp * lpp;
+        float3x3 nm = float3x3(C.model[0].xyz, C.model[1].xyz, C.model[2].xyz);
+        o.wnrm = normalize(nm * nrm);
+        o.wpos = wp.xyz;
+        o.uv = in.uv;
+        o.fdepth = dot(wp.xyz - C.eye.xyz, C.fwd.xyz);
+        return o;
+    }
+
     struct FOut { float4 color [[color(0)]]; float depth [[color(1)]]; };
     struct MLight { float4 posR; float4 colI; };   // matches GPURaymarch.GPULight: posR=(x,y,z,1/r²) colI=(r,g,b,intensity)
     fragment FOut fmain(VOut in [[stage_in]],
@@ -280,13 +304,17 @@ final class MeshCreature {
         float distF = max(0.0, 1.0 - dist / 13.0); distF *= distF;
         float ndl = max(0.0, dot(N, Ld));
         float3 lamp = float3(\(WorldLight.lampColor.x), \(WorldLight.lampColor.y), \(WorldLight.lampColor.z)) * (cone * distF * (0.4 + 0.6 * ndl) * 2.6 * g);
-        float3 amb = float3(0.20, 0.22, 0.28) * ((0.5 + 0.5 * N.y) * g);
+        // A fallen COLONIST (misc.z = 1) is a human, not a creature: no ova-emissive,
+        // a gentler pallor than the creature death-darken, and a lifted ambient so a
+        // dark-suited body still reads on the deck instead of sinking to a black lump.
+        float isCorpse = step(0.5, C.misc.z);
+        float3 amb = float3(0.20, 0.22, 0.28) * ((0.5 + 0.5 * N.y) * g) * (1.0 + 0.7 * isCorpse);
         float3 sector = C.sector.rgb * 0.5;
         float death = C.tune.y;
         float slump = smoothstep(0.32, 1.0, death);   // ova blaze through the howl, then die as she slumps
         float warm = max(0.0, alb.r - alb.b);
         float val = max(alb.r, max(alb.g, alb.b));
-        float emis = smoothstep(0.22, 0.55, warm) * smoothstep(0.4, 0.8, val) * (1.0 - slump);
+        float emis = smoothstep(0.22, 0.55, warm) * smoothstep(0.4, 0.8, val) * (1.0 - slump) * (1.0 - isCorpse);
         float3 col = alb * (amb + lamp + sector) + alb * emis * float3(1.0, 0.55, 0.22) * 1.3;
         // DYNAMIC point lights (plasma bolts, muzzle flash, fire glow) — the near-black
         // creature body was reading as a stark silhouette against a plasma-/flame-lit
@@ -305,7 +333,7 @@ final class MeshCreature {
             float rimL = pow(1.0 - max(0.0, dot(N, Ld)), 3.0);   // Ld = view dir; edges catch the colour
             col += (alb * (0.30 + 0.70 * ndl) + rimL * 0.55) * Lc;
         }
-        col *= (1.0 - 0.4 * death);               // darken as she dies
+        col *= (1.0 - 0.4 * death - 0.10 * isCorpse);   // creature: darken as she dies · corpse: a gentle pallor
         float burn = C.tune.z;
         if (burn > 0.001) {
             // char the surface toward ash — a DARK base that keeps its luminance
@@ -374,10 +402,17 @@ final class MeshCreature {
     /// (instant tracking reads as "locked on", not "turning").
     private var headState: [Int: (yaw: Float, pitch: Float, t: Float)] = [:]
 
-    enum Kind { case queen, drone }
+    enum Kind { case queen, drone, colonist }
     let kind: Kind
 
-    init?(device: MTLDevice, kind: Kind = .queen) {
+    // A colonist is not a "creature" — but a fallen colonist is rasterised into the
+    // lair through the EXACT same machinery (offscreen pass · perp-depth composite ·
+    // per-pixel lair lighting · wall-clip), so it rides this class rather than a
+    // near-identical copy. There are two colonist meshes (woman/worker), so the
+    // resource names are overridable; the vertex path (vmainColonist) topples the
+    // standing T-pose into a fallen corpse procedurally, with per-body variation.
+    init?(device: MTLDevice, kind: Kind = .queen,
+          meshOverride: String? = nil, texOverride: String? = nil, poseSeed: Float = 0) {
         self.device = device
         self.kind = kind
         guard let q = device.makeCommandQueue() else { return nil }
@@ -385,27 +420,43 @@ final class MeshCreature {
         let vw = RenderConfig.width, vh = RenderConfig.viewHeight
         self.W = vw; self.H = vh
 
-        let meshName = kind == .queen ? "queen" : "drone"
-        let texName  = kind == .queen ? "queen_basecolor" : "drone_basecolor"
+        let meshName = kind == .colonist ? (meshOverride ?? "colonist_woman")
+                                         : (kind == .queen ? "queen" : "drone")
+        let texName  = kind == .colonist ? (texOverride ?? "colonist_woman_basecolor")
+                                         : (kind == .queen ? "queen_basecolor" : "drone_basecolor")
         guard let meshURL = Bundle.main.url(forResource: meshName, withExtension: "usdz") else { return nil }
         let texURL = Bundle.main.url(forResource: texName, withExtension: "jpg")
 
-        let allocator = MTKMeshBufferAllocator(device: device)
+        // The render pipeline + every MTKMesh share this layout (pos/nrm/uv, stride 32).
         let vdesc = MDLVertexDescriptor()
         vdesc.attributes[0] = MDLVertexAttribute(name: MDLVertexAttributePosition, format: .float3, offset: 0, bufferIndex: 0)
         vdesc.attributes[1] = MDLVertexAttribute(name: MDLVertexAttributeNormal, format: .float3, offset: 12, bufferIndex: 0)
         vdesc.attributes[2] = MDLVertexAttribute(name: MDLVertexAttributeTextureCoordinate, format: .float2, offset: 24, bufferIndex: 0)
         (vdesc.layouts[0] as? MDLVertexBufferLayout)?.stride = 32
-        let asset = MDLAsset(url: meshURL, vertexDescriptor: nil, bufferAllocator: allocator)
-        guard let mdl = asset.childObjects(of: MDLMesh.self).first as? MDLMesh else { return nil }
-        let bb = mdl.boundingBox
-        self.localHeight = max(0.001, bb.maxBounds.z - bb.minBounds.z)
-        self.bbMin = SIMD3(bb.minBounds.x, bb.minBounds.y, bb.minBounds.z)
-        self.bbMax = SIMD3(bb.maxBounds.x, bb.maxBounds.y, bb.maxBounds.z)
-        mdl.addNormals(withAttributeNamed: MDLVertexAttributeNormal, creaseThreshold: 0.4)
-        mdl.vertexDescriptor = vdesc
-        guard let m = try? MTKMesh(mesh: mdl, device: device) else { return nil }
-        self.mtk = m
+
+        // COLONIST: load the rig, apply the authored survivor pose, and BAKE the
+        // skinned result into a static mesh (see HumanoidRig) — which is already in the
+        // stride-32 layout above. Scale is keyed to the STANDING height so a seated
+        // pose isn't scaled up to full height. Falls back to the raw standing mesh if
+        // the file carries no skeleton.
+        if kind == .colonist, let baked = HumanoidRig.bake(url: meshURL, pose: HumanoidPose.survivor(seed: poseSeed), device: device) {
+            self.mtk = baked.mesh
+            self.localHeight = baked.standingHeight
+            self.bbMin = baked.bbMin
+            self.bbMax = baked.bbMax
+        } else {
+            let allocator = MTKMeshBufferAllocator(device: device)
+            let asset = MDLAsset(url: meshURL, vertexDescriptor: nil, bufferAllocator: allocator)
+            guard let mdl = asset.childObjects(of: MDLMesh.self).first as? MDLMesh else { return nil }
+            let bb = mdl.boundingBox
+            self.localHeight = max(0.001, bb.maxBounds.z - bb.minBounds.z)
+            self.bbMin = SIMD3(bb.minBounds.x, bb.minBounds.y, bb.minBounds.z)
+            self.bbMax = SIMD3(bb.maxBounds.x, bb.maxBounds.y, bb.maxBounds.z)
+            mdl.addNormals(withAttributeNamed: MDLVertexAttributeNormal, creaseThreshold: 0.4)
+            mdl.vertexDescriptor = vdesc
+            guard let m = try? MTKMesh(mesh: mdl, device: device) else { return nil }
+            self.mtk = m
+        }
 
         if let texURL {
             self.albedo = try? MTKTextureLoader(device: device).newTexture(
@@ -415,7 +466,7 @@ final class MeshCreature {
 
         guard let lib = try? device.makeLibrary(source: Self.shaderSrc, options: nil) else { return nil }
         let pd = MTLRenderPipelineDescriptor()
-        pd.vertexFunction = lib.makeFunction(name: kind == .queen ? "vmain" : "vmainDrone")
+        pd.vertexFunction = lib.makeFunction(name: kind == .queen ? "vmain" : (kind == .drone ? "vmainDrone" : "vmainColonist"))
         pd.fragmentFunction = lib.makeFunction(name: "fmain")
         pd.vertexDescriptor = MTKMetalVertexDescriptorFromModelIO(vdesc)
         pd.colorAttachments[0].pixelFormat = .rgba8Unorm
@@ -437,7 +488,7 @@ final class MeshCreature {
         self.mdep = [Float](repeating: 0, count: vw * vh)
 
         let baked: Float = kind == .queen ? 1.5707963 : 0.0
-        let f0key = kind == .queen ? "MeshQueenFront0" : "MeshDroneFront0"
+        let f0key = kind == .queen ? "MeshQueenFront0" : (kind == .drone ? "MeshDroneFront0" : "MeshColonistFront0")
         if let v = UserDefaults.standard.object(forKey: f0key) as? Double { self.front0 = Float(v) }
         else { self.front0 = baked }
 
@@ -779,6 +830,78 @@ final class MeshCreature {
                           anim: SIMD4(inst.gait, inst.move, inst.rear, inst.dissolve),
                           misc: SIMD4(localHeight, inst.seed, 0, 0),
                           tune: SIMD4(lightGain, max(0, min(1, inst.death)), max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))))
+            enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+            enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+            for sm in mtk.submeshes {
+                enc.drawIndexedPrimitives(type: sm.primitiveType, indexCount: sm.indexCount,
+                                          indexType: sm.indexType, indexBuffer: sm.indexBuffer.buffer,
+                                          indexBufferOffset: sm.indexBuffer.offset)
+            }
+        }
+        enc.endEncoding()
+        cmd.commit(); cmd.waitUntilCompleted()
+
+        mergeMeshOverFramebuffer(into: canvas, depth: depth)
+    }
+
+    struct ColonistInst {
+        var pos: SIMD2<Float>
+        var yaw: Float          // world direction the fallen body points (its fall direction)
+        var seed: Float         // frozen per-corpse 0…1 → varies bow / loll / topple angle
+        var burn: Float         // 0…1 scorched by the flamethrower
+        var ashed: Float        // 0…2 crumbled to ash → trodden flat
+        var sector: SIMD3<Float>
+    }
+
+    /// Draw all the fallen colonists in view in ONE offscreen pass + ONE readback +
+    /// ONE composite (same batched machinery as the drones). Each corpse writes its
+    /// perp-depth so the shared depth buffer resolves body-vs-body and body-vs-world
+    /// occlusion. misc.z = 1 flags a corpse to fmain (kills the queen's ova-emissive
+    /// and lends a lit pallor rather than the creature death-darken).
+    func compositeColonists(into canvas: Canvas2D, depth: UnsafeMutablePointer<Float>,
+                            eye: SIMD3<Float>, camDir: Float, instances: [ColonistInst],
+                            lights: [GPURaymarch.GPULight] = [],
+                            wallField: MTLTexture?, mapW: Float, mapH: Float) {
+        guard !instances.isEmpty else { return }
+        let height = Self.f("MeshColonistHeight", 0.95)  // standing-height reference; seated reads smaller. Live-tunable.
+        let lightGain = Self.f("MeshColonistLight", 1.9)
+        let scale = height / localHeight
+        let fwd = SIMD3<Float>(cos(camDir), 0, sin(camDir))
+        let right = SIMD3<Float>(-sin(camDir), 0, cos(camDir))
+        let up = SIMD3<Float>(0, 1, 0)
+        let V = Self.view(eye, right, up, fwd)
+        let P = Self.proj(plane: RenderConfig.cameraPlane, horizon: Float(RenderConfig.horizon),
+                          W: Float(W), H: Float(H), near: 0.05, far: 64)
+
+        let rp = MTLRenderPassDescriptor()
+        rp.colorAttachments[0].texture = colTex
+        rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .store
+        rp.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        rp.colorAttachments[1].texture = depTex
+        rp.colorAttachments[1].loadAction = .clear; rp.colorAttachments[1].storeAction = .store
+        rp.colorAttachments[1].clearColor = MTLClearColor(red: 1e9, green: 0, blue: 0, alpha: 0)
+        rp.depthAttachment.texture = zTex
+        rp.depthAttachment.loadAction = .clear; rp.depthAttachment.storeAction = .dontCare
+        rp.depthAttachment.clearDepth = 1.0
+
+        guard let cmd = queue.makeCommandBuffer(), let enc = cmd.makeRenderCommandEncoder(descriptor: rp) else { return }
+        enc.setRenderPipelineState(pipe)
+        enc.setDepthStencilState(dss)
+        enc.setCullMode(.none)
+        enc.setFragmentTexture(albedo, index: 0)
+        enc.setFragmentTexture(wallField, index: 1)
+        var lts = lights.isEmpty ? [GPURaymarch.GPULight(posR: .zero, colI: .zero)] : lights
+        enc.setFragmentBytes(&lts, length: MemoryLayout<GPURaymarch.GPULight>.stride * lts.count, index: 2)
+        let nLights = Float(lights.count)
+        for (i, vb) in mtk.vertexBuffers.enumerated() { enc.setVertexBuffer(vb.buffer, offset: vb.offset, index: i) }
+        for inst in instances {
+            let model = Self.T(inst.pos.x, 0, inst.pos.y) * Self.Ry(front0 - inst.yaw) * Self.S(scale) * Self.Rx(-Float.pi / 2)
+            let mvp = P * V * model
+            var cam = Cam(model: model, mvp: mvp,
+                          eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(inst.sector, nLights),
+                          anim: .zero,
+                          misc: SIMD4(localHeight, inst.seed, 1.0, 0),   // .z = corpse flag (see fmain)
+                          tune: SIMD4(lightGain, 0, max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))))
             enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
             enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
             for sm in mtk.submeshes {

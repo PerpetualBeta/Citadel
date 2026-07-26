@@ -20,6 +20,7 @@ struct GeneratedLevel {
     let drums: [SIMD2<Float>]      // fuel-drum props (refuel + shootable bombs)
     let sockets: [(pos: SIMD2<Float>, yaw: Float)]   // wall-mounted plasma recharge panels (pos = the cell you stand in; yaw faces the room)
     let props: [Prop]              // decorative furniture/fixtures (set-dressing, no collision)
+    let colonists: [Colonist]      // fallen ARC workers (human corpse meshes, no collision)
     let colonyName: String
     let secretCount: Int
 }
@@ -105,7 +106,7 @@ enum MapGen {
         map.exitCell = exit
         let queen = MonsterSpawn(kind: .queen, pos: SIMD2<Float>(Float(size) - 2.5, Float(ey) + 0.5))
         return GeneratedLevel(map: map, monsters: [queen], items: [], drums: [],
-                              sockets: [], props: [],
+                              sockets: [], props: [], colonists: [],
                               colonyName: Progression.planets[colonyIndex % Progression.planets.count],
                               secretCount: 0)
     }
@@ -339,11 +340,27 @@ enum MapGen {
             }
         }
 
+        // THE SIGNAL deck: 1 (max 2) per BUILDING, only within floors 1–5. Decided
+        // BUILDING-STABLY so a single building doesn't over- or under-shoot: the run
+        // seed is recoverable (the per-floor seed is baseSeed + level; see Renderer),
+        // so a per-building RNG picks which of floors 1–5 host the deck, and every
+        // floor of that building agrees.
+        var signalDeckFloor = false
+        if Progression.floorInBuilding(level) <= 5 {
+            let runSeed = seed &- UInt64(level)
+            var brng = Rng(seed: runSeed ^ (UInt64(Progression.building(level)) &* 0x9E37_79B9_7F4A_7C15) ^ 0x5165_DEC0)
+            let count = brng.chance(0.45) ? 2 : 1
+            var floors = Set<Int>()
+            while floors.count < count { floors.insert(brng.i(1, 5)) }
+            signalDeckFloor = floors.contains(Progression.floorInBuilding(level))
+        }
+
         // ── spawns ──
-        let (monsters, items, drums, sockets, props) = populate(map: map, rooms: rooms, level: level, theme: th,
-                                                keyCells: keyCells, exitRoomIndex: rooms.count - 1, rng: &rng)
+        let (monsters, items, drums, sockets, props, colonists) = populate(map: map, rooms: rooms, level: level, theme: th,
+                                                keyCells: keyCells, exitRoomIndex: rooms.count - 1, signalDeck: signalDeckFloor, rng: &rng)
 
         return GeneratedLevel(map: map, monsters: monsters, items: items, drums: drums, sockets: sockets, props: props,
+                              colonists: colonists,
                               colonyName: Progression.planets[colonyIndex % Progression.planets.count], secretCount: secretCount)
     }
 
@@ -715,13 +732,14 @@ enum MapGen {
     // ── spawn population ──────────────────────────────────────────────────────
 
     private static func populate(map: GameMap, rooms: [Room], level: Int, theme: Theme,
-                                 keyCells: [KeyColor: Int], exitRoomIndex: Int, rng: inout Rng)
-        -> ([MonsterSpawn], [ItemSpawn], [SIMD2<Float>], [(pos: SIMD2<Float>, yaw: Float)], [Prop]) {
+                                 keyCells: [KeyColor: Int], exitRoomIndex: Int, signalDeck: Bool, rng: inout Rng)
+        -> ([MonsterSpawn], [ItemSpawn], [SIMD2<Float>], [(pos: SIMD2<Float>, yaw: Float)], [Prop], [Colonist]) {
         var monsters: [MonsterSpawn] = []
         var items: [ItemSpawn] = []
         var drums: [SIMD2<Float>] = []
         var sockets: [(pos: SIMD2<Float>, yaw: Float)] = []
         var props: [Prop] = []
+        let colonists: [Colonist] = []       // room-scatter removed; fuel-store survivors are placed separately (TODO)
 
         func center(_ cell: Int) -> SIMD2<Float> { SIMD2(Float(cell % map.w) + 0.5, Float(cell / map.w) + 0.5) }
         func randCell(in r: Room) -> Int? {
@@ -977,6 +995,20 @@ enum MapGen {
             for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) where map.hazard[map.idx(xx, yy)] { return true } }
             return false
         }
+        // A CONTROL/OPS room is one whose bounding wall carries a CRT terminal bank
+        // (placeTerminalBanks converted a wall run to WallTex.computer) — that's where
+        // THE SIGNAL archive deck belongs.
+        func roomHasBank(_ r: Room) -> Bool {
+            for x in r.x..<(r.x + r.w) {
+                if map.inBounds(x, r.y - 1),   map.wall[map.idx(x, r.y - 1)]   == WallTex.computer.rawValue { return true }
+                if map.inBounds(x, r.y + r.h), map.wall[map.idx(x, r.y + r.h)] == WallTex.computer.rawValue { return true }
+            }
+            for y in r.y..<(r.y + r.h) {
+                if map.inBounds(r.x - 1, y),    map.wall[map.idx(r.x - 1, y)]    == WallTex.computer.rawValue { return true }
+                if map.inBounds(r.x + r.w, y),  map.wall[map.idx(r.x + r.w, y)]  == WallTex.computer.rawValue { return true }
+            }
+            return false
+        }
         @discardableResult
         func placeProp(_ kind: FurnitureKind, _ slot: Slot, faceInward: Bool = true, gap: Float = 0.85) -> Bool {
             guard freeCell(slot.pos, gap) else { return false }
@@ -1022,6 +1054,18 @@ enum MapGen {
                             props.append(Prop(kind: .chair, pos: chairP, yaw: yawFor(-desk.inward), againstWall: false))
                             placed.append(chairP)
                         }
+                        // records spilled across the deck in the panic — a scatter of
+                        // sheets on the floor out in front of the workstation
+                        if FeatureFlags.scatteredPapers, rng.chance(0.5) {
+                            let tangent = SIMD2<Float>(desk.inward.y, -desk.inward.x)
+                            let pp = desk.pos + desk.inward * rng.f(0.9, 1.35) + tangent * rng.f(-0.4, 0.4)
+                            let px = Int(pp.x), py = Int(pp.y)
+                            if map.inBounds(px, py), map.wall[map.idx(px, py)] == 0, map.doors[map.idx(px, py)] == nil,
+                               !map.hazard[map.idx(px, py)], freeCell(pp, 0.4) {
+                                props.append(Prop(kind: .papers, pos: pp, yaw: rng.f(0, 6.2831853), againstWall: false))
+                                placed.append(pp)
+                            }
+                        }
                         for s in slots where placeProp(.locker, s) { break }
                     }
                 } else {
@@ -1031,6 +1075,20 @@ enum MapGen {
                         if placeProp(.locker, s) { used += 1 }
                     }
                     if !hazard { for s in slots where placeProp(.desk, s) { break } }
+                }
+            }
+        }
+
+        // ── THE SIGNAL archive ── a reel-to-reel deck in the control/ops room (the one
+        // with the CRT terminal bank), on a wall clear of the bank + the room's other
+        // furniture. RARE: 1 (max 2) per BUILDING, and only within floors 1–5 (by 6+
+        // the player knows the sound). The building-stable choice is `signalDeck`,
+        // decided in attemptGen; here we just honour it where a control room fits it.
+        if signalDeck {
+            var deckPlaced = false
+            for (ri, r) in rooms.enumerated() where !deckPlaced && roomHasBank(r) {
+                for s in wallSlots(r, ri) where !featureBacked(s) {
+                    if placeProp(.tapeDeck, s, gap: 1.0) { deckPlaced = true; break }
                 }
             }
         }
@@ -1062,23 +1120,11 @@ enum MapGen {
             }
         }
 
-        // ── CCTV cameras ── ARC IS WATCHING. Mounted HIGH in a room CORNER, angled
-        // diagonally across the room for maximum coverage (decorative, no collider,
-        // keeps its authored height). About half the rooms carry one, so the
-        // surveillance state reads across the floor without becoming wallpaper.
-        for r in rooms where rng.chance(0.55) {
-            let corners: [(x: Int, y: Int, dx: Float, dy: Float)] = [
-                (r.x,             r.y,             1,  1),   // each nestles into the two walls behind it,
-                (r.x + r.w - 1,   r.y,            -1,  1),   // lens facing the room diagonal (dx,dy → centre)
-                (r.x,             r.y + r.h - 1,   1, -1),
-                (r.x + r.w - 1,   r.y + r.h - 1,  -1, -1),
-            ]
-            for c in corners where map.inBounds(c.x, c.y) && map.wall[map.idx(c.x, c.y)] == 0 && map.doors[map.idx(c.x, c.y)] == nil {
-                props.append(Prop(kind: .camera, pos: SIMD2(Float(c.x) + 0.5, Float(c.y) + 0.5), yaw: yawFor(SIMD2(c.dx, c.dy))))
-                placed.append(SIMD2(Float(c.x) + 0.5, Float(c.y) + 0.5))
-                break
-            }
-        }
+        // ── fallen colonists ── the room-scatter is SUPERSEDED: the swarm consumed the
+        // dead (absence IS the story — an emptied, lived-in colony), so there are no
+        // scattered bodies. The only humans are the rare fuel-store SURVIVORS (0–2 per
+        // BUILDING, seated corpses in the sealed fuel stores, each a session-unique
+        // person). That placement + the no-repeat roster is wired separately — TODO.
 
         // ── pipe routing ── bake which open cells carry a wall pipe. Pipes run along
         // the walls of SELECTED rooms only (≈60%, for variation), and are kept clear
@@ -1207,7 +1253,7 @@ enum MapGen {
         }
         map.pipeFittings = fits
 
-        return (monsters, items, drums, sockets, props)
+        return (monsters, items, drums, sockets, props, colonists)
     }
 
     private static func pickItem(level: Int, rng: inout Rng) -> ItemKind {

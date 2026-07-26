@@ -74,6 +74,7 @@ final class World {
     let map: GameMap
     var player: Player
     var monsters: [Monster] = []
+    private var monsterOrder: [Int] = []   // reused nearest-first scan order (avoids a per-frame [Int] alloc in updateMonsters)
     var items: [Item] = []
     var projectiles: [Projectile] = []
     var particles: [Particle] = []
@@ -205,6 +206,12 @@ final class World {
     var deployedMines: [Mine] = []     // proximity mines the marine has dropped
     var sockets: [Socket] = []         // fixed plasma recharge stations (anti-softlock)
     var props: [Prop] = []             // furniture/fixtures (set-dressing; SOLID — see propColliders)
+    var colonists: [Colonist] = []     // fallen ARC workers (human corpse meshes; no collision — step over the dead)
+    // THE SIGNAL — reel-to-reel playback: when the marine USEs a deck, its reels spin
+    // and the recording plays until `signalPlayUntil` (see handleUse / packProps spin).
+    var signalDeckPos: SIMD2<Float>? = nil
+    var signalPlayUntil: Float = 0
+    static let signalClipSeconds: Float = 24
     // Solid-collision boxes for the furniture, built once at level load (oriented to
     // each piece, flush-matched to where it renders). Static — pure-CPU, no per-frame
     // rebuild and nothing on the GPU, so collision never touches the thermal budget.
@@ -242,6 +249,12 @@ final class World {
     // ── runtime battle-damage decal channel (world-space, stamped by events) ──
     // each = (x, z, radius, w): w > 0 scorch (char), w < 0 blood (dark pool).
     var decals: [SIMD4<Float>] = []
+    // The first `ambientDecalCount` decals are the AFTERMATH seeded at load (the
+    // colony fell before you arrived — see buildAftermath); they are PROTECTED from
+    // the combat-eviction below so the story never scrubs itself off the floor as you
+    // fight elsewhere. Only the combat marks after the prefix roll over.
+    private var ambientDecalCount = 0
+    private let decalCap = 72
     var debris: [(pos: SIMD2<Float>, seed: UInt32)] = []   // static rubble piles at damage sites
 
     // edge-tracking for discrete actions
@@ -329,9 +342,10 @@ final class World {
         for d in gen.drums { drums.append(Drum(pos: d, fuel: drumFuel, health: drumHealth)) }
         for s in gen.sockets { sockets.append(Socket(pos: s.pos, yaw: s.yaw, charge: socketCharge, maxCharge: socketCharge)) }
         self.props = gen.props
+        self.colonists = gen.colonists
         // furniture solid-collision boxes — each piece's authored footprint, oriented
         // by its yaw and flush-matched to where it renders against the wall
-        for pr in gen.props where pr.kind != .wallPipe && pr.kind != .camera {   // camera is high on the wall — decorative, no floor collider
+        for pr in gen.props where pr.kind != .wallPipe && pr.kind != .papers {   // papers flat on the deck — decorative, no floor collider
             let (hw, hd) = GPURaymarch.furnitureFootprint(pr.kind)
             let inward = SIMD2<Float>(-sin(pr.yaw), cos(pr.yaw))
             let tangent = SIMD2<Float>(cos(pr.yaw), sin(pr.yaw))
@@ -350,6 +364,7 @@ final class World {
         buildSteamVents()
         buildSparkSites()
         buildDebris()
+        buildAftermath(seed: seed)
         buildDripSites()
         if FeatureFlags.allWeapons { grantAllWeapons() }
         message("RETAKE \(colonyName) — FLOOR \(Progression.floorInBuilding(level))")
@@ -646,6 +661,17 @@ final class World {
             }
             return
         }
+        // the reel-to-reel archive deck within reach → play THE SIGNAL (the deep
+        // recording). Re-USE while it's still playing is swallowed (no restart).
+        if let deck = nearestTapeDeck(within: 1.9) {
+            if elapsed >= signalPlayUntil {
+                audio.playSignal()
+                signalDeckPos = deck
+                signalPlayUntil = elapsed + World.signalClipSeconds
+                message("REEL-TO-REEL  \u{25B6}  \u{201C}THE SIGNAL\u{201D}   \u{2014}   DO NOT OVERWRITE")
+            }
+            return
+        }
         // a computer-desk terminal within reach → read it (easter eggs). The Renderer
         // zooms into the terminal and suspends play; nothing else happens this press.
         if let di = nearestDeskTerminal(within: 1.5) { terminalUsePending = true; terminalDeskIndex = di; return }
@@ -717,6 +743,23 @@ final class World {
             bestD = d; best = i
         }
         return best >= 0 ? best : nil
+    }
+
+    /// The position of the NEAREST reel-to-reel deck the marine is beside AND facing
+    /// (same squared-up rule as the desk terminals), or nil.
+    private func nearestTapeDeck(within r: Float) -> SIMD2<Float>? {
+        let fwd = SIMD2<Float>(cos(player.dir), sin(player.dir))
+        var best: SIMD2<Float>? = nil
+        var bestD = r * r
+        for p in props where p.kind == .tapeDeck {
+            let rel = SIMD2<Float>(p.pos.x - player.pos.x, p.pos.y - player.pos.y)
+            let d = rel.x * rel.x + rel.y * rel.y
+            guard d < bestD, d > 1e-6 else { continue }
+            let facing = (rel.x * fwd.x + rel.y * fwd.y) / d.squareRoot()
+            guard facing >= Self.terminalFacingDot else { continue }
+            bestD = d; best = p.pos
+        }
+        return best
     }
 
     /// Drop a proximity mine at the marine's feet (edge-triggered). It arms after
@@ -1355,7 +1398,22 @@ final class World {
 
     private func updateMonsters(dt: Float, audio: AudioEngine) {
         let fast: Float = FeatureFlags.fastMonsters ? 1.6 : 1
-        for i in monsters.indices {
+        // Process NEAREST-to-player FIRST so a queue flows: the leader advances, then
+        // its followers (processed after) see it move off and close up behind it —
+        // instead of a follower freezing against a still-stationary comrade, which is
+        // what left drones jammed a fixed gap apart in doorways and passages.
+        // Refill the reused order buffer in place (no per-frame [Int] alloc) and sort by
+        // SQUARED distance — same ordering as distance, without the two sqrts-per-compare.
+        monsterOrder.removeAll(keepingCapacity: true)
+        monsterOrder.append(contentsOf: monsters.indices)
+        if monsters.count > 1 {
+            let px = player.pos
+            monsterOrder.sort {
+                let da = monsters[$0].pos - px, db = monsters[$1].pos - px
+                return (da.x * da.x + da.y * da.y) < (db.x * db.x + db.y * db.y)
+            }
+        }
+        for i in monsterOrder {
             var m = monsters[i]
             // the walk cycle advances with DISTANCE COVERED (steerMove adds it), so
             // feet stop sliding and the stride matches travel; this is just a slow
@@ -2352,7 +2410,10 @@ final class World {
     /// decal loop stays bounded; the oldest marks fall off first.
     private func addDecal(_ pos: SIMD2<Float>, radius: Float, w: Float) {
         decals.append(SIMD4(pos.x, pos.y, radius, w))
-        if decals.count > 64 { decals.removeFirst(decals.count - 64) }
+        // Evict the OLDEST COMBAT marks (right after the protected ambient prefix),
+        // never the seeded aftermath, so the GPU decal loop stays bounded.
+        let over = decals.count - decalCap
+        if over > 0 { decals.removeSubrange(ambientDecalCount ..< ambientDecalCount + over) }
     }
 
     /// Rubble piles on the floor in front of each shattered fixture — physical
@@ -2376,6 +2437,68 @@ final class World {
             let stride = debris.count / 48 + 1
             debris = debris.enumerated().filter { $0.offset % stride == 0 }.map { $0.element }
         }
+    }
+
+    /// Seed the colony's AFTERMATH so a room reads as "people died here" the moment
+    /// you arrive — not only once you've done your own killing. The swarm consumed
+    /// the dead (few bodies remain), but they left blood where colonists were cut
+    /// down — heaviest at the doorways they fled through, with a drag-smear toward
+    /// the threshold — and scorch where the fires burned. Static world-space decals
+    /// (blood w<0 / scorch w>0), deterministic per level and PROTECTED from combat
+    /// eviction (see addDecal / ambientDecalCount), so the story never scrubs off.
+    private func buildAftermath(seed: UInt64) {
+        guard FeatureFlags.aftermath else { return }   // no ambient decals → the per-floor-pixel decal loop stays dormant (RC1 behaviour); a perf A/B
+        var r = Rng(seed: seed ^ 0x5EED_B10D)
+        let W = map.w
+        func openFloor(_ x: Int, _ y: Int) -> Bool {
+            map.inBounds(x, y) && map.wall[map.idx(x, y)] == 0
+                && !map.hazard[map.idx(x, y)] && map.doors[map.idx(x, y)] == nil
+        }
+        func blood(_ p: SIMD2<Float>, _ radius: Float, _ strength: Float) { addDecal(p, radius: radius, w: -strength) }
+        func scorch(_ p: SIMD2<Float>, _ radius: Float, _ strength: Float) { addDecal(p, radius: radius, w: strength) }
+
+        // (1) DOORWAY BLOOD — cut down fleeing through the doors. Keys sorted (dict
+        //     order isn't stable) so the carnage is deterministic. A pool just inside
+        //     the threshold + a fainter drag-smear back toward it.
+        // Full carnage: the decal loop is cheap now (per-pixel AABB reject before any
+        // sqrt/noise — see GPURaymarch), so a heavy aftermath costs the floor shader
+        // almost nothing; a pool at most thresholds sells the fallen colony.
+        let dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+        for cell in map.doors.keys.sorted() where r.chance(0.45) {
+            let dx = cell % W, dy = cell / W
+            for (ox, oy) in dirs.shuffled(using: &r) where openFloor(dx + ox, dy + oy) {
+                let pool = SIMD2<Float>(Float(dx + ox) + 0.5 + r.f(-0.18, 0.18),
+                                        Float(dy + oy) + 0.5 + r.f(-0.18, 0.18))
+                blood(pool, r.f(0.42, 0.68), r.f(0.60, 0.92))
+                let door = SIMD2<Float>(Float(dx) + 0.5, Float(dy) + 0.5)
+                blood(pool + (door - pool) * 0.55, r.f(0.22, 0.36), r.f(0.32, 0.55))
+                break
+            }
+        }
+
+        // (2) SCATTERED CARNAGE — blood pools + the odd scorch scar out in the open,
+        //     so the horror isn't only at the thresholds. Bounded tries for open floor.
+        let bloodTarget = 6 + r.i(0, 3), scorchTarget = 3 + r.i(0, 2)
+        var b = 0, s = 0, tries = 0
+        while (b < bloodTarget || s < scorchTarget) && tries < 400 {
+            tries += 1
+            let x = r.i(1, map.w - 2), y = r.i(1, map.h - 2)
+            guard openFloor(x, y) else { continue }
+            let p = SIMD2<Float>(Float(x) + r.f(0.25, 0.75), Float(y) + r.f(0.25, 0.75))
+            if b < bloodTarget && r.chance(0.65) { blood(p, r.f(0.30, 0.60), r.f(0.45, 0.80)); b += 1 }
+            else if s < scorchTarget { scorch(p, r.f(0.50, 0.90), r.f(0.55, 0.85)); s += 1 }
+        }
+
+        // (3) SPILLED PAPERS — records strewn flat near the office desks. MapGen drops
+        //     a `.papers` marker prop at each spot (it renders NO geometry — paper is
+        //     too thin to read as SDF); here it becomes a flat floor decal (w>3).
+        if FeatureFlags.scatteredPapers {
+            for pr in props where pr.kind == .papers {
+                addDecal(pr.pos, radius: 0.58, w: 3.0 + r.f(0.6, 1.0))     // a wider spread so it reads as a scatter
+            }
+        }
+
+        ambientDecalCount = decals.count      // protect all of the above from eviction
     }
 
     /// Sparks spitting from shattered fixtures near the player (bursty), with the

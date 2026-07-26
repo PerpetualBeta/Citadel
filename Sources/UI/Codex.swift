@@ -547,6 +547,34 @@ enum FrontEnd {
         row("SCORE \(world.score)", uiS(252), uiSf(16), amber, .bold, 5.6)
     }
 
+    /// THE LOOP PAYOFF — burned through the teleport static when the SIXTH and last
+    /// citadel falls and the whole Strataris cluster is "secured". The restrained
+    /// trilogy hook: ARC — the financier whose seal has haunted the title since the
+    /// first frame — is the one who actually won; the marine was the disposable tool,
+    /// and the descent only resumes, deeper. Same weak-carrier jitter as teleportCard,
+    /// but it holds steadier and longer — this beat is meant to land.
+    static func clusterCard(_ c: Canvas2D, world: World, t: Float) {
+        func jx(_ k: Float) -> Int { Int(sinf(t * 34 + k) * 1.4 + sinf(t * 57 + k * 2.3)) }
+        let x0 = W / 2
+        c.fillRectBlend(0, uiS(74), W, uiS(250), packRGBA(0, 0, 0), 0.58)
+        c.fillRectBlend(0, uiS(74), W, 1, cold, 0.4)
+        c.fillRectBlend(0, uiS(324) - 1, W, 1, cold, 0.4)
+        func row(_ s: String, _ y: Int, _ size: CGFloat, _ col: UInt32, _ w: NSFont.Weight, _ k: Float, glow: UInt32? = nil) {
+            if Int((t + k) * 9) % 19 == 0 { return }                 // rare dropout — steadier than a mid-jump card
+            let tw = c.labelWidth(s, size: size, weight: w, mono: true)
+            c.label(s, x0 - tw / 2 + jx(k), y, size: size, color: col, weight: w, shadow: false, glow: glow, mono: true)
+        }
+        row("THE STRATARIS CLUSTER HAS FALLEN", uiS(90), uiSf(26), packRGBA(150, 210, 245), .heavy, 0.7, glow: packRGBA(14, 34, 52))
+        row("Six citadels retaken.  Six worlds emptied.", uiS(126), uiSf(15), ink, .medium, 1.9)
+        // the ARC seal + the cold reveal — clinical, alien to the colony's warm phosphor
+        arcSeal(c, cx: x0, cy: uiS(176), r: uiS(15), color: cold, alpha: 0.9)
+        row("ARC  //  CLAIM CONFIRMED", uiS(206), uiSf(17), cold, .bold, 2.6)
+        row("No relief fleet was ever dispatched.", uiS(234), uiSf(14), dim, .semibold, 3.4)
+        row("There was only you — all ARC ever needed.", uiS(254), uiSf(14), dim, .semibold, 4.2)
+        row("The signal stirs again, far below.", uiS(290), uiSf(14), packRGBA(210, 160, 160), .semibold, 5.1)
+        row("DESCENT RESUMES  ·  \(Progression.planetName(world.level + 1))", uiS(312), uiSf(18), amber, .heavy, 5.9, glow: packRGBA(60, 48, 0))
+    }
+
     private static func statRow(_ c: Canvas2D, _ k: String, _ v: String, _ y: Int, color: UInt32 = 0xFFEEEEEE) {
         c.label(k, W / 2 - uiS(160), y, size: uiSf(22), color: dim, weight: .semibold)
         c.labelRight(v, W / 2 + uiS(160), y, size: uiSf(22), color: color, weight: .bold)

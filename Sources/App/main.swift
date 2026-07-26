@@ -29,8 +29,8 @@ import QuartzCore
 for key in ["CITADEL_SMOKE", "CITADEL_FITSHOT", "CITADEL_LOADPROBE", "CITADEL_TIMING",
             "CITADEL_SHOTS", "CITADEL_MATERIALS",
             "CITADEL_AUTOMAP", "CITADEL_ROOMS", "CITADEL_DISPLAYVID",
-            "CITADEL_TITLESHOT", "CITADEL_QUEENMOCK", "CITADEL_QUEENMESH",
-            "CITADEL_MESHVERIFY", "CITADEL_DRONEMESH", "CITADEL_TERMSHOT"]
+            "CITADEL_TITLESHOT", "CITADEL_CLUSTERSHOT", "CITADEL_QUEENMOCK", "CITADEL_QUEENMESH",
+            "CITADEL_MESHVERIFY", "CITADEL_DRONEMESH", "CITADEL_COLONISTMESH", "CITADEL_CORPSES", "CITADEL_DECKCHECK", "CITADEL_TERMSHOT", "CITADEL_PROOFROOM", "CITADEL_RASTERSHOT"]
     where ProcessInfo.processInfo.environment[key] != nil {
     setenv("CITADEL_MUTE", "1", 1)
     break
@@ -499,6 +499,31 @@ if ProcessInfo.processInfo.environment["CITADEL_DRONEMESH"] != nil {
     exit(0)
 }
 
+// CITADEL_COLONISTMESH[=mesh.usdz] → load-test a fallen-colonist mesh in the lair
+// (4 facings), like DRONEMESH. Tex via CITADEL_COLONISTTEX, out via CITADEL_COLONISTOUT.
+// Confirms an updated/rigged mesh LOADS (bind-pose geometry) and shows its pose.
+if let v = ProcessInfo.processInfo.environment["CITADEL_COLONISTMESH"] {
+    let env = ProcessInfo.processInfo.environment
+    let m = (v.isEmpty || v == "1") ? Bundle.main.url(forResource: "colonist_woman", withExtension: "usdz")?.path : v
+    let t = env["CITADEL_COLONISTTEX"] ?? Bundle.main.url(forResource: "colonist_woman_basecolor", withExtension: "jpg")?.path
+    QueenMeshTest.run(meshPath: m, texPath: t, height: 1.75, tag: "colonist", outDir: env["CITADEL_COLONISTOUT"])
+    exit(0)
+}
+
+// CITADEL_CORPSES → drive the live renderer at each fallen colonist in a generated
+// level (procedural-topple pose check). Out via CITADEL_COLONISTOUT.
+if ProcessInfo.processInfo.environment["CITADEL_CORPSES"] != nil {
+    QueenMeshTest.verifyColonists(outDir: ProcessInfo.processInfo.environment["CITADEL_COLONISTOUT"])
+    exit(0)
+}
+
+// CITADEL_RIGPROBE[=mesh.usdz] → print the skeleton + skin-weight data ModelIO
+// exposes from a rigged USDZ (groundwork for the humanoid poser).
+if let v = ProcessInfo.processInfo.environment["CITADEL_RIGPROBE"] {
+    RigProbe.run(path: (v.isEmpty || v == "1") ? nil : v)
+    exit(0)
+}
+
 if let v = ProcessInfo.processInfo.environment["CITADEL_AUTOMAP"] {
     Automap.run(outDir: v.isEmpty || v == "1" ? nil : v)
     exit(0)
@@ -506,6 +531,16 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_AUTOMAP"] {
 
 if let v = ProcessInfo.processInfo.environment["CITADEL_ROOMS"] {
     RoomShots.run(outDir: v.isEmpty || v == "1" ? nil : v)
+    exit(0)
+}
+
+if let v = ProcessInfo.processInfo.environment["CITADEL_PROOFROOM"] {
+    ProofRoom.run(outDir: v.isEmpty || v == "1" ? nil : v)
+    exit(0)
+}
+
+if let v = ProcessInfo.processInfo.environment["CITADEL_RASTERSHOT"] {
+    RasterRenderer.shot(outDir: v.isEmpty || v == "1" ? nil : v)
     exit(0)
 }
 
@@ -526,6 +561,38 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_TITLESHOT"] {
     Captures.writePNG(c.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: 1,
                       to: URL(fileURLWithPath: out))
     print("Citadel: wrote title screenshot to \(out)")
+    exit(0)
+}
+
+// CITADEL_DECKCHECK → print how many SIGNAL decks each floor gets (verify the
+// rarity: 1–2 per building, floors 1–5 only, none on 6–8).
+if ProcessInfo.processInfo.environment["CITADEL_DECKCHECK"] != nil {
+    for base in [UInt64(1000), 2000, 3000] {
+        var deckLine = "base \(base) decks:", paperLine = "base \(base) papers:"
+        for level in 1...8 {
+            let w = World(level: level, colonyIndex: Progression.planetIndex(level), seed: base &+ UInt64(level))
+            deckLine += " L\(level)=\(w.props.filter { $0.kind == .tapeDeck }.count)"
+            let pProps = w.props.filter { $0.kind == .papers }.count
+            let pDecals = w.decals.filter { $0.w > 3.0 }.count       // papers render as w>3 decals (buildAftermath)
+            paperLine += " L\(level)=\(pProps)prop/\(pDecals)decal"
+        }
+        print(deckLine); print(paperLine)
+    }
+    exit(0)
+}
+
+// CITADEL_CLUSTERSHOT[=path] → render the loop-payoff (cluster-fallen) card over
+// teleport static to a PNG, so the end-of-cluster beat can be judged without
+// playing to floor 48. VESPER (the sixth citadel) → the roll-back to DEMETER.
+if let v = ProcessInfo.processInfo.environment["CITADEL_CLUSTERSHOT"] {
+    let out = (v.isEmpty || v == "1") ? NSHomeDirectory() + "/Desktop/citadel-cluster.png" : v
+    let world = World(level: 48, colonyIndex: 5, seed: 4848)
+    let c = Canvas2D()
+    StaticFX.fill(c, t: 2.0)
+    FrontEnd.clusterCard(c, world: world, t: 2.0)
+    Captures.writePNG(c.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: 1,
+                      to: URL(fileURLWithPath: out))
+    print("Citadel: wrote cluster card to \(out)")
     exit(0)
 }
 

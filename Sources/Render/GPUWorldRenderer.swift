@@ -25,6 +25,12 @@ final class GPUWorldRenderer {
     /// nil when the flag is off or the asset/GPU setup is missing → SDF queen.
     private let meshCreature: MeshCreature?
     private let meshDrone: MeshCreature?
+    /// Fallen-colonist corpse meshes — one of seven rigged humans (Colonist.modelNames),
+    /// LOADED LAZILY + cached the first time a survivor of that variant comes into view
+    /// (survivors are rare — 0–2 per building — so loading all seven up front would
+    /// waste memory + launch time). See MeshCreature.compositeColonists.
+    private var colonistMeshes: [Int: MeshCreature] = [:]
+    private var colonistTried: Set<Int> = []
 
     private var dtTex, liTex, gpuViewTex, gpuHDRTex, gpuDepthTex: MTLTexture?
     private var gpuDepth = [Float]()   // per-pixel scene depth, read back for sprite occlusion
@@ -68,6 +74,22 @@ final class GPUWorldRenderer {
         // other dynamic object — drums, sockets, mines, pickups, projectiles.
         self.meshCreature = MeshCreature(device: device)
         self.meshDrone = MeshCreature(device: device, kind: .drone)
+    }
+
+    /// The (lazily-loaded, cached) corpse mesh for a colonist variant. A failed load
+    /// is remembered so we don't retry every frame.
+    private func colonistMesh(_ v: Int) -> MeshCreature? {
+        if let m = colonistMeshes[v] { return m }
+        if colonistTried.contains(v) { return nil }
+        colonistTried.insert(v)
+        guard v >= 0, v < Colonist.modelNames.count,
+              let m = MeshCreature(device: device, kind: .colonist,
+                                   meshOverride: Colonist.modelNames[v],
+                                   texOverride: Colonist.modelNames[v] + "_basecolor",
+                                   poseSeed: Float(v) * 1.7 + 0.3)   // each model slumps its own way
+        else { return nil }
+        colonistMeshes[v] = m
+        return m
     }
 
     /// Upload `arr` into a reused grow-only shared buffer and return it for the
@@ -397,24 +419,6 @@ final class GPUWorldRenderer {
                                             colI: SIMD4(c.0, c.1, c.2, it)))
             if out.count >= 16 { break }
         }
-        // CCTV status LEDs — a tiny pulsing RED source on each nearby camera, so the
-        // recording light reads as a glow, not just a dot. Only during the blink's
-        // "on" window (in step with the LED colour pulse in packProps), and only in
-        // spare light slots (combat lights keep priority).
-        if world.elapsed.truncatingRemainder(dividingBy: 1.4) < 0.7 {
-            for pr in world.props where pr.kind == .camera {
-                if out.count >= 16 { break }
-                let dx = pr.pos.x - p.pos.x, dy = pr.pos.y - p.pos.y
-                if dx * dx + dy * dy > 196 { continue }          // only cameras within ~14 units
-                // The camera body is shoved flush to the wall, so its LED sits ~0.36
-                // behind the cell centre — put the glow AT the camera, not mid-room.
-                let cyaw = cos(pr.yaw), syaw = sin(pr.yaw), lz: Float = -0.34
-                let wx = pr.pos.x - lz * syaw, wz = pr.pos.y + lz * cyaw
-                let rad: Float = 1.0
-                out.append(GPURaymarch.GPULight(posR: SIMD4(wx, 0.82, wz, 1 / (rad * rad)),
-                                                colI: SIMD4(1.0, 0.05, 0.03, 0.5)))
-            }
-        }
         return out
     }
 
@@ -568,7 +572,8 @@ final class GPUWorldRenderer {
         var cshapes: [GPURaymarch.GShape] = []
         let (imons, ishapes) = GPURaymarch.packItems(visibleItems(world), time: world.elapsed)
         let (dmons, dshapes) = GPURaymarch.packDebris(visibleDebris(world))            // static rubble piles
-        let (fmons, fshapes) = GPURaymarch.packProps(visibleProps(world), time: world.elapsed)   // furniture & fixtures (time → blinking cam LED)
+        let playingDeck = world.elapsed < world.signalPlayUntil ? world.signalDeckPos : nil       // the reel the marine set rolling → reels spin, REC lit
+        let (fmons, fshapes) = GPURaymarch.packProps(visibleProps(world), time: world.elapsed, signalDeck: playingDeck)   // furniture & fixtures (time → blinking cam LED, spinning reels)
         let (umons, ushapes) = GPURaymarch.packDrums(visibleDrums(world))              // fuel barrels (SDF — were sprites)
         let (smons, sshapes) = GPURaymarch.packSockets(visibleSockets(world))          // recharge panels (SDF — were sprites)
         let (nmons, nshapes) = GPURaymarch.packMines(visibleMines(world))              // deployed mines (SDF — were sprites)
@@ -685,14 +690,40 @@ final class GPUWorldRenderer {
         // drones vanish until you closed in. Off-screen ones clip away for free, and the
         // depth composite occludes whatever's behind a wall per-pixel.
         let liveDrones = meshDrones
+        // Fallen colonists in view — corpses are environment, so cull by range + a
+        // lenient ahead test (a body underfoot still draws; the rasteriser clips the
+        // rest). Split by variant at composite time onto the two colonist meshes.
+        let visColonists: [Colonist] = world.colonists.filter { c in
+            guard c.variant >= 0 else { return false }
+            let rel = c.pos - p.pos
+            let ahead = rel.x * fwd2.x + rel.y * fwd2.y
+            return ahead > -1.5 && (rel.x * rel.x + rel.y * rel.y) < 24 * 24
+        }
         // Depth is needed by the mesh creatures (occlusion + writing their own depth)
         // and by the particle compositor — pull it back if any is in play this frame.
-        let needDepth = !world.particles.isEmpty || !liveQueens.isEmpty || !liveDrones.isEmpty
+        let needDepth = !world.particles.isEmpty || !liveQueens.isEmpty || !liveDrones.isEmpty || !visColonists.isEmpty
         if needDepth {
             let vh = RenderConfig.viewHeight
             gpuDepth.withUnsafeMutableBytes {
                 depthT.getBytes($0.baseAddress!, bytesPerRow: RenderConfig.width * 4,
                                 from: MTLRegionMake2D(0, 0, RenderConfig.width, vh), mipmapLevel: 0)
+            }
+        }
+        // the fallen COLONISTS — drawn first (they lie on the deck, the environment
+        // layer), each writing its perp-depth so the standing creatures + particles
+        // composite over them correctly. Batched per mesh (woman / worker).
+        if !visColonists.isEmpty {
+            func inst(_ c: Colonist) -> MeshCreature.ColonistInst {
+                MeshCreature.ColonistInst(pos: c.pos, yaw: c.yaw, seed: c.seed, burn: c.burn, ashed: c.ashed,
+                                          sector: WorldLight.lightAt(world.map, c.pos.x, c.pos.y))
+            }
+            gpuDepth.withUnsafeMutableBufferPointer { dp in
+                for v in Set(visColonists.map { $0.variant }) {
+                    guard let mesh = colonistMesh(v) else { continue }
+                    let insts = visColonists.filter { $0.variant == v }.map(inst)
+                    mesh.compositeColonists(into: canvas, depth: dp.baseAddress!, eye: eye, camDir: p.dir, instances: insts,
+                                            lights: meshLights, wallField: dtTex, mapW: Float(gpuMapW), mapH: Float(gpuMapH))
+                }
             }
         }
         // the 3-D mesh Queen — rasterised into the frame, and her perp-depth written
