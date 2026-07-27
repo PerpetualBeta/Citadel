@@ -724,6 +724,34 @@ final class RasterRenderer {
         quad(P(x0, y0, z0), P(x1, y0, z0), P(x1, y1, z0), P(x0, y1, z0), SIMD3(0, 0, -1))
     }
 
+    /// A CHAMFERED box — the 6 faces inset by `r` in their in-plane axes, joined by 12 bevel quads and 8
+    /// corner tris (45° facets). Rounds off the razor edges/corners so a hand-carried weapon reads as worn
+    /// steel, not a machined block. Winding is irrelevant (passes cull .none) — only the NORMALS matter.
+    private func tessRoundBox(_ o: SIMD3<Float>, _ h: SIMD3<Float>, _ r0: Float,
+                              quad: (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>) -> Void,
+                              tri: (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>) -> Void) {
+        let r = min(r0, min(h.x, min(h.y, h.z)) * 0.9)
+        let ix = h.x - r, iy = h.y - r, iz = h.z - r
+        func P(_ x: Float, _ y: Float, _ z: Float) -> SIMD3<Float> { SIMD3(o.x + x, o.y + y, o.z + z) }
+        let S: [Float] = [-1, 1]
+        for s in S {                                                     // 6 inset faces
+            quad(P(s*h.x,-iy,-iz), P(s*h.x,iy,-iz), P(s*h.x,iy,iz), P(s*h.x,-iy,iz), SIMD3(s,0,0))
+            quad(P(-ix,s*h.y,-iz), P(ix,s*h.y,-iz), P(ix,s*h.y,iz), P(-ix,s*h.y,iz), SIMD3(0,s,0))
+            quad(P(-ix,-iy,s*h.z), P(ix,-iy,s*h.z), P(ix,iy,s*h.z), P(-ix,iy,s*h.z), SIMD3(0,0,s))
+        }
+        let q: Float = 0.70710678
+        for a in S { for b in S {                                        // 12 edge bevels (45°)
+            quad(P(a*h.x,b*iy,-iz), P(a*h.x,b*iy,iz), P(a*ix,b*h.y,iz), P(a*ix,b*h.y,-iz), SIMD3(a*q,b*q,0))   // along Z
+            quad(P(a*h.x,-iy,b*iz), P(a*h.x,iy,b*iz), P(a*ix,iy,b*h.z), P(a*ix,-iy,b*h.z), SIMD3(a*q,0,b*q))   // along Y
+            quad(P(-ix,a*h.y,b*iz), P(ix,a*h.y,b*iz), P(ix,a*iy,b*h.z), P(-ix,a*iy,b*h.z), SIMD3(0,a*q,b*q))   // along X
+        } }
+        let u: Float = 0.57735027
+        for a in S { for b in S { for c in S {                           // 8 corner tris
+            tri(P(a*h.x,b*iy,c*iz), P(a*ix,b*h.y,c*iz), P(a*ix,b*iy,c*h.z),
+                SIMD3(a*u,b*u,c*u), SIMD3(a*u,b*u,c*u), SIMD3(a*u,b*u,c*u))
+        } } }
+    }
+
     private func tessSphere(_ c: SIMD3<Float>, r: Float,
                             tri: (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>) -> Void) {
         let LON = 12, LAT = 8, tau = 2 * Float.pi
@@ -829,8 +857,9 @@ final class RasterRenderer {
             tessAxial(c, r: sh.a.w, half: sh.b.y, axis: SIMD3(0, 0, 1), rad1: SIMD3(1, 0, 0), rad2: SIMD3(0, 1, 0), tri: tri)
         } else if bw < -2.5 {                                // y-cylinder (fuel tank / cell housing) — axis +Y
             tessAxial(c, r: sh.a.w, half: sh.b.y, axis: SIMD3(0, 1, 0), rad1: SIMD3(1, 0, 0), rad2: SIMD3(0, 0, 1), tri: tri)
-        } else if bw < -1.5 {                                // box
-            tessBox(c, h: SIMD3(sh.b.x, sh.b.y, sh.b.z), quad: quad)
+        } else if bw < -1.5 {                                // box → CHAMFERED (a hand-carried weapon has worn, rounded edges)
+            let hb = SIMD3(sh.b.x, sh.b.y, sh.b.z)
+            tessRoundBox(c, hb, min(hb.x, min(hb.y, hb.z)) * 0.32, quad: quad, tri: tri)
         } else if bw < 0 {                                   // sphere
             tessSphere(c, r: sh.a.w, tri: tri)
         } else {                                             // round cone A(r1) → B(r2)
