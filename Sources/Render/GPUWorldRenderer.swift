@@ -430,66 +430,7 @@ final class GPUWorldRenderer {
     /// this per ray with a cheap bounding-sphere reject, so it stays tight — capped,
     /// and the nearest pyres win when a whole pack ignites at once.
     private func gatherFireEmitters(_ world: World) -> [GPURaymarch.FireEmitter] {
-        guard FeatureFlags.gpuFire else { return [] }
-        var out: [GPURaymarch.FireEmitter] = []
-        // ── the flamethrower jet ── flow horizontal down the aim; kind = 1
-        let j = world.flameJet
-        if j.t > 0 {
-            let strength = min(1, j.t / 0.10)
-            let len = max(0.5, j.reach - 0.15)
-            out.append(GPURaymarch.FireEmitter(
-                p0: SIMD4(j.nozzle.x, 0.5, j.nozzle.y, 0.42),      // nozzle · puff-envelope radius
-                p1: SIMD4(j.dir.x, 0, j.dir.y, len),               // horizontal flow, length clipped at the wall
-                p2: SIMD4(1.9 * strength, 3.1, 1, 0)))             // vigor · seed · kind=jet · smoke=0
-        }
-        // ── corpse pyres ── a FUEL FIRE consuming a mass: ignites at once, flares
-        // ferociously for a beat, then dies down as the body is spent. Taller and
-        // wider than the corpse so the blaze ROARS UP AND OUT of it — clearing the
-        // mesh corpse's silhouette (which is drawn over the kernel), not a timid
-        // stub hidden behind it. The Queen, a far greater mass, burns hardest.
-        func ss(_ a: Float, _ b: Float, _ x: Float) -> Float { let t = max(0, min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t) }
-        // ── explosion fireballs ── drum ruptures + rocket splashes: a ball that
-        // blooms fast off the flash then dies to sooty smoke (the flame's own
-        // absorption caps the head-on brightness — no white-out).
-        for (k, fb) in world.fireballs.enumerated() {
-            let t = min(1, fb.age / fb.life)
-            let expand = 1 - (1 - t) * (1 - t)                    // fast bloom, easing out
-            let vigor  = 2.2 * (1 - ss(0.40, 1.0, t))            // brightest at the flash, fades to smoke
-            if vigor < 0.05 { continue }
-            let br = fb.size * (0.35 + 0.80 * expand)
-            out.append(GPURaymarch.FireEmitter(
-                p0: SIMD4(fb.pos.x, 0.30, fb.pos.y, br),
-                p1: SIMD4(0, 1, 0, br * 1.4),                     // short column → a rising ball, not a tower
-                p2: SIMD4(vigor, Float(k) * 7.1 + 2.0, 0, fb.soot)))   // kind = pyre · sooty
-        }
-        let pp = world.player.pos
-        var pyres: [(d: Float, e: GPURaymarch.FireEmitter)] = []
-        for (i, m) in world.monsters.enumerated() where m.state == .dead && m.burn > 0 && m.burn < 1 {
-            let b = m.burn
-            let ignite = ss(0, 0.10, b)                            // catches almost at once
-            let decay  = 1 - ss(0.42, 1.0, b)                     // falls away over the back half
-            let flare  = ignite * (0.30 + 0.70 * decay)          // held high, then tapering (not a symmetric bell)
-            let burst  = (1 - ss(0.0, 0.20, b)) * ignite         // a fireball at ignition — the fuel catching
-            let queen  = m.kind == .queen
-            let rad = m.def.radius
-            let baseR = rad * (queen ? 1.5 : 1.35) * (0.80 + 0.55 * flare + 0.40 * burst)   // puff-chain envelope width
-            let tall: Float = (queen ? 1.9 : 1.4) * (0.70 + 0.40 * flare + 0.25 * burst)    // overshoots the ceiling → upper puffs pile into rolling smoke
-            // vigor drives puff opacity + brightness (colour is temperature, decoupled);
-            // ignites hard, holds, then dies as fuel spends. Queen burns hotter + sootier.
-            let vigor = (queen ? 1.20 : 1.0) * (0.55 + 0.55 * flare + 0.70 * burst)         // ~0.55 … 2.1
-            let e = GPURaymarch.FireEmitter(
-                p0: SIMD4(m.pos.x, 0.02, m.pos.y, baseR),
-                p1: SIMD4(0, 1, 0, tall),
-                p2: SIMD4(vigor, Float(i) * 1.7 + 0.3, 0, queen ? 1 : 0))   // vigor · seed · kind=pyre · smokeBias(Queen sootier)
-            let rel = m.pos - pp
-            pyres.append((rel.x * rel.x + rel.y * rel.y, e))
-        }
-        // keep the jet + the nearest pyres within a tight budget (a mine can ignite
-        // a whole pack; distant columns cull cheaply per ray but needn't be sent)
-        let budget = 16 - out.count
-        if pyres.count > budget { pyres.sort { $0.d < $1.d }; pyres = Array(pyres.prefix(budget)) }
-        out.append(contentsOf: pyres.map { $0.e })
-        return out
+        GPURaymarch.gatherFireEmitters(world)   // shared with the raster fire path (single source of the emitter set)
     }
 
     private func renderFrame(_ world: World, into canvas: Canvas2D) -> Bool {

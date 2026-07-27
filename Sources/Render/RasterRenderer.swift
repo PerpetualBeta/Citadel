@@ -78,6 +78,12 @@ final class RasterRenderer {
     private var vmScratch: [PVert] = []
     private let vmCap = 20_000
     private var nVMVerts = 0
+    // ── volumetric fire + bloom (the raymarcher's fireEmission, run as a full-screen HDR pass) ──
+    private let fireHDR: MTLTexture            // rgba16Float: world + fire composited in HDR
+    private let bloomA, bloomB: MTLTexture     // rgba16Float ping-pong for the bright-pass blur
+    private let firePS, brightPS, blurPS, compositePS: MTLRenderPipelineState
+    private struct FireU { var invVP: simd_float4x4; var eye, camFwd, misc: SIMD4<Float> }
+    private struct Fx { var a: SIMD4<Float> }
 
     // ── M4 creatures: the animated Tripo meshes (reused verbatim from the raymarch path;
     // they reproduce this renderer's camera exactly), composited over the lit world using
@@ -119,10 +125,29 @@ final class RasterRenderer {
             let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: f, width: w, height: h, mipmapped: false)
             td.storageMode = store; td.usage = u; return device.makeTexture(descriptor: td)!
         }
-        self.colTex = tex(.rgba8Unorm, W, H, .shared, [.renderTarget])
+        self.colTex = tex(.rgba8Unorm, W, H, .shared, [.renderTarget, .shaderRead])   // .shaderRead: the fire pass samples it as background
         self.zTex = tex(.depth32Float, W, H, .private, [.renderTarget])
-        self.perpTex = tex(.r32Float, W, H, .shared, [.renderTarget])
+        self.perpTex = tex(.r32Float, W, H, .shared, [.renderTarget, .shaderRead])    // .shaderRead: the fire pass reads it as tmax
         self.perpScratch = [Float](repeating: 1e9, count: W * H)
+        // volumetric fire + bloom — HDR targets + full-screen pipelines
+        self.fireHDR = tex(.rgba16Float, W, H, .private, [.renderTarget, .shaderRead])
+        self.bloomA  = tex(.rgba16Float, W, H, .private, [.renderTarget, .shaderRead])
+        self.bloomB  = tex(.rgba16Float, W, H, .private, [.renderTarget, .shaderRead])
+        guard let flib = try? device.makeLibrary(source: RasterRenderer.fireSrc, options: nil) else {
+            print("RasterRenderer: fire shader compile failed"); return nil
+        }
+        func firePipe(_ frag: String, _ fmt: MTLPixelFormat) -> MTLRenderPipelineState? {
+            let d = MTLRenderPipelineDescriptor()
+            d.vertexFunction = flib.makeFunction(name: "fs_vertex")
+            d.fragmentFunction = flib.makeFunction(name: frag)
+            d.colorAttachments[0].pixelFormat = fmt
+            return try? device.makeRenderPipelineState(descriptor: d)
+        }
+        guard let fps = firePipe("fire_frag", .rgba16Float), let bps = firePipe("bright_frag", .rgba16Float),
+              let blps = firePipe("blur_frag", .rgba16Float), let cps = firePipe("composite_frag", .rgba8Unorm) else {
+            print("RasterRenderer: fire pipeline failed"); return nil
+        }
+        self.firePS = fps; self.brightPS = bps; self.blurPS = blps; self.compositePS = cps
         self.meshQueen = MeshCreature(device: device, kind: .queen)
         self.meshDrone = MeshCreature(device: device, kind: .drone)
         let sd = MTLTextureDescriptor()
@@ -278,6 +303,40 @@ final class RasterRenderer {
             }
             me.endEncoding()
         }
+        // ── VOLUMETRIC FIRE (+ bloom) ── run the raymarcher's fireEmission over the lit world, BEFORE the
+        // gun and the creatures. Reads colTex (background) + perpTex (tmax, so walls occlude it), composites
+        // bg·transmittance + HDR emission into fireHDR, bright-passes + blurs the hot cores, then composites
+        // fire + bloom back into colTex. The gun (pass 2b) and the mesh creatures (CPU) then draw over it —
+        // so a corpse reads over its own pyre, exactly as on the GPU path.
+        let fireEmitters = GPURaymarch.gatherFireEmitters(world)
+        if !fireEmitters.isEmpty {
+            var fu = FireU(invVP: cam.mvp.inverse, eye: SIMD4(eye, world.elapsed),
+                           camFwd: SIMD4(camFwd, 1.0), misc: SIMD4(Float(fireEmitters.count), Float(W), Float(H), 0))
+            var emitters = fireEmitters
+            func fullscreen(_ ps: MTLRenderPipelineState, to target: MTLTexture, _ setup: (MTLRenderCommandEncoder) -> Void) {
+                let rp = MTLRenderPassDescriptor()
+                rp.colorAttachments[0].texture = target; rp.colorAttachments[0].loadAction = .dontCare; rp.colorAttachments[0].storeAction = .store
+                guard let e = cmd.makeRenderCommandEncoder(descriptor: rp) else { return }
+                e.setRenderPipelineState(ps); e.setCullMode(.none); setup(e)
+                e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3); e.endEncoding()
+            }
+            fullscreen(firePS, to: fireHDR) { e in                                   // 1 · fire → HDR
+                e.setFragmentBytes(&fu, length: MemoryLayout<FireU>.stride, index: 0)
+                e.setFragmentBytes(&emitters, length: MemoryLayout<GPURaymarch.FireEmitter>.stride * emitters.count, index: 1)
+                e.setFragmentTexture(colTex, index: 0); e.setFragmentTexture(perpTex, index: 1)
+            }
+            var bx = Fx(a: SIMD4(0, 0, Float(W), Float(H)))                          // 2 · bright-pass → bloomA
+            fullscreen(brightPS, to: bloomA) { e in e.setFragmentBytes(&bx, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(fireHDR, index: 0) }
+            var bh = Fx(a: SIMD4(1.0 / Float(W), 0, Float(W), Float(H)))             // 3 · blur H → bloomB
+            fullscreen(blurPS, to: bloomB) { e in e.setFragmentBytes(&bh, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(bloomA, index: 0) }
+            var bv = Fx(a: SIMD4(0, 1.0 / Float(H), Float(W), Float(H)))             // 4 · blur V → bloomA
+            fullscreen(blurPS, to: bloomA) { e in e.setFragmentBytes(&bv, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(bloomB, index: 0) }
+            var cx = Fx(a: SIMD4(1.15, 0, Float(W), Float(H)))                       // 5 · composite fire + bloom → colTex
+            fullscreen(compositePS, to: colTex) { e in
+                e.setFragmentBytes(&cx, length: MemoryLayout<Fx>.stride, index: 0)
+                e.setFragmentTexture(fireHDR, index: 0); e.setFragmentTexture(bloomA, index: 1)
+            }
+        }
         // pass 2b — the first-person weapon: an always-on-top overlay. SAME PBR shader (so the gun takes the
         // room's sector fill, lamp pools, shadows + emission), but its OWN cleared depth so it self-occludes
         // yet is never occluded by a near wall; it writes a near perp-depth, keeping later creature/particle
@@ -310,6 +369,7 @@ final class RasterRenderer {
         // scene's perp-depth. Read it back ONCE here (shared) if anything needs it; creatures merge
         // first (writing their depth back), then the CPU sprite compositor draws particles + projectile
         // billboards on top, occluded by both the world AND the creatures. ──
+        // (fire is already composited into colTex by the GPU pass above, before the readback)
         let needDepth = !world.monsters.isEmpty || !world.colonists.isEmpty
                      || !world.particles.isEmpty || !world.projectiles.isEmpty
         if needDepth {
@@ -318,7 +378,7 @@ final class RasterRenderer {
             }
         }
         compositeCreatures(world, into: canvas, eye: eye, dir: p.dir, dynLights: dynLights)
-        if !world.particles.isEmpty {
+        if !world.particles.isEmpty {                          // CPU smoke / embers / sparks drift over the flame
             perpScratch.withUnsafeBufferPointer { dp in
                 spriteCompositor.overlayThings(world, into: canvas, depth: dp.baseAddress,
                                                includeProjectiles: false,      // projectiles are emissive orb+streak meshes (buildProps)
@@ -1348,6 +1408,161 @@ final class RasterRenderer {
     }
     """
 
+    // ════════════════════════════════════════════════════════════════════════
+    //  VOLUMETRIC FIRE + BLOOM — the raster path runs the SAME fire the raymarcher
+    //  marches (fireEmission: 3-D turbulence puffs, blackbody temperature, absorbing
+    //  smoke), as a full-screen pass: reconstruct the view ray, take tmax from the
+    //  world's perp-depth so walls occlude it, composite bg·transmittance + emission
+    //  into an HDR target, then bright-pass → blur → additive composite so the
+    //  white-hot cores BLOOM (the LDR frame has no HDR of its own). Same code as the
+    //  GPU → same look.
+    static let fireSrc = """
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct FireEmitter { float4 p0, p1, p2; };
+    struct FireU { float4x4 invVP; float4 eye; float4 camFwd; float4 misc; };   // eye.w=time · camFwd.w=ceilH · misc=(count,W,H,0)
+    struct Fx { float4 a; };                                                    // blur: a=(dirX,dirY,W,H) · composite: a=(bloomGain,0,W,H)
+    struct FSOut { float4 clip [[position]]; };
+
+    // ── ported verbatim from GPURaymarch (the raymarcher's fire) ──
+    static inline float f_hash13(float3 p){ p=fract(p*0.1031); p+=dot(p,p.zyx+31.32); return fract((p.x+p.y)*p.z); }
+    static inline float f_vnoise3(float3 p){
+        float3 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+        float a=f_hash13(i+float3(0,0,0)), b=f_hash13(i+float3(1,0,0));
+        float c=f_hash13(i+float3(0,1,0)), d=f_hash13(i+float3(1,1,0));
+        float e=f_hash13(i+float3(0,0,1)), g=f_hash13(i+float3(1,0,1));
+        float h=f_hash13(i+float3(0,1,1)), k=f_hash13(i+float3(1,1,1));
+        return mix(mix(mix(a,b,f.x),mix(c,d,f.x),f.y), mix(mix(e,g,f.x),mix(h,k,f.x),f.y), f.z);
+    }
+    static inline float f_fbm3(float3 p){ float s=0.0,a=0.5; for(int i=0;i<3;i++){ s+=a*f_vnoise3(p); p*=2.02; a*=0.5; } return s; }
+    static inline float3 f_blackbody(float T){ T=clamp(T,0.0,1.0); return float3(1.90*T, 1.15*T*T*T, 0.35*T*T*T*T*T); }
+
+    static inline float3 fireEmission(float3 ro, float3 rd, float tmax, float ceilH,
+                                      constant FireEmitter* F, int n, float time, thread float& bgTransOut) {
+        float3 acc = float3(0.0);
+        float bgTrans = 1.0;
+        for (int i = 0; i < n; i++) {
+            float3 base = F[i].p0.xyz;  float baseR = F[i].p0.w;
+            float3 flow = F[i].p1.xyz;  float len   = F[i].p1.w;
+            float vigor = F[i].p2.x;    float seed  = F[i].p2.y;
+            bool  jet   = F[i].p2.z > 0.5;  float smokeBias = F[i].p2.w;
+            float3 bc = base + flow * (len * 0.5);
+            float  bR = len * 0.6 + baseR * 2.4 + 0.35;
+            float3 oc = ro - bc; float bq = dot(oc, rd);
+            if (bq * bq - (dot(oc, oc) - bR * bR) <= 0.0) continue;
+            float3 up = fabs(flow.y) < 0.9 ? float3(0,1,0) : float3(1,0,0);
+            float3 e1 = normalize(cross(flow, up));
+            float3 e2 = cross(flow, e1);
+            float fk    = 0.80 + 0.14 * sin(time * 11.0 + seed * 6.3) + 0.10 * sin(time * 27.0 + seed * 15.1);
+            float opac  = clamp(vigor * 0.60, 0.38, 1.0);
+            float bright= clamp(vigor * 0.85, 0.30, 1.6) * fk;
+            int   NP    = jet ? 8 : 10;
+            float rate  = jet ? 2.2 : 0.9;
+            float drift = fract(time * rate);
+            float scr   = jet ? 3.2 : 1.7;
+            float trans = 1.0;
+            float3 localAcc = float3(0.0);
+            for (int k = 0; k < NP; k++) {
+                float age  = (float(k) + drift) / float(NP);
+                float fade = smoothstep(0.0, 0.10, age) * (1.0 - smoothstep(0.86, 1.0, age));
+                if (fade < 0.02) continue;
+                float ph  = seed * 6.3 + float(k) * 1.7;
+                float wob = baseR * (jet ? 0.35 : 0.85) * (0.35 + 1.9 * age);
+                float wa  = sin(age * 5.1 + ph)       + 0.5 * sin(age * 11.7 + ph * 1.7);
+                float wb  = cos(age * 4.3 + ph * 1.3) + 0.5 * sin(age *  9.3 + ph * 0.7);
+                float3 C  = base + flow * (age * len) + (e1 * wa + e2 * wb) * (wob * 0.5);
+                if (!jet) C.y = min(C.y, ceilH - 0.05);
+                float R = jet ? baseR * (0.16 + 1.05 * age) : baseR * (0.45 + 0.75 * age);
+                float3 rel = ro - C;
+                float b2 = dot(rel, rd);
+                float c2 = dot(rel, rel) - R * R;
+                float disc = b2 * b2 - c2;
+                if (disc <= 0.0) continue;
+                float sq = sqrt(disc);
+                float t0 = max(0.0, -b2 - sq);
+                float t1 = min(tmax, -b2 + sq);
+                if (t1 <= t0) continue;
+                float thick = (t1 - t0) / (2.0 * R);
+                float3 sp   = (ro + rd * t0) * 7.0 - flow * (time * scr) + seed * 11.0;
+                float  turb = f_fbm3(sp);
+                float dens = smoothstep(0.05, 0.42, thick - (0.72 - turb) * 0.60) * fade;
+                if (dens < 0.004) continue;
+                float axial = jet ? (1.0 - 0.65 * age) : (smoothstep(0.0, 0.16, age) * (1.0 - 0.75 * age));
+                float heat  = clamp(axial * (0.35 + 0.85 * turb) * (0.50 + 0.65 * thick), 0.0, 1.0);
+                float smokeF= smoothstep(0.42 - 0.14 * smokeBias, 0.88, age);
+                float flameA= dens * opac * (1.0 - smokeF);
+                float smokeA= dens * (0.55 + 0.40 * smokeBias) * smokeF;
+                float3 emis     = f_blackbody(heat) * bright;
+                float3 smokeCol = mix(float3(0.05,0.035,0.028), float3(0.012,0.012,0.013), smokeF);
+                localAcc += emis * (flameA * trans) + smokeCol * (smokeA * trans);
+                trans    *= (1.0 - flameA) * (1.0 - smokeA);
+                if (trans < 0.02) break;
+            }
+            acc += localAcc * bgTrans;
+            bgTrans *= trans;
+        }
+        bgTransOut = bgTrans;
+        return acc * 2.0;
+    }
+
+    vertex FSOut fs_vertex(uint vid [[vertex_id]]) {
+        float2 p[3] = { float2(-1,-1), float2(3,-1), float2(-1,3) };
+        FSOut o; o.clip = float4(p[vid], 0, 1); return o;
+    }
+
+    // FIRE → HDR (bg·transmittance + emission)
+    fragment float4 fire_frag(FSOut in [[stage_in]],
+                              constant FireU& U [[buffer(0)]],
+                              constant FireEmitter* F [[buffer(1)]],
+                              texture2d<float> bgTex [[texture(0)]],
+                              texture2d<float> perpTex [[texture(1)]]) {
+        float2 uv = in.clip.xy / U.misc.yz;                               // pixel → 0..1 (top-left origin)
+        constexpr sampler s(filter::nearest, address::clamp_to_edge);
+        float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);          // Metal NDC: +Y up
+        float4 wf = U.invVP * float4(ndc, 1.0, 1.0); wf /= wf.w;          // far-plane world point
+        float3 ro = U.eye.xyz;
+        float3 rd = normalize(wf.xyz - ro);
+        float perp = perpTex.sample(s, uv).r;
+        float denom = max(1e-3, dot(rd, U.camFwd.xyz));
+        float tmax = perp >= 1e8 ? 1e8 : perp / denom;                   // perp-depth → ray distance
+        float3 bg = bgTex.sample(s, uv).rgb;
+        float bgTrans;
+        float3 emis = fireEmission(ro, rd, tmax, U.camFwd.w, F, int(U.misc.x), U.eye.w, bgTrans);
+        return float4(bg * bgTrans + emis, 1.0);
+    }
+
+    // BRIGHT-PASS — keep only the hot (>threshold) energy that should bloom
+    fragment float4 bright_frag(FSOut in [[stage_in]], constant Fx& X [[buffer(0)]], texture2d<float> src [[texture(0)]]) {
+        float2 uv = in.clip.xy / X.a.zw;
+        constexpr sampler s(filter::linear, address::clamp_to_edge);
+        float3 c = src.sample(s, uv).rgb;
+        return float4(max(c - 0.85, 0.0), 1.0);
+    }
+
+    // separable Gaussian blur (a.xy = texel step)
+    fragment float4 blur_frag(FSOut in [[stage_in]], constant Fx& X [[buffer(0)]], texture2d<float> src [[texture(0)]]) {
+        float2 uv = in.clip.xy / X.a.zw;
+        constexpr sampler s(filter::linear, address::clamp_to_edge);
+        float w[5] = { 0.227027, 0.194595, 0.121622, 0.054054, 0.016216 };
+        float3 acc = src.sample(s, uv).rgb * w[0];
+        for (int i = 1; i < 5; i++) {
+            acc += src.sample(s, uv + X.a.xy * float(i)).rgb * w[i];
+            acc += src.sample(s, uv - X.a.xy * float(i)).rgb * w[i];
+        }
+        return float4(acc, 1.0);
+    }
+
+    // composite HDR fire + bloom → LDR (bg is already ≤1, so no global tonemap — cores clip white, bloom glows)
+    fragment float4 composite_frag(FSOut in [[stage_in]], constant Fx& X [[buffer(0)]],
+                                   texture2d<float> hdr [[texture(0)]], texture2d<float> bloom [[texture(1)]]) {
+        float2 uv = in.clip.xy / X.a.zw;
+        constexpr sampler s(filter::linear, address::clamp_to_edge);
+        float3 c = hdr.sample(s, uv).rgb + X.a.x * bloom.sample(s, uv).rgb;
+        return float4(clamp(c, 0.0, 1.0), 1.0);
+    }
+    """
+
     // ── headless preview (CITADEL_RASTERSHOT=<dir>) ───────────────────────────
     #if CITADEL_HARNESS
     static func shot(outDir: String?) {
@@ -1725,6 +1940,42 @@ final class RasterRenderer {
                     Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-viewmodel-\(w).png"))
                     print("RASTERSHOT: wrote raster-viewmodel-\(w).png (held weapon at \(cx),\(cy))")
                 }
+                break search
+            } }
+        }
+
+        // FIRE check: the volumetric fire (raymarcher's fireEmission), run as a raster HDR pass + bloom.
+        // Two representative shots at a normal viewing distance (~4 cells back, so the eye is OUTSIDE the
+        // plume): a lone burning-corpse PYRE, and the FLAMETHROWER JET. Verify turbulence, blackbody colour,
+        // absorbing smoke and the bloomed hot core — occluded by the world via perp-depth.
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
+            world.colonists = []; world.props = []; world.drums = []
+            let baseMons = world.monsters
+            search: for cy in 8..<(m.h - 4) { for cx in 4..<(m.w - 4) where cx % 4 == 2 && cy % 4 == 2 && op(cx, cy) {
+                guard op(cx, cy - 1), op(cx, cy - 2), op(cx, cy - 3), op(cx, cy - 4), op(cx, cy - 5) else { continue }
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy) + 0.5)
+                world.player.dir = -.pi / 2                                  // look down −Z
+                let fwd = SIMD2<Float>(cosf(world.player.dir), sinf(world.player.dir))
+                // 1 · lone PYRE — a mid-burn DRONE corpse ~4 cells ahead, no jet (NOT the Queen — she burns huge)
+                world.flameJet = World.FlameJet()
+                let dr = baseMons.first(where: { $0.kind == .alien }) ?? baseMons.first
+                if var corpse = dr {
+                    corpse.pos = SIMD2(Float(cx) + 0.5, Float(cy - 4) + 0.5)
+                    corpse.state = .dead; corpse.burn = 0.32; corpse.kind = .alien   // the DRONE caste (not the Queen — she burns huge)
+                    world.monsters = [corpse]
+                }
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-fire-pyre.png"))
+                print("RASTERSHOT: wrote raster-fire-pyre.png (burning corpse ~4 cells ahead at \(cx),\(cy))")
+                // 2 · FLAMETHROWER JET — no corpse, jet fired forward down the room
+                world.monsters = []
+                world.flameJet = World.FlameJet(t: 0.2, nozzle: world.player.pos + fwd * 0.35, dir: fwd, reach: 3.5)
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-fire-jet.png"))
+                print("RASTERSHOT: wrote raster-fire-jet.png (flamethrower jet at \(cx),\(cy))")
                 break search
             } }
         }

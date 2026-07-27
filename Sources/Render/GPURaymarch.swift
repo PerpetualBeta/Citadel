@@ -1865,6 +1865,64 @@ enum GPURaymarch {
 
     /// Fill each shape's enclosing sphere (bnd = centre.xyz + radius) from its
     /// primitive params. The kernel uses it as a cheap LOWER bound on the true
+    /// The frame's FIRE emitters — the flamethrower jet, explosion fireballs and burning-corpse
+    /// pyres — as a single tuned set SHARED by both renderers (the raymarcher marches them as
+    /// volumetric puffs; the raster path draws the same emitters as CPU puff-chains). Encoding:
+    /// p0 = base.xyz + envelope radius · p1 = flow dir.xyz(unit) + length · p2 = vigor, seed, kind
+    /// (1 = jet, 0 = pyre/ball), soot. Budget-capped to the jet + the 16 nearest columns.
+    static func gatherFireEmitters(_ world: World) -> [FireEmitter] {
+        guard FeatureFlags.gpuFire else { return [] }
+        var out: [FireEmitter] = []
+        // ── the flamethrower jet ── flow horizontal down the aim; kind = 1
+        let j = world.flameJet
+        if j.t > 0 {
+            let strength = min(1, j.t / 0.10)
+            let len = max(0.5, j.reach - 0.15)
+            out.append(FireEmitter(
+                p0: SIMD4(j.nozzle.x, 0.5, j.nozzle.y, 0.42),      // nozzle · puff-envelope radius
+                p1: SIMD4(j.dir.x, 0, j.dir.y, len),               // horizontal flow, length clipped at the wall
+                p2: SIMD4(1.9 * strength, 3.1, 1, 0)))             // vigor · seed · kind=jet · smoke=0
+        }
+        func ss(_ a: Float, _ b: Float, _ x: Float) -> Float { let t = max(0, min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t) }
+        // ── explosion fireballs ── drum ruptures + rocket splashes: bloom fast off the flash, die to soot
+        for (k, fb) in world.fireballs.enumerated() {
+            let t = min(1, fb.age / fb.life)
+            let expand = 1 - (1 - t) * (1 - t)
+            let vigor  = 2.2 * (1 - ss(0.40, 1.0, t))
+            if vigor < 0.05 { continue }
+            let br = fb.size * (0.35 + 0.80 * expand)
+            out.append(FireEmitter(
+                p0: SIMD4(fb.pos.x, 0.30, fb.pos.y, br),
+                p1: SIMD4(0, 1, 0, br * 1.4),                      // short column → a rising ball, not a tower
+                p2: SIMD4(vigor, Float(k) * 7.1 + 2.0, 0, fb.soot)))
+        }
+        // ── corpse pyres ── a fuel fire consuming a mass: ignites at once, flares, then dies as the body spends
+        let pp = world.player.pos
+        var pyres: [(d: Float, e: FireEmitter)] = []
+        for (i, m) in world.monsters.enumerated() where m.state == .dead && m.burn > 0 && m.burn < 1 {
+            let b = m.burn
+            let ignite = ss(0, 0.10, b)
+            let decay  = 1 - ss(0.42, 1.0, b)
+            let flare  = ignite * (0.30 + 0.70 * decay)
+            let burst  = (1 - ss(0.0, 0.20, b)) * ignite
+            let queen  = m.kind == .queen
+            let rad = m.def.radius
+            let baseR = rad * (queen ? 1.5 : 1.35) * (0.80 + 0.55 * flare + 0.40 * burst)
+            let tall: Float = (queen ? 1.9 : 1.4) * (0.70 + 0.40 * flare + 0.25 * burst)
+            let vigor = (queen ? 1.20 : 1.0) * (0.55 + 0.55 * flare + 0.70 * burst)
+            let e = FireEmitter(
+                p0: SIMD4(m.pos.x, 0.02, m.pos.y, baseR),
+                p1: SIMD4(0, 1, 0, tall),
+                p2: SIMD4(vigor, Float(i) * 1.7 + 0.3, 0, queen ? 1 : 0))
+            let rel = m.pos - pp
+            pyres.append((rel.x * rel.x + rel.y * rel.y, e))
+        }
+        let budget = 16 - out.count
+        if pyres.count > budget { pyres.sort { $0.d < $1.d }; pyres = Array(pyres.prefix(budget)) }
+        out.append(contentsOf: pyres.map { $0.e })
+        return out
+    }
+
     /// distance so the smin loop can skip shapes that provably can't move the
     /// blend — MUST run on every shape list before it becomes a GPU buffer, or
     /// a zero bnd makes the kernel skip everything (invisible geometry).
