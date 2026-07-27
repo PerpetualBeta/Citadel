@@ -215,8 +215,8 @@ final class World {
     // Solid-collision boxes for the furniture, built once at level load (oriented to
     // each piece, flush-matched to where it renders). Static — pure-CPU, no per-frame
     // rebuild and nothing on the GPU, so collision never touches the thermal budget.
-    private struct PropBox { let c: SIMD2<Float>; let hw, hd, boundR: Float; let tangent, inward: SIMD2<Float> }
-    private var propColliders: [PropBox] = []
+    struct PropBox { let c: SIMD2<Float>; let hw, hd, boundR: Float; let tangent, inward: SIMD2<Float> }
+    private(set) var propColliders: [PropBox] = []   // exposed read-only: the mesh-creature pose-resolve clears drones off furniture too
 
     // resource-prop tuning — one table so balancing lives in one place
     private let drumFuel = 150               // flamethrower fuel a full drum holds

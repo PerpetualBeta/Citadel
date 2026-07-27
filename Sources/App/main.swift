@@ -544,6 +544,34 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_RASTERSHOT"] {
     exit(0)
 }
 
+// CITADEL_DORMDEBUG → dump a few generated levels as ASCII (walls #, doors +, floor ·,
+// bunk B, locker L, column I, desk d, chair c, tape T, papers p, pipe =) to eyeball the
+// dormitory layout algorithm (row alternation, centre rows, columns, clear aisles). No GUI.
+if ProcessInfo.processInfo.environment["CITADEL_DORMDEBUG"] != nil {
+    for lvl in [1, 2, 3, 4] {
+        let g = MapGen.generate(level: lvl, colonyIndex: 0, seed: UInt64(lvl &* 2654435761 &+ 12345))
+        let m = g.map
+        var grid = [[Character]](repeating: [Character](repeating: " ", count: m.w), count: m.h)
+        for y in 0..<m.h { for x in 0..<m.w {
+            let i = m.idx(x, y)
+            grid[y][x] = m.wall[i] != 0 ? (m.doors[i] != nil ? "+" : "#") : "·"
+        } }
+        for pr in g.props {
+            let x = Int(pr.pos.x), y = Int(pr.pos.y)
+            guard x >= 0, y >= 0, y < m.h, x < m.w else { continue }
+            switch pr.kind {
+            case .bunk: grid[y][x] = "B"; case .locker: grid[y][x] = "L"; case .column: grid[y][x] = "I"
+            case .desk: grid[y][x] = "d"; case .chair: grid[y][x] = "c"; case .tapeDeck: grid[y][x] = "T"
+            case .papers: grid[y][x] = "p"; case .wallPipe: grid[y][x] = "="
+            }
+        }
+        print("=== LEVEL \(lvl)  \(m.w)x\(m.h)  props=\(g.props.count) items=\(g.items.count) drums=\(g.drums.count) ===")
+        for row in grid { print(String(row)) }
+        print("")
+    }
+    exit(0)
+}
+
 if let v = ProcessInfo.processInfo.environment["CITADEL_DISPLAYVID"] {
     let fault = v.hasPrefix("fault")                          // "fault" or "fault:<dir>" stages an electrical fault mid-clip
     let path = v.hasPrefix("fault:") ? String(v.dropFirst(6))

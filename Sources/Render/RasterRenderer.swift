@@ -85,6 +85,8 @@ final class RasterRenderer {
     private let spriteCompositor = SpriteCompositor()   // M5: CPU billboards/particles (gibs/sparks/smoke/ash + projectiles) over the frame
     private var bedMesh: [PVert]?                        // imported Institutional Bed (bed.obj) → local-space PVerts, centred on XZ, base at y=0
     private var bedTried = false
+    private var bedHalfLen: Float = 0                    // half-extent along the bed's LENGTH axis (game X), unscaled — for flush seating
+    private let bedScale: Float = 0.55                   // ~0.90 m tall (1.63·0.55) → fits under the y=1 ceiling
 
     init?(device: MTLDevice) {
         guard let queue = device.makeCommandQueue() else { return nil }
@@ -365,7 +367,8 @@ final class RasterRenderer {
                                                   sector: WorldLight.lightAt(world.map, m.pos.x, m.pos.y))
                 }
                 md.compositeDrones(into: canvas, depth: depth, eye: eye, camDir: dir, instances: insts,
-                                   lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
+                                   lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH), map: world.map,
+                                   props: world.propColliders)
             }
         }
     }
@@ -770,9 +773,19 @@ final class RasterRenderer {
         var lo = pos[0], hi = pos[0]
         for p in pos { lo = simd_min(lo, p); hi = simd_max(hi, p) }
         let ctr = SIMD3<Float>((lo.x + hi.x) * 0.5, lo.y, (lo.z + hi.z) * 0.5)   // centre XZ, floor to y=0
-        let split = lo.y + (hi.y - lo.y) * 0.55                                  // below = steel frame · above = pale mattress
-        let frame = Mat(a: SIMD3(0.26, 0.28, 0.32), r: 0.38, m: 0.70, e: .zero)   // dark steel frame/legs (reads as metal, not washed)
-        let sheet = Mat(a: SIMD3(0.66, 0.70, 0.74), r: 0.78, m: 0.02, e: .zero)   // pale institutional mattress/sheet
+        bedHalfLen = (hi.x - lo.x) * 0.5                                         // length axis = game X (the long footprint) → flush seating
+        let H = max(1e-4, hi.y - lo.y)                                           // total bunk height (two tiers)
+        let frame   = Mat(a: SIMD3(0.26, 0.28, 0.32), r: 0.38, m: 0.70, e: .zero)   // dark steel frame/legs (reads as metal, not washed)
+        let bedding = Mat(a: SIMD3(0.19, 0.32, 0.58), r: 0.90, m: 0.0,  e: .zero)    // institutional BLUE blanket — matte wool, the mesh's authored colour
+        // No materials in the OBJ, so tell blanket from frame by geometry: the two mattress SLABS sit in
+        // known height bands (lower ≈0.24–0.42, upper ≈0.71–0.90 of the bunk height — measured from the
+        // mesh) and read as roughly-HORIZONTAL top surfaces; a face there is bedding (blue), everything
+        // else (legs, rails, end-frames — vertical, or outside the bands) is steel.
+        func isBedding(_ y: Float, _ ny: Float) -> Bool {
+            let h = (y - lo.y) / H
+            let inBand = (h > 0.24 && h < 0.42) || (h > 0.71 && h < 0.90)
+            return inBand && abs(ny) > 0.45
+        }
         func vert(_ p: SIMD3<Float>, _ n: SIMD3<Float>, _ m: Mat) -> PVert {
             PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
                   ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z)
@@ -781,7 +794,7 @@ final class RasterRenderer {
         for (a, b, c) in tris where a >= 0 && b >= 0 && c >= 0 && a < pos.count && b < pos.count && c < pos.count {
             let pa = pos[a] - ctr, pb = pos[b] - ctr, pc = pos[c] - ctr
             var n = simd_cross(pb - pa, pc - pa); let l = simd_length(n); n = l > 1e-6 ? n / l : SIMD3(0, 1, 0)
-            let m = ((pa.y + pb.y + pc.y) / 3 + ctr.y) < split ? frame : sheet
+            let m = isBedding((pa.y + pb.y + pc.y) / 3 + ctr.y, n.y) ? bedding : frame
             out += [vert(pa, n, m), vert(pb, n, m), vert(pc, n, m)]
         }
         bedMesh = out
@@ -841,7 +854,16 @@ final class RasterRenderer {
             // BEDS: the imported Institutional Bed MESH replaces the SDF platform bunk (yaw +90° so the
             // bed's length runs along the prop's local Z, head at the wall like the old bunk).
             if pr.kind == .bunk, let bed = loadBed() {
-                emitMesh(bed, pos: pr.pos, yaw: pr.yaw + .pi / 2, scale: 0.55, into: &v)   // ~0.90 m tall (1.63·0.55) → fits under the y=1 ceiling
+                // The bed's LENGTH runs along the prop's local Z after +90°; the extra +180° puts the
+                // PILLOW/head at the wall (it was reversed). For a wall bunk, seat the frame FLUSH: the
+                // mesh is centred, so push it into the room by (halfLen−0.5) so its head face meets the
+                // wall face instead of burying the rear of the frame behind it.
+                var seat = pr.pos
+                if pr.againstWall {
+                    let inward = SIMD2<Float>(-sinf(pr.yaw), cosf(pr.yaw))          // yawFor⁻¹: the into-room direction
+                    seat += inward * max(0, bedHalfLen * bedScale - 0.5)
+                }
+                emitMesh(bed, pos: seat, yaw: pr.yaw + .pi / 2 + .pi, scale: bedScale, into: &v)
                 continue
             }
             var sl: [GPURaymarch.GShape]
@@ -1437,6 +1459,81 @@ final class RasterRenderer {
             } }
         }
 
+        // SNOUT-INTO-WALL repro (Jonathan 2026-07-26): the drone FACES a wall so its long snout pokes
+        // straight INTO it. The body push-out clears the lateral footprint but NOT the forward snout
+        // reach, so this is the case still broken — the snout enters the wall and the backstop clip saws
+        // it. Framed side-on so the snout crossing the wall face reads clearly. THE repro to fix.
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
+            func solid(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] != 0 && m.doors[m.idx(x, y)] == nil }
+            search: for cy in 4..<(m.h - 4) { for cx in 5..<(m.w - 4)
+                where op(cx, cy) && solid(cx - 1, cy) {                       // open cell, SOLID west neighbour (wall face at x = cx)
+                guard op(cx + 1, cy), op(cx + 2, cy), op(cx, cy + 1), op(cx + 1, cy + 1), op(cx + 1, cy + 2) else { continue }
+                var drone = Monster(kind: .alien, pos: SIMD2(Float(cx) + 0.5, Float(cy) + 0.5))
+                drone.dir = .pi; drone.state = .chase                        // face WEST → the snout drives into the west wall
+                world.monsters = [drone]; world.props = []; world.drums = []; world.items = []; world.sockets = []
+                world.player.pos = SIMD2(Float(cx + 2) + 0.5, Float(cy + 2) + 0.5)                        // SE of the drone
+                world.player.dir = atan2(Float(cy) - Float(cy + 2), Float(cx) - Float(cx + 2))            // face NW toward drone + west wall
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-snoutmerge.png"))
+                print("RASTERSHOT: wrote raster-snoutmerge.png (drone snout into west wall at \(cx),\(cy))")
+                break search
+            } }
+        }
+
+        // SNOUT-DEEP repro: a drone pressed HARD against a wall it faces dead-on, framed CLOSE and side-on
+        // so the snout↔wall meeting fills the frame (the point-blank case Jonathan sees). Stress-tests the
+        // conform at the deepest realistic penetration — the snout must mold onto the face, not spear through.
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
+            func solid(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] != 0 && m.doors[m.idx(x, y)] == nil }
+            search: for cy in 4..<(m.h - 4) { for cx in 5..<(m.w - 4)
+                where op(cx, cy) && solid(cx - 1, cy) {                       // west wall face at x = cx
+                guard op(cx, cy + 1), op(cx, cy + 2), op(cx + 1, cy), op(cx + 1, cy + 1), op(cx + 1, cy + 2) else { continue }
+                var drone = Monster(kind: .alien, pos: SIMD2(Float(cx) + 0.1, Float(cy) + 0.5))   // jammed at the wall
+                drone.dir = .pi; drone.rearAmt = 0; drone.state = .chase                          // face WEST dead-on, snout low + forward
+                world.monsters = [drone]; world.props = []; world.drums = []; world.items = []; world.sockets = []
+                world.player.pos = SIMD2(Float(cx) + 0.9, Float(cy + 2) + 0.4)                    // CLOSE, just south-east
+                world.player.dir = atan2(Float(cy) + 0.3 - (Float(cy + 2) + 0.4), Float(cx) - 0.15 - (Float(cx) + 0.9))   // aim at the snout/wall corner
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-snoutdeep.png"))
+                print("RASTERSHOT: wrote raster-snoutdeep.png (drone jammed at west wall at \(cx),\(cy))")
+                break search
+            } }
+        }
+
+        // POCKET repro (Jonathan 2026-07-26): a drone cornered in a 1-wide DEAD-END (walls N, E, W; open S)
+        // facing the back wall. Push-out can only shove it SOUTH, so the long snout stays JAMMED inside the
+        // north wall — the head-genuinely-inside case the open-room repros couldn't force. Camera behind, as
+        // in-game. THE test that the planar clip culls the in-wall snout cleanly (flat cut, no distortion).
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
+            func solid(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] != 0 && m.doors[m.idx(x, y)] == nil }
+            _ = solid   // (pocket is constructed below, not searched for)
+            search: for cy in 6..<(m.h - 6) { for cx in 5..<(m.w - 5)
+                where cx % 4 == 2 && cy % 4 == 2 && op(cx, cy) {
+                guard op(cx, cy + 1), op(cx, cy + 2), op(cx, cy + 3) else { continue }               // open run to the south
+                m.wall[m.idx(cx, cy - 1)] = WallTex.steelPanel.rawValue                               // CONSTRUCT a 1-wide dead-end:
+                m.wall[m.idx(cx - 1, cy)] = WallTex.steelPanel.rawValue                               //   back (N) + sides (E, W)
+                m.wall[m.idx(cx + 1, cy)] = WallTex.steelPanel.rawValue
+                var drone = Monster(kind: .alien, pos: SIMD2(Float(cx) + 0.5, Float(cy) + 0.3))
+                drone.dir = -.pi / 2; drone.rearAmt = 0; drone.state = .chase                         // face NORTH into the dead-end
+                world.monsters = [drone]; world.props = []; world.drums = []; world.items = []; world.sockets = []
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy + 3) + 0.5)                        // BEHIND the drone
+                world.player.dir = -.pi / 2
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-conformwarp.png"))
+                print("RASTERSHOT: wrote raster-conformwarp.png (drone jammed in a pocket at \(cx),\(cy))")
+                break search
+            } }
+        }
+
         // EFFECTS check (M5): spawn fire + spark + smoke particles and a plasma bolt in front of the
         // camera and confirm the CPU sprite compositor draws them over the lit world, depth-occluded.
         do {
@@ -1648,6 +1745,44 @@ final class RasterRenderer {
             } else {
                 print("RASTERSHOT: elevator check skipped (no exit-cell door)")
             }
+        }
+
+        // DORMITORY check: generate levels until one has a dorm (a bunk cluster), then frame the hall
+        // from one end looking down it — verify the locker-bunk wall rows, centre rows, riveted columns,
+        // flush/perpendicular bunks, plain walls, and the clear central aisle a body can walk.
+        do {
+            var done = false
+            for seed in [UInt64(3), 7, 12, 21, 33, 44, 58] where !done {
+                let world = World(level: 1, colonyIndex: 0, seed: seed)
+                let m = world.map
+                let bunks = world.props.filter { $0.kind == .bunk }
+                guard bunks.count >= 8 else { continue }
+                var lo = bunks[0].pos, hi = bunks[0].pos
+                for b in bunks { lo = simd_min(lo, b.pos); hi = simd_max(hi, b.pos) }
+                let alongX = (hi.x - lo.x) >= (hi.y - lo.y)
+                func openAt(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+                let colCells = Set(world.props.filter { $0.kind == .column }.map { m.idx(Int($0.pos.x), Int($0.pos.y)) })
+                var opens: [SIMD2<Float>] = []
+                for y in (Int(lo.y) - 4)...(Int(hi.y) + 4) { for x in (Int(lo.x) - 4)...(Int(hi.x) + 4) where openAt(x, y) && !colCells.contains(m.idx(x, y)) {
+                    opens.append(SIMD2(Float(x) + 0.5, Float(y) + 0.5))
+                } }
+                guard !opens.isEmpty else { continue }
+                // stand INSIDE the hall near one end, offset into a side aisle (off the centre line so a
+                // column isn't point-blank), looking down the long axis — sees the rows receding + columns.
+                let mid: Float = alongX ? (lo.y + hi.y) * 0.5 : (lo.x + hi.x) * 0.5
+                let aisleOff: Float = (alongX ? (hi.y - lo.y) : (hi.x - lo.x)) * 0.32
+                let stand = alongX ? SIMD2(lo.x + 0.5, mid - aisleOff) : SIMD2(mid - aisleOff, lo.y + 0.5)
+                let far   = alongX ? SIMD2(hi.x + 1, mid) : SIMD2(mid, hi.y + 1)
+                let cam = opens.min(by: { simd_distance($0, stand) < simd_distance($1, stand) })!
+                world.monsters = []                 // a dorm can be the Queen's lair — clear it so nothing blocks the view
+                world.player.pos = cam
+                world.player.dir = atan2(far.y - cam.y, far.x - cam.x)
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-dorm.png"))
+                print("RASTERSHOT: wrote raster-dorm.png (dormitory, seed \(seed), \(bunks.count) bunks)")
+                done = true
+            }
+            if !done { print("RASTERSHOT: dorm check found no dormitory in the sampled seeds") }
         }
     }
     #endif

@@ -2212,7 +2212,7 @@ enum GPURaymarch {
         let d: Float = 0.0025
         switch kind {
         case .bunk:                                            // barracks bunk (platform bed) — pillow at the wall (−Z)
-            let mat = SIMD3<Float>(0.34, 0.37, 0.32), blanket = SIMD3<Float>(0.36, 0.25, 0.17)
+            let mat = SIMD3<Float>(0.34, 0.37, 0.32), blanket = SIMD3<Float>(0.19, 0.32, 0.58)   // institutional BLUE blanket (matches the raster bed)
             let pillow = SIMD3<Float>(0.60, 0.58, 0.52)
             let hl: Float = 0.42, hw: Float = 0.20
             // Lean (5 shapes, no separate legs) — every shape is re-evaluated for any
@@ -2261,6 +2261,14 @@ enum GPURaymarch {
             // path, glowing VU meters, status LEDs, and two warning placards. The
             // spoke-windows are spun by packProps when the deck is playing.
             return tapeDeckShapes(spin: 0, playing: false)
+        case .column:                                          // riveted-steel structural column, floor → ceiling (y 0…1)
+            // A slender ROUND steel post with a proud base plinth and a capital that meets the
+            // roof; the steel's baked relief/rivet grain does the "riveted" read. Free-standing
+            // (placed with againstWall=false), so no flushToWall shove. Kept to 3 cylinders.
+            let r: Float = 0.11                                                                       // slender round shaft
+            return [iCylinder(SIMD3(0, 0.5, 0),  r: r,        halfH: 0.5,  round: 0.01, steel, 0.01), // shaft
+                    iCylinder(SIMD3(0, 0.05, 0), r: r + 0.06, halfH: 0.05, round: 0.01, darkM, 0.008),// base plinth
+                    iCylinder(SIMD3(0, 0.95, 0), r: r + 0.06, halfH: 0.05, round: 0.01, darkM, 0.008)]// capital (meets the ceiling)
         case .wallPipe:
             return pipeRunShapes(length: 1)                    // length comes from the Prop at pack time
         }

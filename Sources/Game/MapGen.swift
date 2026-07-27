@@ -62,6 +62,21 @@ enum MapGen {
 
     private struct Room { let x, y, w, h: Int; var cx: Int { x + w / 2 }; var cy: Int { y + h / 2 } }
 
+    // ── DORMITORIES ── large chambers become dedicated sleeping halls: bunk+locker rows
+    // down the long walls, centre rows when wide, riveted-steel columns, plain concrete,
+    // and nothing else (no pickups / drums / fixtures / elevators). Beds appear ONLY here.
+    // Tunables (no blind magic numbers — placement derives from these):
+    static let dormMinDim = 6            // both dims ≥ this → a dormitory
+    static let dormSingleRowMinInterior = 3   // interior depth (span−2) ≥ this → one centre row
+    static let dormDoubleRowMinInterior = 6   // ≥ this → two centre rows, head-to-head
+    static let dormColumnStride = 4      // riveted-steel columns every N cells along a big hall
+    /// A room is a DORMITORY iff it's large enough and is neither the start room (arrival
+    /// elevator) nor the exit room (exit elevator/teleporter) — so no elevator ever sits in a
+    /// dorm. The Queen may still lair in one. `roomCount-1` is the exit room (see attemptGen).
+    private static func isDormitory(_ r: Room, _ ri: Int, _ roomCount: Int) -> Bool {
+        min(r.w, r.h) >= dormMinDim && ri != 0 && ri != roomCount - 1
+    }
+
     static func generate(level: Int, colonyIndex: Int, seed: UInt64) -> GeneratedLevel {
         for attempt in 0..<16 {
             if let g = attemptGen(level: level, colonyIndex: colonyIndex,
@@ -128,9 +143,19 @@ enum MapGen {
         var tries = 0
         while rooms.count < target && tries < 300 {
             tries += 1
-            // hewn out of the bedrock — chambers, not aircraft hangars. A few run a
-            // little longer (rng skews small), but nothing cavernous.
-            let rw = rng.i(4, rng.chance(0.3) ? 7 : 6), rh = rng.i(4, rng.chance(0.3) ? 7 : 6)
+            // hewn out of the bedrock — chambers, not aircraft hangars. The start room
+            // (rooms[0]) stays a modest chamber (it carries the arrival elevator, never a
+            // dorm); other rooms roll a DORM HALL ~40% of the time — big enough for bunk rows
+            // down the long walls plus a centre aisle (and, when wide, columns + double rows).
+            let rw: Int, rh: Int
+            if rooms.isEmpty {
+                rw = rng.i(4, 6); rh = rng.i(4, 6)
+            } else if rng.chance(0.4) {
+                let hi = min(11, size - 6)
+                rw = rng.i(8, max(8, hi)); rh = rng.i(8, max(8, hi))
+            } else {
+                rw = rng.i(4, rng.chance(0.3) ? 7 : 6); rh = rng.i(4, rng.chance(0.3) ? 7 : 6)
+            }
             let rx = rng.i(2, size - rw - 2), ry = rng.i(2, size - rh - 2)
             let cand = Room(x: rx, y: ry, w: rw, h: rh)
             // reject overlap (with 1-cell margin)
@@ -277,16 +302,20 @@ enum MapGen {
                 map.doors[cell] = DoorState(locked: color)
                 map.wall[cell] = color.doorTex.rawValue
                 lockedDoors[cell] = color
-                // place the key in a room on the near side (index < gIdx room)
-                let keyRoomIdx = rng.i(0, gIdx - 1)
+                // place the key in a room on the near side (index < gIdx room) — prefer a
+                // NON-dorm room (no pickups in dorms), but fall back to any if that's all there is
+                // (solvability outranks the dorm-cleanliness rule).
+                let nearCands = (0..<gIdx).filter { !isDormitory(rooms[$0], $0, rooms.count) }
+                let keyRoomIdx = nearCands.isEmpty ? rng.i(0, gIdx - 1) : nearCands[rng.i(0, nearCands.count - 1)]
                 let kr = rooms[keyRoomIdx]
                 let kc = map.idx(kr.x + rng.i(1, max(1, kr.w - 2)), kr.y + rng.i(1, max(1, kr.h - 2)))
                 keyCells[color] = kc
             }
         }
 
-        // ── hazard pools ──
-        for r in rooms.dropFirst() where rng.chance(0.3) {
+        // ── hazard pools ── never in a dormitory (a sleeping hall isn't a chem sump); the
+        // pool would also demote the room out of dorm-hood, leaving a bare utility box.
+        for (ri, r) in rooms.enumerated().dropFirst() where rng.chance(0.3) && !isDormitory(r, ri, rooms.count) {
             let hw = max(2, r.w - 4), hh = max(2, r.h - 4)
             let hx = r.x + 2, hy = r.y + 2
             for yy in hy..<min(hy + hh, r.y + r.h - 1) {
@@ -373,12 +402,21 @@ enum MapGen {
     private static func retexWalls(_ map: GameMap, rooms: [Room], rng: inout Rng, theme: Theme) {
         // Give each wall cell a texture from the theme based on which room it
         // borders (cheap: nearest room centre). Keeps a world visually cohesive.
+        // DORMITORY walls are the exception: plain concrete only — no lit panels / pipe
+        // runs (theme.walls can include .litPanel / .pipework). Any wall cell bordering a
+        // dorm interior is forced to the theme's PLAIN base wall (walls[0]).
+        var dormBorder = [Bool](repeating: false, count: map.w * map.h)
+        for (ri, r) in rooms.enumerated() where isDormitory(r, ri, rooms.count) {
+            for yy in (r.y - 1)...(r.y + r.h) { for xx in (r.x - 1)...(r.x + r.w) where map.inBounds(xx, yy) {
+                dormBorder[map.idx(xx, yy)] = true
+            } }
+        }
         for y in 0..<map.h { for x in 0..<map.w {
             let i = map.idx(x, y)
             if map.wall[i] == 0 || map.doors[i] != nil { continue }
             // pick by a stable hash so neighbouring walls mostly match
             let pick = (x / 6 + y / 6) % theme.walls.count
-            map.wall[i] = theme.walls[pick].rawValue
+            map.wall[i] = dormBorder[i] ? theme.walls[0].rawValue : theme.walls[pick].rawValue
         }}
         _ = rng
     }
@@ -578,9 +616,12 @@ enum MapGen {
     }
 
     private static func carveSecret(_ map: GameMap, rooms: [Room], rng: inout Rng, theme: Theme) -> (Int, Int)? {
-        // dig a 2-cell closet behind a wall of a random non-start room
+        // dig a 2-cell closet behind a wall of a random non-start, NON-dorm room
+        // (dorms carry no hidden rooms — their walls are plain sleeping-hall concrete)
         for _ in 0..<20 {
-            let r = rooms[rng.i(1, rooms.count - 1)]
+            let ri = rng.i(1, rooms.count - 1)
+            if isDormitory(rooms[ri], ri, rooms.count) { continue }
+            let r = rooms[ri]
             // try the right wall
             let dx = r.x + r.w, dy = r.y + r.h / 2
             if dx + 1 >= map.w - 1 { continue }
@@ -740,6 +781,9 @@ enum MapGen {
         var sockets: [(pos: SIMD2<Float>, yaw: Float)] = []
         var props: [Prop] = []
         let colonists: [Colonist] = []       // room-scatter removed; fuel-store survivors are placed separately (TODO)
+        // dormitories are dedicated sleeping halls: NO pickups, NO fuel drums, NO recharge sockets — just
+        // the bunks/lockers/columns furnished above. Gate every scatter pass by this per-room flag.
+        let dormRoom = rooms.indices.map { isDormitory(rooms[$0], $0, rooms.count) }
 
         func center(_ cell: Int) -> SIMD2<Float> { SIMD2(Float(cell % map.w) + 0.5, Float(cell / map.w) + 0.5) }
         func randCell(in r: Room) -> Int? {
@@ -844,23 +888,31 @@ enum MapGen {
                 }
             }
 
-            // items
-            let lootRolls = rng.i(1, 3)
-            for _ in 0..<lootRolls {
-                guard let p = spot(in: r) else { continue }
-                items.append(ItemSpawn(kind: pickItem(level: level, rng: &rng), pos: p))
+            // items — NEVER in a dormitory (dedicated sleeping halls hold no pickups)
+            if !dormRoom[ri] {
+                let lootRolls = rng.i(1, 3)
+                for _ in 0..<lootRolls {
+                    guard let p = spot(in: r) else { continue }
+                    items.append(ItemSpawn(kind: pickItem(level: level, rng: &rng), pos: p))
+                }
             }
         }
 
+        // pick a random NON-dorm room in [lo, hi] for the deeper caches (no pickups in dorms)
+        func nonDormRoom(_ lo: Int, _ hi: Int) -> Room? {
+            guard lo <= hi else { return nil }
+            let cands = (lo...hi).filter { !dormRoom[$0] }
+            return cands.isEmpty ? nil : rooms[cands[rng.i(0, cands.count - 1)]]
+        }
         // deeper field drops, rare: a crate of mines, then the rocket launcher,
         // then a cell cache to stock up for the Queen
-        if level >= 1, rooms.count > 2, let p = spot(in: rooms[rng.i(2, rooms.count - 1)]) {
+        if level >= 1, rooms.count > 2, let dr = nonDormRoom(2, rooms.count - 1), let p = spot(in: dr) {
             items.append(ItemSpawn(kind: .mineCrate, pos: p))
         }
-        if level >= 2, rooms.count > 3, let p = spot(in: rooms[rng.i(2, rooms.count - 1)]), rng.chance(0.7) {
+        if level >= 2, rooms.count > 3, let dr = nonDormRoom(2, rooms.count - 1), let p = spot(in: dr), rng.chance(0.7) {
             items.append(ItemSpawn(kind: .weaponRocket, pos: p))
         }
-        if level >= 3, rooms.count > 3, let p = spot(in: rooms[rng.i(2, rooms.count - 1)]), rng.chance(0.7) {
+        if level >= 3, rooms.count > 3, let dr = nonDormRoom(2, rooms.count - 1), let p = spot(in: dr), rng.chance(0.7) {
             items.append(ItemSpawn(kind: .ammoCells, pos: p))
         }
 
@@ -895,7 +947,9 @@ enum MapGen {
             // 2. a couple of opportunistic corner barrels out in the level
             for _ in 0..<rng.i(1, 2) {
                 for attempt in 0..<40 {
-                    let r = rooms[rng.i(1, rooms.count - 1)]
+                    let ri = rng.i(1, rooms.count - 1)
+                    if dormRoom[ri] { continue }               // no fuel drums in dormitories
+                    let r = rooms[ri]
                     var p: SIMD2<Float>? = nil
                     if attempt < 28 {                              // prefer free corners
                         let corners = cornerCells(r).filter { freeOf($0, 1.05) && clearOfDoors($0) }
@@ -1016,26 +1070,99 @@ enum MapGen {
             placed.append(slot.pos)
             return true
         }
+        // ── DORMITORY furnishing ── a dedicated sleeping HALL: Locker-Bunk-Locker-Bunk rows down the two
+        // LONG walls (bunks perpendicular, pillow flush to the wall — `againstWall` + flushToWall seat the
+        // frame, no extrusion), centre row(s) when wide (one; or two head-to-head with lockers back-to-back),
+        // riveted-steel columns holding the roof of the big halls, and clear aisles (bunks are ~0.84 long so
+        // they never leave their edge cell → the rows between them are walkable). Beds appear ONLY here.
+        @discardableResult
+        func placeDorm(_ kind: FurnitureKind, _ u: Int, _ v: Int, _ inward: SIMD2<Float>, against: Bool, gap: Float,
+                       horizontal: Bool, _ r: Room, _ ri: Int) -> Bool {
+            let x = horizontal ? r.x + u : r.x + v
+            let y = horizontal ? r.y + v : r.y + u
+            guard map.inBounds(x, y), map.wall[map.idx(x, y)] == 0, map.doors[map.idx(x, y)] == nil,
+                  !map.hazard[map.idx(x, y)], !nearOpening(x, y, ri) else { return false }
+            let p = SIMD2<Float>(Float(x) + 0.5, Float(y) + 0.5)
+            guard freeCell(p, gap) else { return false }
+            props.append(Prop(kind: kind, pos: p, yaw: yawFor(inward), againstWall: against))
+            placed.append(p)
+            return true
+        }
+        // ── STRUCTURAL COLUMNS ── ANY large hall (dormitory OR open room) needs riveted-steel posts
+        // to carry the ceiling; a vast unsupported span reads as unreal. An even grid, inset one cell
+        // from the walls and centred, dodging doorways, the elevator cars, hazard cells and —
+        // deliberately — the overhead lamp cells (a pillar under a light fitting reads as a mistake,
+        // and the raster lamp grid is the single source of truth for where those sit). Run BEFORE
+        // furniture so beds/desks lay out around the posts.
+        func placeColumnAt(_ x0: Int, _ y: Int, _ ri: Int) {
+            let ls = RasterRenderer.lampGridStride, lp = RasterRenderer.lampGridPhase
+            func underLamp(_ cx: Int) -> Bool { cx % ls == lp && y % ls == lp }
+            func ok(_ cx: Int) -> Bool {
+                map.inBounds(cx, y) && map.wall[map.idx(cx, y)] == 0 && map.doors[map.idx(cx, y)] == nil
+                    && !map.hazard[map.idx(cx, y)] && !nearOpening(cx, y, ri) && !MapGen.nearElevator(map, cx, y)
+                    && freeCell(SIMD2(Float(cx) + 0.5, Float(y) + 0.5), 0.9)
+            }
+            // prefer the grid cell; if it lands under a lamp, step one cell aside — never place under a fitting
+            let candidates = underLamp(x0) ? [x0 + 1, x0 - 1] : [x0, x0 + 1, x0 - 1]
+            guard let x = candidates.first(where: { ok($0) && !underLamp($0) }) else { return }
+            let p = SIMD2<Float>(Float(x) + 0.5, Float(y) + 0.5)
+            props.append(Prop(kind: .column, pos: p, yaw: 0, againstWall: false))
+            placed.append(p)
+        }
+        func placeColumns(_ r: Room, _ ri: Int) {
+            let step = MapGen.dormColumnStride
+            func line(_ lo: Int, _ len: Int) -> [Int] {              // grid coords, ≥1-cell inset from walls, centred
+                let a = lo + 1, b = lo + len - 2
+                if b < a { return [] }
+                if b - a < step { return [(a + b) / 2] }             // one central post
+                let n = (b - a) / step
+                let start = a + (b - a - n * step) / 2
+                return (0...n).map { start + $0 * step }
+            }
+            let xs = line(r.x, r.w), ys = line(r.y, r.h)
+            for gy in ys { for gx in xs { placeColumnAt(gx, gy, ri) } }
+        }
+        func furnishDormitory(_ r: Room, _ ri: Int) {
+            let horizontal = r.w >= r.h
+            let T = horizontal ? r.w : r.h          // length along the long walls
+            let P = horizontal ? r.h : r.w          // perpendicular span (wall to wall)
+            func into(_ s: Int) -> SIMD2<Float> { horizontal ? SIMD2(0, Float(s)) : SIMD2(Float(s), 0) }
+            let bunkGap: Float = 1.0, lockGap: Float = 0.85
+            let interior = P - 2                     // rows strictly between the two wall rows
+            func rowKind(_ u: Int) -> FurnitureKind { u % 2 == 0 ? .locker : .bunk }
+            func gapFor(_ k: FurnitureKind) -> Float { k == .bunk ? bunkGap : lockGap }
+            // (columns are placed by placeColumns() in the room loop, before this runs, so the rows skip them)
+            // wall rows — pillow at the wall (inward points INTO the room, so the mesh's −Z pillow faces out)
+            for (wallV, sign) in [(0, 1), (P - 1, -1)] {
+                for u in 0..<T { let k = rowKind(u); placeDorm(k, u, wallV, into(sign), against: true, gap: gapFor(k), horizontal: horizontal, r, ri) }
+            }
+            // centre rows
+            if interior >= MapGen.dormDoubleRowMinInterior {
+                let cvA = P / 2 - 1, cvB = P / 2                                 // adjacent rows straddling the centre
+                for u in 0..<T { let k = rowKind(u)
+                    placeDorm(k, u, cvA, into(-1), against: false, gap: gapFor(k), horizontal: horizontal, r, ri)   // heads toward +v (centre)
+                    placeDorm(k, u, cvB, into(1),  against: false, gap: gapFor(k), horizontal: horizontal, r, ri)   // heads toward −v (centre) → head-to-head, lockers back-to-back
+                }
+            } else if interior >= MapGen.dormSingleRowMinInterior {
+                let cv = P / 2
+                for u in 0..<T { let k = rowKind(u); placeDorm(k, u, cv, into(1), against: false, gap: gapFor(k), horizontal: horizontal, r, ri) }
+            }
+        }
         for (ri, r) in rooms.enumerated() {
-            let slots = wallSlots(r, ri)
             let area = r.w * r.h
             let hazard = roomHasHazard(r)
-            // ── floor furniture against the walls ──
+            // structural support for ANY large hall — dorm, open room, or a large start/exit chamber
+            if min(r.w, r.h) >= MapGen.dormMinDim { placeColumns(r, ri) }
+            // ── DORMITORY: large, hazard-free, not the start/exit room → a dedicated sleeping hall ──
+            if isDormitory(r, ri, rooms.count) && !hazard {
+                furnishDormitory(r, ri)
+                continue
+            }
+            let slots = wallSlots(r, ri)
+            // ── floor furniture against the walls (NON-dorm rooms — never get beds) ──
             if !slots.isEmpty {
                 var used = 0
-                if r.w >= 5 && r.h >= 5 && !hazard {
-                    // BARRACKS: bunks down the walls, each PAIRED with a locker beside
-                    // it — no bed without its locker (a real bunkroom rule).
-                    var i = 0
-                    while i < slots.count && used < 4 {
-                        if placeProp(.bunk, slots[i], gap: 1.0) {
-                            used += 1
-                            if i + 1 < slots.count { placeProp(.locker, slots[i + 1]) }   // the bunk's mate
-                            i += 2
-                        }
-                        i += 1
-                    }
-                } else if area <= 20 {
+                if area <= 20 {
                     // OFFICE: a desk + powered terminal, a chair tucked in front, a
                     // locker. The desk prefers the slot backed by the room's terminal
                     // bank (placeTerminalBanks), so the workstation sits under its CRTs.
@@ -1099,7 +1226,7 @@ enum MapGen {
         // (yaw). Anti-softlock for the plasma-only Queen.
         if rooms.count > 1 {
             var nSock = 0
-            for (ri, r) in rooms.enumerated().dropFirst() where nSock < 2 {
+            for (ri, r) in rooms.enumerated().dropFirst() where nSock < 2 && !dormRoom[ri] {   // no wall panels in a plain-concrete dorm
                 for s in wallSlots(r, ri) where freeCell(s.pos, 1.0) && !featureBacked(s) && !sockets.contains(where: { vlen($0.pos - s.pos) < 3 }) {
                     sockets.append((pos: s.pos, yaw: yawFor(s.inward))); placed.append(s.pos); nSock += 1; break
                 }

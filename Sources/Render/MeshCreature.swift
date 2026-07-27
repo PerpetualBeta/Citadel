@@ -46,6 +46,8 @@ final class MeshCreature {
         float4 anim;        // headYaw, headPitch, breathe, swayPhase
         float4 misc;        // localHeight, tentAmp, armAmp, 0
         float4 tune;        // lightGain, death, 0, 0
+        float4 wall;        // a.xyz = local plane gradient, w = cl : worldSD(lp)=dot(a,lp)-cl
+        float4 wallX;       // x = eased amt (0=inert), y = margin, z = maxPush(fallback), w = 0
     };
     struct VIn  { float3 pos [[attribute(0)]]; float3 nrm [[attribute(1)]]; float2 uv [[attribute(2)]]; };
     struct VOut { float4 clip [[position]]; float3 wpos; float3 wnrm; float2 uv; float fdepth; };
@@ -130,6 +132,9 @@ final class MeshCreature {
         // when trodden (shared ashCollapse; the queen's mound is the biggest).
         float ash = C.tune.w;                    // 0→1 collapse to a mound · 1→2 tread flat
         if (ash > 0.001) lp = ashCollapse(lp, in.pos.xy, ash, 0.30, 0.22, 0.07);
+
+        // (wall intrusion is handled by a CLEAN planar fragment-clip in fmain against C.wall — NOT a
+        // vertex deform: deforming vertices onto the plane distorted the whole head/neck. See fmain.)
 
         float4 lpp = float4(lp, 1.0);
         float4 wp = C.model * lpp;
@@ -239,6 +244,9 @@ final class MeshCreature {
         float ash = C.tune.w;
         if (ash > 0.001) lp = ashCollapse(lp, in.pos.xy, ash, 0.26, 0.18, 0.06);
 
+        // (wall intrusion is handled by a CLEAN planar fragment-clip in fmain against C.wall — NOT a
+        // vertex deform: deforming vertices onto the plane distorted the whole head/neck. See fmain.)
+
         float4 lpp = float4(lp, 1.0);
         float4 wp = C.model * lpp;
         VOut o;
@@ -282,26 +290,15 @@ final class MeshCreature {
                         texture2d<float> wallField [[texture(1)]],
                         constant MLight* lights [[buffer(2)]],
                         constant Cam& C [[buffer(1)]]) {
-        // WALL CLIP — trim the flesh that laps into a wall so an extremity is cut at the
-        // surface instead of poking through (a live drone's reach, or a corpse's head near
-        // a door). A HARD cut sawed limbs into a ragged edge with floating detached stubs
-        // as a creature pressed a wall (reads as "merging into the wall"); instead we DITHER
-        // the discard across a band, so the intruding flesh dissolves into the wall — an
-        // ordered 4×4 Bayer threshold on the pixel coord (no alpha blend, pure discard, so
-        // the shared merge is untouched). (eye.w = map width, fwd.w = map height; 0 in the
-        // warm pass → clip disabled.)
-        if (C.eye.w > 0.5) {
-            constexpr sampler ws(filter::linear, address::clamp_to_edge);
-            float wd = wallField.sample(ws, in.wpos.xz / float2(C.eye.w, C.fwd.w)).r;
-            float a = smoothstep(0.02, 0.24, wd);       // 0 at/inside the wall → 1 well clear of it
-            if (a < 0.999) {
-                const float bayer[16] = { 0.5/16.0,  8.5/16.0,  2.5/16.0, 10.5/16.0,
-                                         12.5/16.0,  4.5/16.0, 14.5/16.0,  6.5/16.0,
-                                          3.5/16.0, 11.5/16.0,  1.5/16.0,  9.5/16.0,
-                                         15.5/16.0,  7.5/16.0, 13.5/16.0,  5.5/16.0 };
-                int2 pp = int2(in.clip.xy) & 3;
-                if (a < bayer[pp.y * 4 + pp.x]) discard_fragment();
-            }
+        // WALL CLIP — a CLEAN planar cull against the EXACT wall face the snout drives into (C.wall =
+        // world plane (n.xyz, D); sd = dot(n,wpos) − D is >0 on the open side, <0 inside the wall). Cull
+        // the flesh behind the face so the head is cut FLAT at the wall surface — it reads as the wall
+        // occluding it. No vertex deform (so no distortion), and one flat plane (so no ragged per-cell
+        // edge like the old distance-field clip). The body is kept on the open side by resolveOutOfWalls,
+        // so only the intruding snout is ever cut. wallX.x = 0 (creature clear of walls) → no clip.
+        if (C.wallX.x > 0.5) {
+            float sd = dot(C.wall.xyz, in.wpos) - C.wall.w;
+            if (sd < 0.0) discard_fragment();
         }
         constexpr sampler s(filter::linear, address::repeat);
         float3 alb = albedo.sample(s, in.uv).rgb;
@@ -391,6 +388,8 @@ final class MeshCreature {
         var anim: SIMD4<Float>
         var misc: SIMD4<Float>
         var tune: SIMD4<Float>
+        var wall: SIMD4<Float>
+        var wallX: SIMD4<Float>
     }
 
     private let device: MTLDevice
@@ -509,7 +508,8 @@ final class MeshCreature {
     private func warm() {
         var cam = Cam(model: matrix_identity_float4x4, mvp: matrix_identity_float4x4,
                       eye: .zero, fwd: SIMD4(0, 0, 1, 0), sector: .zero,
-                      anim: .zero, misc: SIMD4(localHeight, 0, 0, 0), tune: SIMD4(1, 0, 0, 0))
+                      anim: .zero, misc: SIMD4(localHeight, 0, 0, 0), tune: SIMD4(1, 0, 0, 0),
+                      wall: .zero, wallX: .zero)
         let rp = MTLRenderPassDescriptor()
         rp.colorAttachments[0].texture = colTex; rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .dontCare
         rp.colorAttachments[1].texture = depTex; rp.colorAttachments[1].loadAction = .clear; rp.colorAttachments[1].storeAction = .dontCare
@@ -590,6 +590,135 @@ final class MeshCreature {
         return bestA
     }
 
+    /// The mesh's LATERAL half-width in world units at render `height` — its wall
+    /// FOOTPRINT (local Y is the lateral axis of the Z-up mesh; +x is the long snout,
+    /// which points at the player, not into walls). Creatures are rendered pushed out
+    /// of walls by this so their bulk never enters one.
+    func footprintRadius(height: Float) -> Float {
+        let scale = height / localHeight
+        return 0.5 * (bbMax.y - bbMin.y) * scale
+    }
+
+    /// Nudge a RENDER position out of nearby walls so a circle of radius `r` clears them
+    /// — a few relaxation passes over the 3×3 wall neighbourhood, pushing off the nearest
+    /// point of each overlapping wall cell. Render-only: gameplay position is untouched.
+    /// This is the real fix for "creatures merging into walls" (the mesh is far bigger than
+    /// the 0.4-cell collision radius, so its bulk laps walls the body never actually enters);
+    /// the shader wall-clip is now only a thin backstop for a snout that still grazes a face.
+    static func resolveOutOfWalls(_ p: SIMD2<Float>, _ r: Float, _ map: GameMap) -> SIMD2<Float> {
+        guard r > 0.01 else { return p }
+        var pos = p
+        for _ in 0..<4 {
+            var push = SIMD2<Float>(0, 0)
+            let cx = Int(pos.x.rounded(.down)), cy = Int(pos.y.rounded(.down))
+            for oy in -1...1 { for ox in -1...1 {
+                let wx = cx + ox, wy = cy + oy
+                guard map.inBounds(wx, wy), map.wall[map.idx(wx, wy)] != 0, map.doors[map.idx(wx, wy)] == nil else { continue }
+                let nx = min(max(pos.x, Float(wx)), Float(wx + 1))     // nearest point on the wall cell to pos
+                let ny = min(max(pos.y, Float(wy)), Float(wy + 1))
+                let d = pos - SIMD2(nx, ny); let dist = simd_length(d)
+                if dist < r && dist > 1e-4 { push += (d / dist) * (r - dist) }
+            } }
+            if simd_length(push) < 1e-4 { break }
+            pos += push
+        }
+        return pos
+    }
+
+    /// The clear-vector for a single point: push a circle of radius `r` off every nearby wall cell
+    /// AND solid prop box. Nearest-point push for edge overlap; a strictly-INSIDE point is ejected
+    /// through its nearest cell face (the snout can end up wholly inside a wall, where the nearest
+    /// point degenerates). Shared by the capsule pose-resolve below.
+    private static func clearPush(_ p: SIMD2<Float>, _ r: Float, _ map: GameMap, _ props: [World.PropBox]) -> SIMD2<Float> {
+        var push = SIMD2<Float>(0, 0)
+        let cx = Int(p.x.rounded(.down)), cy = Int(p.y.rounded(.down))
+        for oy in -1...1 { for ox in -1...1 {
+            let wx = cx + ox, wy = cy + oy
+            guard map.inBounds(wx, wy), map.wall[map.idx(wx, wy)] != 0, map.doors[map.idx(wx, wy)] == nil else { continue }
+            if wx == cx && wy == cy {                                   // p is INSIDE this solid cell → eject out the nearest face
+                let dl = p.x - Float(wx), dr = Float(wx + 1) - p.x, db = p.y - Float(wy), dt = Float(wy + 1) - p.y
+                let m = min(min(dl, dr), min(db, dt))
+                if      m == dl { push += SIMD2(-(dl + r), 0) }
+                else if m == dr { push += SIMD2(dr + r, 0) }
+                else if m == db { push += SIMD2(0, -(db + r)) }
+                else            { push += SIMD2(0, dt + r) }
+                continue
+            }
+            let nx = min(max(p.x, Float(wx)), Float(wx + 1)), ny = min(max(p.y, Float(wy)), Float(wy + 1))
+            let d = p - SIMD2(nx, ny); let dist = simd_length(d)
+            if dist < r && dist > 1e-4 { push += (d / dist) * (r - dist) }
+        } }
+        for b in props {                                               // furniture — oriented boxes (bed frames, desks, drums, columns)
+            let dc = p - b.c
+            if simd_length(dc) > b.boundR + r { continue }             // broad phase
+            let tx = max(-b.hw, min(b.hw, simd_dot(dc, b.tangent))), ty = max(-b.hd, min(b.hd, simd_dot(dc, b.inward)))
+            let closest = b.c + b.tangent * tx + b.inward * ty
+            let dd = p - closest; let dist = simd_length(dd)
+            if dist < r && dist > 1e-4 { push += (dd / dist) * (r - dist) }
+        }
+        return push
+    }
+
+    /// Nudge a drone's RENDER position so its WHOLE mesh — a capsule swept from tail to snout along
+    /// its facing — clears walls and furniture, rather than only the round trunk. This is the
+    /// no-clip fix: the drone noses UP TO an obstruction and stops, mesh intact, instead of having
+    /// the intruding snout culled (flesh must not simply vanish at a wall). Render-only. The capsule
+    /// radius TAPERS toward the thin snout so the drone slides no further off a wall than it must.
+    static func resolvePoseOutOfSolids(_ pos: SIMD2<Float>, fwd: SIMD2<Float>, r: Float,
+                                       back: Float, front: Float, map: GameMap, props: [World.PropBox]) -> SIMD2<Float> {
+        guard r > 0.01 else { return pos }
+        let dir = simd_length(fwd) > 1e-5 ? simd_normalize(fwd) : SIMD2<Float>(1, 0)
+        var pos = pos
+        let n = 5
+        for _ in 0..<8 {
+            var acc = SIMD2<Float>(0, 0)
+            for i in 0...n {
+                let t = back + (front - back) * Float(i) / Float(n)
+                let taper = t <= 0 ? 1.0 : max(0.4, 1.0 - 0.6 * (t / max(1e-3, front)))   // slim at the snout, full at the trunk
+                acc += clearPush(pos + dir * t, r * taper, map, props)
+            }
+            let push = acc / Float(n + 1)
+            if simd_length(push) < 1e-4 { break }
+            pos += push
+        }
+        return pos
+    }
+
+    /// Build a LOCAL-space wall plane for the vertex conform from an EXACT map.wall face.
+    /// The exact WORLD plane of the wall face the creature's snout is driving into, for a CLEAN planar
+    /// fragment clip (cull the flesh behind it → the head is cut flat at the wall surface, reading as the
+    /// wall occluding it — no deform, so no distortion; one flat plane, so no ragged per-cell field edge).
+    /// Probes `map.wall` along the snout aim; picks the DEEPEST-penetrated axis-aligned cell face. Returns
+    /// (nx, 0, nz, D) with world signed distance sd(p) = dot(n, p) − D (>0 open side, <0 inside the wall),
+    /// and `on` = 1 when a face is near enough to bother clipping, 0 when the creature is clear of walls.
+    private func wallClipPlane(pos: SIMD2<Float>, aimW: SIMD2<Float>,
+                               reach: Float, margin: Float, map: GameMap) -> (SIMD4<Float>, Float) {
+        let dir = simd_length(aimW) > 1e-5 ? simd_normalize(aimW) : SIMD2<Float>(1, 0)
+        var bestSd = Float(1e9); var bestNw = SIMD2<Float>(0, 0); var bestFace: Float = 0; var found = false
+        let steps = 4
+        for i in 0...steps {
+            let p = pos + dir * (reach * Float(i) / Float(steps))
+            let cx = Int(p.x.rounded(.down)), cy = Int(p.y.rounded(.down))
+            for oy in -1...1 { for ox in -1...1 {
+                let wx = cx + ox, wy = cy + oy
+                guard map.inBounds(wx, wy), map.wall[map.idx(wx, wy)] != 0, map.doors[map.idx(wx, wy)] == nil else { continue }
+                let dl = p.x - Float(wx), dr = Float(wx + 1) - p.x, db = p.y - Float(wy), dt = Float(wy + 1) - p.y
+                let m = min(min(dl, dr), min(db, dt))
+                var nw = SIMD2<Float>(0, 0); var face: Float = 0
+                if m == dl { nw = SIMD2(-1, 0); face = Float(wx) }
+                else if m == dr { nw = SIMD2(1, 0); face = Float(wx + 1) }
+                else if m == db { nw = SIMD2(0, -1); face = Float(wy) }
+                else { nw = SIMD2(0, 1); face = Float(wy + 1) }
+                let sd = (nw.x != 0) ? (p.x - face) * nw.x : (p.y - face) * nw.y   // signed dist p->face (- inside)
+                if sd < bestSd { bestSd = sd; bestNw = nw; bestFace = face; found = true }
+            } }
+        }
+        guard found, bestSd < margin else { return (.zero, 0) }     // only when the snout is at / inside the face
+        let nw3 = SIMD3<Float>(bestNw.x, 0, bestNw.y)               // world XZ face normal, pointing to the open side
+        let dWorld = (bestNw.x != 0) ? bestNw.x * bestFace : bestNw.y * bestFace   // nw3 · facePoint
+        return (SIMD4(nw3.x, nw3.y, nw3.z, dWorld), 1)
+    }
+
     /// Draw the creature at `pos` (world x,z; base on the floor). Body faces into the
     /// room (fixed); the head tracks `faceTarget`. `time` drives breathing/sway;
     /// `death` (0…1) slumps/topples/extinguishes her. Live-tunable via defaults.
@@ -632,16 +761,23 @@ final class MeshCreature {
         let sway = time * 1.1 * animSpeed
 
         let scale = height / localHeight
-        let model = Self.T(pos.x, 0, pos.y) * Self.Ry(front0 - body) * Self.S(scale) * Self.Rx(-Float.pi / 2)
+        let rpos = Self.resolveOutOfWalls(pos, footprintRadius(height: height), map)   // clear her body laterally
+        let model = Self.T(rpos.x, 0, rpos.y) * Self.Ry(front0 - body) * Self.S(scale) * Self.Rx(-Float.pi / 2)
         let V = Self.view(eye, right, up, fwd)
         let P = Self.proj(plane: RenderConfig.cameraPlane, horizon: Float(RenderConfig.horizon),
                           W: Float(W), H: Float(H), near: 0.05, far: 64)
         let mvp = P * V * model
+        let margin: Float = 0.06
+        let reach = bbMax.x * scale
+        let aimYaw = body - hs.yaw                       // head-aim world dir (matches the shader's head-track)
+        let aimW = SIMD2<Float>(cos(aimYaw), sin(aimYaw))
+        let (wall, on) = self.wallClipPlane(pos: rpos, aimW: aimW, reach: reach, margin: margin, map: map)
         var cam = Cam(model: model, mvp: mvp,
                       eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(sector, Float(lights.count)),
                       anim: SIMD4(headYaw, headPitch, breathe, sway),
                       misc: SIMD4(localHeight, 0.03 * aliveF, 0.02 * aliveF, time * 8.0 * animSpeed),   // .w = rapid howl-thrash phase
-                      tune: SIMD4(lightGain, deathC, max(0, min(1, burn)), max(0, min(2, ashed))))
+                      tune: SIMD4(lightGain, deathC, max(0, min(1, burn)), max(0, min(2, ashed))),
+                      wall: wall, wallX: SIMD4(on, 0, 0, 0))
 
         let rp = MTLRenderPassDescriptor()
         rp.colorAttachments[0].texture = colTex
@@ -729,7 +865,7 @@ final class MeshCreature {
                       eye: SIMD4(eye, 0), fwd: SIMD4(fwd, 0),   // eye.w = 0 → wall clip disabled
                       sector: SIMD4(0.24, 0.27, 0.34, 0),       // soft ambient fill so shadow sides read
                       anim: .zero, misc: SIMD4(localHeight, 0, 0, 0),
-                      tune: SIMD4(gain, 0, 0, 0))
+                      tune: SIMD4(gain, 0, 0, 0), wall: .zero, wallX: .zero)
 
         let rp = MTLRenderPassDescriptor()
         rp.colorAttachments[0].texture = colTex
@@ -800,11 +936,13 @@ final class MeshCreature {
     func compositeDrones(into canvas: Canvas2D, depth: UnsafeMutablePointer<Float>,
                          eye: SIMD3<Float>, camDir: Float, instances: [DroneInst],
                          lights: [GPURaymarch.GPULight] = [],
-                         wallField: MTLTexture?, mapW: Float, mapH: Float) {
+                         wallField: MTLTexture?, mapW: Float, mapH: Float, map: GameMap? = nil,
+                         props: [World.PropBox] = []) {
         guard !instances.isEmpty else { return }
         let height = Self.f("MeshDroneHeight", 0.90)
         let lightGain = Self.f("MeshDroneLight", 1.9)
         let scale = height / localHeight
+        let clr = footprintRadius(height: height)   // keep the drone's bulk out of walls (render-only)
         let fwd = SIMD3<Float>(cos(camDir), 0, sin(camDir))
         let right = SIMD3<Float>(-sin(camDir), 0, cos(camDir))
         let up = SIMD3<Float>(0, 1, 0)
@@ -834,13 +972,32 @@ final class MeshCreature {
         let nLights = Float(lights.count)
         for (i, vb) in mtk.vertexBuffers.enumerated() { enc.setVertexBuffer(vb.buffer, offset: vb.offset, index: i) }
         for inst in instances {
-            let model = Self.T(inst.pos.x, 0, inst.pos.y) * Self.Ry(front0 - inst.dir) * Self.S(scale) * Self.Rx(-Float.pi / 2)
+            let rot = Self.Ry(front0 - inst.dir) * Self.S(scale) * Self.Rx(-Float.pi / 2)   // orientation only (translation-free)
+            let aimW = SIMD2<Float>(rot.columns.0.x, rot.columns.0.z)                        // world snout axis
+            let alive = inst.death < 0.5 && inst.dissolve < 0.5
+            var rpos = inst.pos
+            var wall = SIMD4<Float>.zero, on: Float = 0
+            if let m = map {
+                if alive {
+                    // LIVE drone: settle the WHOLE mesh (capsule tail→snout) clear of walls + furniture, so it
+                    // noses up to an obstruction whole — NO clip (flesh must never just vanish at a wall).
+                    rpos = Self.resolvePoseOutOfSolids(inst.pos, fwd: aimW, r: clr,
+                                                       back: bbMin.x * scale, front: bbMax.x * scale, map: m, props: props)
+                } else {
+                    // corpse / dissolving: leave it on its own decals (fire/ash/blood); keep the old body-clear + clip
+                    rpos = Self.resolveOutOfWalls(inst.pos, clr, m)
+                    let margin: Float = 0.06
+                    (wall, on) = self.wallClipPlane(pos: rpos, aimW: aimW, reach: bbMax.x * scale, margin: margin, map: m)
+                }
+            }
+            let model = Self.T(rpos.x, 0, rpos.y) * rot
             let mvp = P * V * model
             var cam = Cam(model: model, mvp: mvp,
                           eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(inst.sector, nLights),
                           anim: SIMD4(inst.gait, inst.move, inst.rear, inst.dissolve),
                           misc: SIMD4(localHeight, inst.seed, 0, 0),
-                          tune: SIMD4(lightGain, max(0, min(1, inst.death)), max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))))
+                          tune: SIMD4(lightGain, max(0, min(1, inst.death)), max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))),
+                          wall: wall, wallX: SIMD4(on, 0, 0, 0))
             enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
             enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
             for sm in mtk.submeshes {
@@ -912,7 +1069,8 @@ final class MeshCreature {
                           eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(inst.sector, nLights),
                           anim: .zero,
                           misc: SIMD4(localHeight, inst.seed, 1.0, 0),   // .z = corpse flag (see fmain)
-                          tune: SIMD4(lightGain, 0, max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))))
+                          tune: SIMD4(lightGain, 0, max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))),
+                          wall: .zero, wallX: .zero)
             enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
             enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
             for sm in mtk.submeshes {

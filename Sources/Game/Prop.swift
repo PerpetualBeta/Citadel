@@ -19,6 +19,7 @@ enum FurnitureKind: Int, CaseIterable {
     case wallPipe    // a run of pipes + bracket bolted to a wall (everywhere)
     case papers      // records spilled across the deck in the panic — a flat scatter of sheets (decorative, no collider)
     case tapeDeck    // control-room reel-to-reel recorder — "THE SIGNAL" archive; USE (face it) to play the recording
+    case column      // riveted-steel structural column, floor-to-ceiling — holds up the roof of the big dorm halls (free-standing, SOLID)
 }
 
 struct Prop {

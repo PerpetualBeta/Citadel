@@ -780,7 +780,8 @@ final class GPUWorldRenderer {
             gpuDepth.withUnsafeMutableBufferPointer { dp in
                 md.compositeDrones(into: canvas, depth: dp.baseAddress!, eye: eye, camDir: p.dir, instances: insts,
                                    lights: meshLights,
-                                   wallField: dtTex, mapW: Float(gpuMapW), mapH: Float(gpuMapH))
+                                   wallField: dtTex, mapW: Float(gpuMapW), mapH: Float(gpuMapH), map: world.map,
+                                   props: world.propColliders)
             }
         }
         if !world.particles.isEmpty {
