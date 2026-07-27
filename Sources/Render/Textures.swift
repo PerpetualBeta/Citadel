@@ -27,6 +27,7 @@ enum WallTex: Int, CaseIterable {
     case ironPlate, brushedSteel, steelPanel, litPanel, ribbedSteel, pipework, glass, stone, stoneSteel, computer, hazard
     case doorPanel, doorRed, doorBlue, doorYellow, exitSwitch, doorHazard, elevatorSealed
     case liftWall            // elevator-car lining — a machined steel box (no relief/grime; see MapGen.steelBoxCar)
+    case concrete            // bare cast concrete — fireproof stores (fuel chamber); smooth grey, no steel relief
 }
 enum FlatTex: Int, CaseIterable {
     case concrete = 0, metalFloor, grate, nukage, ceilTech, ceilDark, ceilStone, rock, blood, teleportPad
@@ -346,7 +347,7 @@ final class Textures {
             }}
 
         case .doorPanel: doorBase(&px, s, band: nil, light: rgb(120, 132, 150))
-        case .doorRed: doorBase(&px, s, band: (214, 56, 48), light: rgb(220, 90, 80))
+        case .doorRed: doorBase(&px, s, band: (214, 56, 48), light: rgb(236, 58, 40))       // status lamp: a clear RED (was a washed pink dot)
         case .doorBlue: doorBase(&px, s, band: (66, 110, 226), light: rgb(110, 150, 255))
         case .doorYellow: doorBase(&px, s, band: (226, 196, 56), light: rgb(255, 230, 120))
 
@@ -367,10 +368,10 @@ final class Textures {
                 let o = Int((wear - 0.3) * 40)
                 set(x, y, rgb(128 + o, 106 + o, 28))
             }}
-            for leaf in 0..<2 {                                                    // red warning lamp per leaf
+            for leaf in 0..<2 {                                                    // AMBER warning lamp per leaf (flash added live in the raster door pass)
                 let cx = leaf == 0 ? s / 4 : s * 3 / 4
                 for j in -6...6 { for i in -6...6 where i * i + j * j <= 36 {
-                    set(cx + i, 48 + j, i * i + j * j > 22 ? rgb(60, 22, 20) : rgb(225, 64, 48))
+                    set(cx + i, 48 + j, i * i + j * j > 22 ? rgb(58, 40, 12) : rgb(150, 96, 20))   // dark bezel + dim amber lens (its lit state is the live overlay)
                 }}
             }
 
@@ -398,6 +399,30 @@ final class Textures {
                 if y < s / 24 { v -= 14 }                       // top trim shadow
                 set(x, y, rgb(v, v + 3, v + 8))
             }}
+
+        case .concrete:
+            // bare cast concrete — a fireproof store: smooth neutral grey with faint cloudy
+            // mottling, a coarse grid of form-tie dimples, and thin vertical damp-stains. No
+            // steel, no panelisation, near-zero relief — reads as poured, not built.
+            for y in 0..<s { for x in 0..<s {
+                let n = fbm(Float(x) / 30, Float(y) / 30, 16, 71, 4)
+                var o = Int((n - 0.5) * 26)
+                let stain = vnoise(Float(x) / 9, Float(y) / 60, 32, 73)          // faint vertical damp streaks
+                if stain > 0.72 { o -= Int((stain - 0.72) * 90) }
+                let v = 150 + o
+                set(x, y, rgb(v, v - 2, v - 6))
+            }}
+            let step = max(24, s / 4)
+            for gy in stride(from: step / 2, to: s, by: step) {
+                for gx in stride(from: step / 2, to: s, by: step) {
+                    for j in -2...2 { for i in -2...2 where i * i + j * j <= 4 {
+                        let x = gx + i, y = gy + j
+                        guard x >= 0, x < s, y >= 0, y < s else { continue }
+                        let d = i * i + j * j                                    // recessed tie hole (darker at centre)
+                        set(x, y, rgb(104 + d * 6, 102 + d * 6, 98 + d * 6))
+                    }}
+                }
+            }
         }
         if reliefOn { applyRelief(&px, s, reliefStrength(wall: tex)) }
         return Texture(size: s, pixels: px)
@@ -485,6 +510,7 @@ final class Textures {
         case .hazard: return 0.6
         case .computer: return 0.5           // just the bezels
         case .liftWall: return 0.3           // barely-there brushing — a machined box
+        case .concrete: return 0.25          // poured concrete — near-flat, only the tie dimples catch
         case .glass: return 0.25             // just the frame / mullions
         case .none: return 0
         }

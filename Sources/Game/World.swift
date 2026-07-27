@@ -135,6 +135,9 @@ final class World {
     /// ride (holdRide) extends past this until the floor below is ready.
     static let rideTime: Float = 2.6
     var holdRide = false              // renderer: true while the next floor is still generating
+    /// The floor number the cabin LED indicator shows: the current floor, flipping to the destination
+    /// (one deeper) in the last stretch of the descent — "shows 3, changes to 4 just before we reach 4".
+    var elevatorFloorDisplay: Int { (elevatorPhase == .descending && elevatorT > World.rideTime - 0.45) ? level + 1 : level }
     private var rideRumbleT: Float = 0 // re-arms the winch rumble on an extended ride
     var rideShake: Float = 0          // 0…1 envelope, read by the renderer's camera
     var impactShake: Float = 0        // 0…1 heavy-landing jolt (the Queen's topple), read by the renderer's camera

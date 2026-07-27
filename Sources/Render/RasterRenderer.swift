@@ -1,6 +1,7 @@
 import Foundation
 import Metal
 import simd
+import ModelIO
 
 // ============================================================================
 //  RasterRenderer — the rasterised world renderer
@@ -97,6 +98,8 @@ final class RasterRenderer {
     private let spriteCompositor = SpriteCompositor()   // M5: CPU billboards/particles (gibs/sparks/smoke/ash + projectiles) over the frame
     private var bedMesh: [PVert]?                        // imported Institutional Bed (bed.obj) → local-space PVerts, centred on XZ, base at y=0
     private var bedTried = false
+    private var bulkheadMesh: [PVert]?                   // imported wall bulkhead lamp (bulkhead.usdz) → local PVerts, centred at origin, ~0.3m
+    private var bulkheadTried = false
     private var bedHalfLen: Float = 0                    // half-extent along the bed's LENGTH axis (game X), unscaled — for flush seating
     private let bedScale: Float = 0.55                   // ~0.90 m tall (1.63·0.55) → fits under the y=1 ceiling
 
@@ -208,6 +211,13 @@ final class RasterRenderer {
         // a pure function of `world`, so the same builder the raymarch path uses lights the raster world.
         let dynLights = GPUWorldRenderer.gatherDynLights(world)
         lights.append(contentsOf: dynLights)
+        // fuel-store bulkhead lights — warm, low-wattage, tight radius (the store has no overhead; these light it)
+        for b in fuelBulkheads(world) {
+            lights.append(GPURaymarch.GPULight(posR: SIMD4(b.light.x, 0.56, b.light.y, 1 / (2.2 * 2.2)),
+                                               colI: SIMD4(1.0, 0.72, 0.40, 1.0)))
+        }
+        // NB: the door warning lamps are emissive geometry on the leaves (bloom only) — NO point light here, as the
+        //     raster fixture lights are unshadowed and would leak amber through the closed door into the store.
         if lights.count > 64 { lights = Array(lights.prefix(64)) }
         if lights.isEmpty { lights = [Light(posR: SIMD4(0, -99, 0, 1), colI: SIMD4(0, 0, 0, 0))] }   // dummy so setFragmentBytes has length>0 (dr2>=1 skips it)
         // Shadows: the nearest overhead lamp CELLS select which lamps CAST (the selection may follow
@@ -642,6 +652,7 @@ final class RasterRenderer {
         case .doorHazard:     return M(SIMD3(0.50, 0.44, 0.12), 0.60, 0.35)
         case .elevatorSealed: return M(SIMD3(0.40, 0.42, 0.47), 0.50, 0.60)
         case .liftWall:       return M(SIMD3(0.42, 0.44, 0.49), 0.50, 0.62)
+        case .concrete:       return M(SIMD3(0.52, 0.51, 0.48), 0.92, 0.02)   // matte poured concrete — no metal, no glow
         }
     }
     private func flatMat(_ id: Int) -> Mat {
@@ -917,6 +928,73 @@ final class RasterRenderer {
         face(SIMD3(x0, y0, z0), SIMD3(x1, y0, z0), SIMD3(x1, y0, z1), SIMD3(x0, y0, z1), SIMD3(0, -1, 0))   // −Y bottom
     }
 
+    /// A single flat quad (two triangles), centred at `c`, spanning ±`u` (right) and ±`w` (up), facing `n`.
+    private func emitQuad(_ c: SIMD3<Float>, _ u: SIMD3<Float>, _ w: SIMD3<Float>, _ n: SIMD3<Float>, _ m: Mat, into v: inout [PVert]) {
+        func vert(_ p: SIMD3<Float>) -> PVert {
+            PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
+                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z, tid: -1)
+        }
+        let a = c - u - w, b = c + u - w, cc = c + u + w, dd = c - u + w
+        v += [vert(a), vert(b), vert(cc), vert(a), vert(cc), vert(dd)]
+    }
+
+    /// A flat filled ELLIPSE (triangle-fan), radii `ru`×`rv` in the (u, up) plane, centred at `c`, facing `n`.
+    private func emitEllipse(_ c: SIMD3<Float>, _ u: SIMD3<Float>, _ up: SIMD3<Float>, _ ru: Float, _ rv: Float, _ n: SIMD3<Float>, _ m: Mat, into v: inout [PVert]) {
+        func vert(_ p: SIMD3<Float>) -> PVert {
+            PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
+                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z, tid: -1)
+        }
+        let seg = 20
+        var prev = c + u * ru
+        for i in 1...seg {
+            let a = Float(i) / Float(seg) * 2 * Float.pi
+            let cur = c + u * (cosf(a) * ru) + up * (sinf(a) * rv)
+            v += [vert(c), vert(prev), vert(cur)]; prev = cur
+        }
+    }
+
+    /// A flat DIAMOND (rotated-square) decal — tip up/down/left/right — centred at `c`, facing `n`.
+    private func emitDiamond(_ c: SIMD3<Float>, _ u: SIMD3<Float>, _ up: SIMD3<Float>, _ s: Float, _ n: SIMD3<Float>, _ m: Mat, into v: inout [PVert]) {
+        func vert(_ p: SIMD3<Float>) -> PVert {
+            PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
+                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z, tid: -1)
+        }
+        let top = c + up * s, rgt = c + u * s, bot = c - up * s, lft = c - u * s
+        v += [vert(top), vert(rgt), vert(bot), vert(top), vert(bot), vert(lft)]
+    }
+
+    /// A flame silhouette (fan-triangulated outline) centred at `c`, in the (u, up) plane, facing `n`.
+    private func emitFlame(_ c: SIMD3<Float>, _ u: SIMD3<Float>, _ up: SIMD3<Float>, _ s: Float, _ n: SIMD3<Float>, _ m: Mat, into v: inout [PVert]) {
+        let pts: [SIMD2<Float>] = [                                    // x=across, y=up; a licking flame with a hooked tip
+            SIMD2(0.00, -0.55), SIMD2(0.42, -0.30), SIMD2(0.22, -0.02), SIMD2(0.46, 0.18),
+            SIMD2(0.10, 0.30), SIMD2(0.28, 0.62), SIMD2(0.02, 0.60), SIMD2(0.16, 1.00),
+            SIMD2(-0.18, 0.58), SIMD2(-0.08, 0.24), SIMD2(-0.42, 0.12), SIMD2(-0.14, -0.06), SIMD2(-0.40, -0.34)]
+        func vert(_ p2: SIMD2<Float>) -> PVert {
+            let p = c + u * (p2.x * s) + up * (p2.y * s)
+            return PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
+                         ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z, tid: -1)
+        }
+        var s2 = SIMD2<Float>(0, 0); for p in pts { s2 += p }
+        let ctr = s2 / Float(pts.count)
+        for i in 0..<pts.count { v += [vert(ctr), vert(pts[i]), vert(pts[(i + 1) % pts.count])] }
+    }
+
+    /// A SINGLE oil placard PAINTED on the drum — a yellow warning diamond (dark border + symbol), like a
+    /// real barrel. Billboarded to face the player so the one label always reads; sits flush on the r≈0.155
+    /// body between the rolling hoops. Kept off the drum-weathering flag so the rust doesn't eat it.
+    private func emitDrumLabel(pos: SIMD2<Float>, toward pp: SIMD2<Float>, into v: inout [PVert]) {
+        let border = M(SIMD3(0.06, 0.05, 0.03), 0.6, 0.05)   // dark diamond border
+        let plate  = M(SIMD3(0.80, 0.64, 0.05), 0.6, 0.05)   // hazard yellow (printed, not metal)
+        let mark   = M(SIMD3(0.06, 0.05, 0.03), 0.6, 0.05)   // dark central symbol
+        let rel = pp - pos, dist = simd_length(rel)
+        let f = dist > 1e-4 ? SIMD3<Float>(rel.x / dist, 0, rel.y / dist) : SIMD3<Float>(0, 0, 1)   // face the player
+        let u = SIMD3<Float>(-f.z, 0, f.x), up = SIMD3<Float>(0, 1, 0)
+        let c = SIMD3<Float>(pos.x, 0.235, pos.y) + f * 0.161                                        // between the hoops, proud of the body
+        emitDiamond(c,            u, up, 0.062, f, border, into: &v)
+        emitDiamond(c + f * 0.002, u, up, 0.050, f, plate,  into: &v)
+        emitFlame(c + f * 0.004, u, up, 0.030, f, mark, into: &v)   // flammable flame pictogram
+    }
+
     /// Tessellate a prop's local shapes into `v`, applying the kernel's LOCAL→WORLD
     /// transform inverted: XZ rotation about +yaw, translate to `pos`, drop the lowest
     /// authored point to the floor when `floored` (yOff = loY; wall-pipes/sockets keep
@@ -929,6 +1007,76 @@ final class RasterRenderer {
         let xf: (SIMD3<Float>) -> SIMD3<Float> = { l in SIMD3(pos.x + l.x * cy - l.z * sy, l.y - yOff, pos.y + l.x * sy + l.z * cy) }
         let xn: (SIMD3<Float>) -> SIMD3<Float> = { n in SIMD3(n.x * cy - n.z * sy, n.y, n.x * sy + n.z * cy) }
         for s in shapes { tessShape(s, rough: rough, metal: metal, xf, xn, into: &v) }
+    }
+
+    /// Parse the imported wall-bulkhead lamp (bulkhead.usdz) via ModelIO: walk the USD hierarchy accumulating
+    /// each node's composed transform, collect WORLD-space triangles (skipping the scene backdrop plane),
+    /// recompute flat normals, centre at origin and scale to ~0.34 m. Steel material; cached.
+    private func loadBulkhead() -> [PVert]? {
+        if let m = bulkheadMesh { return m }
+        if bulkheadTried { return nil }
+        bulkheadTried = true
+        guard let url = Bundle.main.url(forResource: "bulkhead", withExtension: "usdz") else {
+            print("RasterRenderer: bulkhead.usdz not found"); return nil
+        }
+        let asset = MDLAsset(url: url)
+        var tris: [(SIMD3<Float>, SIMD3<Float>, SIMD3<Float>)] = []
+        func appendMesh(_ mesh: MDLMesh, _ world: simd_float4x4) {
+            guard let pa = mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributePosition, as: .float3) else { return }
+            let base = pa.dataStart, stride = pa.stride, vc = mesh.vertexCount
+            func pos(_ i: Int) -> SIMD3<Float> {
+                let f = base.advanced(by: i * stride).assumingMemoryBound(to: Float.self)
+                let w = world * SIMD4<Float>(f[0], f[1], f[2], 1); return SIMD3(w.x, w.y, w.z)
+            }
+            for sm in (mesh.submeshes as? [MDLSubmesh] ?? []) {
+                let map = sm.indexBuffer(asIndexType: .uInt32).map()
+                let idx = map.bytes.assumingMemoryBound(to: UInt32.self)
+                var i = 0
+                while i + 2 < sm.indexCount {
+                    let a = Int(idx[i]), b = Int(idx[i + 1]), c = Int(idx[i + 2])
+                    if a < vc, b < vc, c < vc { tris.append((pos(a), pos(b), pos(c))) }
+                    i += 3
+                }
+            }
+        }
+        func walk(_ obj: MDLObject, _ parent: simd_float4x4) {
+            let world = parent * (obj.transform?.matrix ?? matrix_identity_float4x4)
+            if let mesh = obj as? MDLMesh, !mesh.name.lowercased().contains("plane") { appendMesh(mesh, world) }
+            for c in obj.children.objects { walk(c, world) }
+        }
+        for i in 0..<asset.count { walk(asset.object(at: i), matrix_identity_float4x4) }
+        guard !tris.isEmpty else { print("RasterRenderer: bulkhead no triangles"); return nil }
+        var mn = SIMD3<Float>(repeating: 1e18), mx = SIMD3<Float>(repeating: -1e18)
+        for (a, b, c) in tris { for p in [a, b, c] { mn = simd_min(mn, p); mx = simd_max(mx, p) } }
+        let size = mx - mn, ctr = (mn + mx) * 0.5
+        let sc = 0.34 / max(size.x, max(size.y, size.z))
+        let steel = M(SIMD3(0.34, 0.36, 0.40), 0.42, 0.72)
+        func vert(_ p: SIMD3<Float>, _ n: SIMD3<Float>) -> PVert {
+            PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
+                  ar: steel.a.x, ag: steel.a.y, ab: steel.a.z, rough: steel.r, metal: steel.m,
+                  er: steel.e.x, eg: steel.e.y, eb: steel.e.z, tid: -1)
+        }
+        // centre + scale, then ROLL 90° about the depth (Z→room) axis so the lamp's long axis stands VERTICAL
+        func L(_ p: SIMD3<Float>) -> SIMD3<Float> { let q = (p - ctr) * sc; return SIMD3(-q.y, q.x, q.z) }
+        var out: [PVert] = []
+        for (a, b, c) in tris {
+            let la = L(a), lb = L(b), lc = L(c)
+            var n = simd_cross(lb - la, lc - la); let l = simd_length(n); n = l > 1e-6 ? n / l : SIMD3(0, 1, 0)
+            out += [vert(la, n), vert(lb, n), vert(lc, n)]
+        }
+        print("RasterRenderer: bulkhead loaded \(tris.count) tris, world size (\(size.x),\(size.y),\(size.z)), scale \(sc)")
+        bulkheadMesh = out
+        return out
+    }
+
+    /// Emit the imported bulkhead lamp (centred local PVerts) at a wall mount: yaw about +Y, lifted to `height`.
+    private func emitBulkheadMesh(_ mesh: [PVert], pos: SIMD2<Float>, yaw: Float, height: Float, into v: inout [PVert]) {
+        let cy = cosf(yaw), sy = sinf(yaw)
+        for pv in mesh {
+            v.append(PVert(px: pos.x + pv.px * cy - pv.pz * sy, py: pv.py + height, pz: pos.y + pv.px * sy + pv.pz * cy,
+                           nx: pv.nx * cy - pv.nz * sy, ny: pv.ny, nz: pv.nx * sy + pv.nz * cy,
+                           ar: pv.ar, ag: pv.ag, ab: pv.ab, rough: pv.rough, metal: pv.metal, er: pv.er, eg: pv.eg, eb: pv.eb, tid: pv.tid))
+        }
     }
 
     /// A floating PICKUP: like emitProp but UNIFORMLY scaled about its origin, its base
@@ -1013,6 +1161,105 @@ final class RasterRenderer {
         }
     }
 
+    /// The elevator CAR interior — a recessed overhead light and a 7-segment LED floor indicator on the
+    /// car's back wall (opposite the door), for both cars. The digit is world.elevatorFloorDisplay, which
+    /// flips to the destination floor just before the descent arrives. Per-frame (the digit + ride change).
+    private func buildElevatorInterior(_ world: World, into v: inout [PVert]) {
+        let map = world.map
+        let floor = max(0, world.elevatorFloorDisplay)
+        let digits: [Int] = floor >= 10 ? [floor / 10, floor % 10] : [floor % 10]      // one digit for floors 1–9
+        let segMask = [63, 6, 91, 79, 102, 109, 125, 7, 127, 111]                       // 7-seg bitmask per 0–9 (a=1 … g=64)
+        let seg: [(Float, Float, Float, Float)] = [                                     // (u across, w up, halfU, halfW)
+            (0, 0.11, 0.05, 0.013), (0.05, 0.056, 0.013, 0.045), (0.05, -0.056, 0.013, 0.045),
+            (0, -0.11, 0.05, 0.013), (-0.05, -0.056, 0.013, 0.045), (-0.05, 0.056, 0.013, 0.045), (0, 0, 0.05, 0.013)]
+        let lit  = M(SIMD3(0.55, 0.16, 0.03), 0.6, 0.0, SIMD3(2.8, 0.85, 0.12))         // amber LED — emissive, blooms
+        let dark = M(SIMD3(0.014, 0.011, 0.009), 0.75, 0.1)                             // dark LED glass (blacks read black)
+        let lamp = M(SIMD3(0.90, 0.92, 1.00), 0.4, 0.0, SIMD3(2.2, 2.15, 2.0))          // overhead panel — emissive
+        let ledY: Float = 0.80, scale: Float = 0.5                                       // scale: the LED glyph is authored large, shrunk to a realistic ~30 cm digit
+        for cell in [map.exitCell, map.entryCell] where cell >= 0 {
+            let cx = cell % map.w, cy = cell / map.w
+            let ccx = Float(cx) + 0.5, ccz = Float(cy) + 0.5
+            if simd_length(SIMD2(ccx, ccz) - world.player.pos) > 24 { continue }
+            var fdx = 0, fdy = 0
+            for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)]
+                where map.inBounds(cx + dx, cy + dy) && map.wall[map.idx(cx + dx, cy + dy)] == 0 { fdx = dx; fdy = dy; break }
+            if fdx == 0 && fdy == 0 { continue }
+            emitAABB(SIMD3(ccx - 0.26, 0.965, ccz - 0.26), SIMD3(ccx + 0.26, 0.996, ccz + 0.26), lamp, into: &v)   // overhead light
+            // LED on the BACK wall (opposite the door); thin box per lit segment, facing into the car
+            let fixedZ = fdy != 0
+            let back: Float = fixedZ ? (fdy > 0 ? Float(cy) + 0.05 : Float(cy + 1) - 0.05)
+                                     : (fdx > 0 ? Float(cx) + 0.05 : Float(cx + 1) - 0.05)
+            let sign: Float = fixedZ ? Float(fdy) : Float(fdx)
+            // The LED faces the viewer standing in the doorway (looking along −front). With the game basis
+            // forward=(cos,0,sin), right=(−sin,0,cos), that viewer's right is (fdy,0,−fdx) — so glyph +u
+            // (glyph-right) must flip on Z-cars facing −Z and X-cars facing +X, else the digit reads mirrored.
+            let uFlip: Float = fixedZ ? Float(fdy) : Float(-fdx)
+            let tanC: Float = fixedZ ? ccx : ccz
+            func box(_ fc: Float, _ tc: Float, _ y: Float, _ hu: Float, _ hw: Float, _ th: Float, _ m: Mat) {
+                if fixedZ { emitAABB(SIMD3(tc - hu, y - hw, fc - th), SIMD3(tc + hu, y + hw, fc + th), m, into: &v) }
+                else      { emitAABB(SIMD3(fc - th, y - hw, tc - hu), SIMD3(fc + th, y + hw, tc + hu), m, into: &v) }
+            }
+            let span = Float(digits.count)
+            box(back, tanC, ledY, (0.075 * span + 0.03) * scale, 0.16 * scale, 0.02, dark)   // dark backing panel
+            for (k, dig) in digits.enumerated() {
+                let dc = tanC + uFlip * (Float(k) - (span - 1) * 0.5) * 0.16 * scale          // per-digit centre (most-significant on the viewer's left)
+                let mask = segMask[min(9, dig)]
+                for s in 0..<7 where (mask & (1 << s)) != 0 {
+                    box(back + 0.02 * sign, dc + uFlip * seg[s].0 * scale, ledY + seg[s].1 * scale, seg[s].2 * scale, seg[s].3 * scale, 0.012, lit)   // lit segment, proud of the backing
+                }
+            }
+        }
+    }
+
+    /// The fuel store's two wall-mounted BULKHEAD lights: one on each of the chamber's side walls (the walls
+    /// running along its depth), at eye height, facing inward. Returns (mount on the wall, yaw so the dome
+    /// faces the room, dome position for the point light) — shared by the mesh pass and the light pass.
+    private func fuelBulkheads(_ world: World) -> [(pos: SIMD2<Float>, yaw: Float, light: SIMD2<Float>)] {
+        let m = world.map
+        guard !m.fuelStore.isEmpty else { return [] }
+        var dcx = -1, dcy = -1, outX = 0, outY = 0                       // hazard door + outward (door→chamber)
+        outer: for c in m.fuelStore {
+            let cx = c % m.w, cy = c / m.w
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let nx = cx + dx, ny = cy + dy
+                guard m.inBounds(nx, ny) else { continue }
+                let ni = m.idx(nx, ny)
+                if m.doors[ni] != nil, m.wall[ni] == WallTex.doorHazard.rawValue {
+                    dcx = nx; dcy = ny; outX = -dx; outY = -dy; break outer
+                }
+            }
+        }
+        guard dcx >= 0 else { return [] }
+        let doorC = SIMD2<Float>(Float(dcx) + 0.5, Float(dcy) + 0.5)
+        let O = SIMD2<Float>(Float(outX), Float(outY)), P = SIMD2<Float>(Float(outY), Float(outX))   // depth axis, 2-wide axis
+        func mount(_ side: Float) -> (SIMD2<Float>, Float, SIMD2<Float>) {
+            let inward = -side * P                                        // side −1 → −P wall faces +P; side +1 → +P wall faces −P
+            let pos = doorC + O * 1.5 + P * (side < 0 ? -0.5 : 1.5)
+            let yaw = atan2(-inward.x, inward.y)                          // local +Z (dome) → inward
+            return (pos, yaw, pos + inward * 0.16)
+        }
+        return [mount(-1), mount(1)]
+    }
+
+    /// Mount the fuel-store bulkhead light fixtures (procedural marine caged lamp). Their warm glow is added
+    /// as point lights in render(); here we emit the fixture geometry (the dome self-glows via over-bright).
+    private func buildFuelStore(_ world: World, into v: inout [PVert]) {
+        let lamp = loadBulkhead()
+        let glow = M(SIMD3(0.95, 0.82, 0.6), 0.4, 0.0, SIMD3(1.35, 0.95, 0.5))     // warm emissive lens — modest (was blown white), so the steel frame reads
+        for b in fuelBulkheads(world) where simd_length(b.pos - world.player.pos) < 24 {
+            if let lamp {                                                // imported bulkhead mesh (vertical), mounted at eye height
+                emitBulkheadMesh(lamp, pos: b.pos, yaw: b.yaw, height: 0.56, into: &v)
+                // a lit lens — a warm, VERTICAL rounded glow set just inside the cage so the frame stays visible over it
+                let inward = simd_normalize(b.light - b.pos)
+                let n = SIMD3<Float>(inward.x, 0, inward.y), u = SIMD3<Float>(-inward.y, 0, inward.x), up = SIMD3<Float>(0, 1, 0)
+                let c = SIMD3<Float>(b.pos.x, 0.56, b.pos.y) + n * 0.03
+                emitEllipse(c, u, up, 0.045, 0.11, n, glow, into: &v)
+            } else {                                                     // fallback: the procedural caged lamp
+                emitProp(GPURaymarch.bulkheadShapes(), pos: b.pos, yaw: b.yaw, floored: false, rough: 0.5, metal: 0.7, into: &v)
+            }
+        }
+    }
+
     private func buildProps(_ world: World, into v: inout [PVert]) {
         let pp = world.player.pos, dir = world.player.dir
         let fwd = SIMD2<Float>(cosf(dir), sinf(dir))
@@ -1044,16 +1291,48 @@ final class RasterRenderer {
             let tid = Float(dmap.wall[i])
             let t: Float = 0.07                                          // leaf half-thickness (through-axis)
             let fx = Float(cx), fz = Float(cy)
+            // The elevator car AND the fuel store read as the FRONT FACE of a box, not a mid-cell leaf. A
+            // normal door sits at the cell centre (recessed half a cell into the wall) — which read the closed
+            // box as a lit alcove with the doors at its BACK. Push these leaves out to the room-facing boundary
+            // so the box interior (elevator light+LED / fuel-store concrete + drums) sits entirely BEHIND them.
+            let isElevator = (i == dmap.exitCell || i == dmap.entryCell)
+            let isFuelDoor = dmap.wall[i] == WallTex.doorHazard.rawValue
+            let frontFace = isElevator || isFuelDoor
+            var rfx = 0, rfy = 0                                         // room ("front") direction (the fuel store is open on BOTH sides, so exclude the chamber)
+            if frontFace {
+                for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)]
+                    where dmap.inBounds(cx + dx, cy + dy) && dmap.wall[dmap.idx(cx + dx, cy + dy)] == 0
+                       && !(isFuelDoor && dmap.fuelStore.contains(dmap.idx(cx + dx, cy + dy))) { rfx = dx; rfy = dy; break }
+            }
             if slideX {
-                let zc = fz + 0.5
+                let zc = (frontFace && rfy != 0) ? (rfy > 0 ? fz + 1 - t : fz + t) : fz + 0.5
                 emitAABB(SIMD3(fx, 0, zc - t),            SIMD3(fx + halfOpen, 1, zc + t), mat, tid: tid, into: &v)   // left leaf → its jamb
                 emitAABB(SIMD3(fx + 1 - halfOpen, 0, zc - t), SIMD3(fx + 1, 1, zc + t), mat, tid: tid, into: &v)      // right leaf → its jamb
             } else {
-                let xc = fx + 0.5
+                let xc = (frontFace && rfx != 0) ? (rfx > 0 ? fx + 1 - t : fx + t) : fx + 0.5
                 emitAABB(SIMD3(xc - t, 0, fz),            SIMD3(xc + t, 1, fz + halfOpen), mat, tid: tid, into: &v)   // near leaf
                 emitAABB(SIMD3(xc - t, 0, fz + 1 - halfOpen), SIMD3(xc + t, 1, fz + 1), mat, tid: tid, into: &v)      // far leaf
             }
+            // FUEL STORE — a round amber warning lamp on EACH leaf, mounted on the room face so it TRAVELS with
+            // the leaf as the door parts and is occluded from inside the store. Emissive-only (blooms as a lamp);
+            // no point light (raster fixture lights are unshadowed and would leak amber into the sealed store).
+            if isFuelDoor, rfx != 0 || rfy != 0 {
+                let blink = 0.14 + 0.86 * powf(max(0, sinf(Float(world.elapsed) * 3.4)), 0.35)   // a warning beacon's amber pulse
+                let lm = M(SIMD3(0.02, 0.015, 0.005), 0.6, 0.0, SIMD3(7.0, 2.2, 0.15) * blink)   // near-black lens; only the orange-amber glow reads
+                let ly: Float = 0.81, lr: Float = 0.03, up = SIMD3<Float>(0, 1, 0)
+                for lu in [halfOpen * 0.5, 1 - halfOpen * 0.5] {                                  // centre of each leaf → rides it into the jamb as it opens
+                    if slideX {
+                        let zc = rfy > 0 ? fz + 1 - t : fz + t
+                        emitEllipse(SIMD3(fx + lu, ly, zc + Float(rfy) * (t + 0.01)), SIMD3(1, 0, 0), up, lr, lr, SIMD3(0, 0, Float(rfy)), lm, into: &v)
+                    } else {
+                        let xc = rfx > 0 ? fx + 1 - t : fx + t
+                        emitEllipse(SIMD3(xc + Float(rfx) * (t + 0.01), ly, fz + lu), SIMD3(0, 0, 1), up, lr, lr, SIMD3(Float(rfx), 0, 0), lm, into: &v)
+                    }
+                }
+            }
         }
+        buildElevatorInterior(world, into: &v)
+        buildFuelStore(world, into: &v)
         // furniture / fixtures / pipe runs / the reel-to-reel (material: rough painted metal)
         for pr in world.props where visible(pr.pos, 20) {
             // BEDS: the imported Institutional Bed MESH replaces the SDF platform bunk (yaw +90° so the
@@ -1085,10 +1364,15 @@ final class RasterRenderer {
             if pr.againstWall && pr.kind != .wallPipe { rrFlushToWall(&sl) }
             emitProp(sl, pos: pr.pos, yaw: pr.yaw, floored: floored, rough: 0.82, metal: 0.12, into: &v)
         }
-        // fuel drums (red/blue by the same stable cell hash the packer uses)
+        // fuel drums (red/blue by the same stable cell hash the packer uses) — MATTE painted steel, weathered
+        // with rust/grime in the shader (tid=−5, matching the raymarcher), plus flat FLAMMABLE label decals
         for d in world.drums where d.health > 0 && visible(d.pos, 20) {
             let key = Int(d.pos.x.rounded()) &* 73856093 ^ Int(d.pos.y.rounded()) &* 19349663
-            emitProp(GPURaymarch.drumShapes(red: (key & 1) == 0), pos: d.pos, yaw: 0, floored: true, rough: 0.86, metal: 0.20, into: &v)
+            var body: [PVert] = []
+            emitProp(GPURaymarch.drumShapes(red: (key & 1) == 0), pos: d.pos, yaw: 0, floored: true, rough: 0.86, metal: 0.20, into: &body)
+            for i in body.indices { body[i].tid = -5 }        // flag → drum rust/grime weathering in rr_fragment
+            v += body
+            emitDrumLabel(pos: d.pos, toward: pp, into: &v)    // a single painted-on oil diamond (billboarded to the player)
         }
         // recharge sockets (wall-mounted; live charge/depleted readout, kept at chest height)
         for sk in world.sockets where visible(sk.pos, 20) {
@@ -1308,6 +1592,30 @@ final class RasterRenderer {
         float3 T=normalize(abs(gn.y)<0.9?cross(float3(0,1,0),gn):float3(1,0,0)), B=cross(gn,T);
         float3 N=normalize(gn - (tn.y*T+tn.z*B)*0.3);
         float grime=tn.x; rough=clamp(rough+(grime-0.5)*0.32,0.05,1.0); alb *= (0.74+0.48*grime);
+
+        // ── FUEL DRUM weathering (tid≈−5) — a matte, rusted, ribbed industrial barrel, ported from the
+        //    raymarcher's drum branch so raster drums read the same: rolling hoops, mottled rust eating the
+        //    paint, streaks bleeding down, a darker steel lid. (Emitted matte: metal 0.20, rough 0.86.)
+        if(in.tid < -4.5 && in.tid > -5.5){
+            float3 rust = float3(0.30,0.12,0.055), rustDk = float3(0.17,0.07,0.035);
+            float py = in.wp.y;                                                        // barrel stands base≈0, top≈0.45
+            alb = mix(alb, alb*0.5, smoothstep(0.58,0.9,gn.y));                         // darker flat steel lid
+            alb *= mix(0.62, 1.0, smoothstep(0.0,0.13,py));                             // grime pooled at the base
+            float rib = max(smoothstep(0.022,0.0,abs(py-0.15)), smoothstep(0.022,0.0,abs(py-0.32)));
+            alb *= 1.0 - 0.52*rib;                                                      // two rolling hoops (recessed bands)
+            // HIGH frequencies: a barrel is only ~0.3 wide, so the rust must vary across that span
+            float big = fbm(in.wp.xz*13.0 + py*4.0);                                    // large rust blooms
+            float fine = fbm(in.wp.xz*36.0);                                            // + fine pitting
+            float patch = 0.6*big + 0.4*fine;
+            float rustA = smoothstep(0.46,0.72,patch);                                  // moderate coverage → the clean paint stays glossy metal
+            float streak = smoothstep(0.55,0.92, fbm(float2((in.wp.x-in.wp.z)*24.0, py*1.5))) * clamp(1.15-py*1.5,0.2,1.0);
+            alb = mix(alb, rust, rustA*0.85);                                           // mottled rust eating the paint
+            alb = mix(alb, rustDk, smoothstep(0.72,0.9,patch)*0.8);                     // deep rust cores
+            alb = mix(alb, rust*0.6, streak*0.6);                                       // streaks bleed down from the rim
+            float rf = clamp(rustA + streak*0.5, 0.0, 1.0);                             // 0 clean → 1 rusty
+            metal = mix(0.80, 0.10, rf);                                                // GLOSSY painted steel where clean; matte where rust eats it
+            rough = mix(0.30, 0.92, rf);
+        }
 
         // ── M5 aftermath DECALS on FLOOR fragments (blood/scorch/scattered-papers/ash/offal) — ported
         // from the raymarch floor blend; modifies alb (+ a self-lit term) BEFORE the PBR lighting below.
@@ -2272,13 +2580,78 @@ final class RasterRenderer {
                     m.doors[i] = DoorState(open: 1.0)                                 // fully parted
                     _ = rr.render(world, into: canvas)
                     Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-elevator-open.png"))
-                    print("RASTERSHOT: wrote raster-elevator.png + raster-elevator-open.png (exit elevator at \(cx),\(cy), dist \(dist))")
+                    // LED CLOSE-UP — step to the car mouth (1 cell out) so the 7-segment floor indicator reads large
+                    world.player.pos = SIMD2(Float(cx + tx * sgn) + 0.5, Float(cy + ty * sgn) + 0.5)
+                    _ = rr.render(world, into: canvas)
+                    Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-elevator-led.png"))
+                    print("RASTERSHOT: wrote raster-elevator.png + raster-elevator-open.png + raster-elevator-led.png (exit elevator at \(cx),\(cy), dist \(dist), floor \(world.elevatorFloorDisplay))")
                     placed = true
                 }
                 if !placed { print("RASTERSHOT: elevator check skipped (no open standoff)") }
             } else {
                 print("RASTERSHOT: elevator check skipped (no exit-cell door)")
             }
+        }
+
+        // FUEL STORE check: the 2×2 hazard-doored fuel chamber — how it reads from OUTSIDE (the hazard-striped
+        // door set in the room wall = the "fuel store" sign), framed THROUGH the open doorway, and from INSIDE
+        // (a tight lit chamber packed with red/blue oil drums, the marine's only refuel).
+        do {
+            var done = false
+            for seed in [UInt64(3), 7, 12, 21, 33, 44, 58, 71] where !done {
+                let world = World(level: 1, colonyIndex: 0, seed: seed)
+                let m = world.map
+                guard !m.fuelStore.isEmpty else { continue }
+                var doorI = -1
+                for (i, _) in m.doors where m.wall[i] == WallTex.doorHazard.rawValue { doorI = i; break }
+                guard doorI >= 0 else { continue }
+                let dcx = doorI % m.w, dcy = doorI / m.w
+                var outX = 0, outY = 0                                             // door → chamber direction
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    where m.inBounds(dcx + dx, dcy + dy) && m.fuelStore.contains(m.idx(dcx + dx, dcy + dy)) { outX = dx; outY = dy; break }
+                guard outX != 0 || outY != 0 else { continue }
+                let face = atan2(Float(outY), Float(outX))                         // look from the room toward the chamber
+                func openRoom(_ k: Int) -> Bool { let x = dcx - outX * k, y = dcy - outY * k
+                    return m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+                let perpX = outY, perpY = outX                                     // 2-wide axis (matches MapGen)
+                // OUTSIDE — hazard door CLOSED, facing it from 1 cell back (the door fills the frame). The
+                // warning lamps flash amber; freeze elapsed at a BRIGHT phase, then a DIM phase, to show the blink.
+                m.doors[doorI] = DoorState()
+                let backOut = openRoom(2) ? 2 : 1                                   // 2 cells reads the door set in the wall (1 overexposes at point-blank)
+                world.player.pos = SIMD2(Float(dcx - outX * backOut) + 0.5, Float(dcy - outY * backOut) + 0.5)
+                world.player.dir = face
+                world.elapsed = 0.462                                              // sin(elapsed·3.4) ≈ 1 → lamps lit
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-fuelstore-out.png"))
+                world.elapsed = 0.924                                              // sin ≈ 0 → lamps dim (the OFF beat)
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-fuelstore-out-dim.png"))
+                // THROUGH THE DOORWAY — from the front room cell, door OPEN: the drum stack framed by the hazard jamb
+                world.elapsed = 0.462
+                m.doors[doorI] = DoorState(open: 1.0)
+                world.player.pos = SIMD2(Float(dcx - outX) + 0.5, Float(dcy - outY) + 0.5)
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-fuelstore-open.png"))
+                // INSIDE — stand in the drum-free throat cell and aim at the CENTROID of the store's drums, so the
+                // packed 2×2 stack of red/blue barrels fills the frame (the wide FOV from the doorway read as a room).
+                let storeDrums = world.drums.filter { m.fuelStore.contains(m.idx(Int($0.pos.x), Int($0.pos.y))) }
+                let throat = SIMD2<Float>(Float(dcx + outX) + 0.5, Float(dcy + outY) + 0.5)
+                let centroid = storeDrums.isEmpty ? throat + SIMD2(Float(outX), Float(outY))
+                    : storeDrums.reduce(SIMD2<Float>(0, 0), { $0 + $1.pos }) / Float(storeDrums.count)
+                world.player.pos = throat
+                world.player.dir = atan2(centroid.y - throat.y, centroid.x - throat.x)
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-fuelstore-in.png"))
+                // BULKHEAD — from the throat, aim at the +perp side-wall fixture (concrete wall + caged lamp + a drum)
+                let bh = SIMD2<Float>(Float(dcx) + 0.5 + Float(outX) * 1.5 + Float(perpX) * 1.5,
+                                      Float(dcy) + 0.5 + Float(outY) * 1.5 + Float(perpY) * 1.5)
+                world.player.dir = atan2(bh.y - throat.y, bh.x - throat.x)
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-fuelstore-bulkhead.png"))
+                print("RASTERSHOT: wrote raster-fuelstore-{out,out-dim,open,in,bulkhead}.png (seed \(seed), door \(dcx),\(dcy), chamber+(\(outX),\(outY)), \(m.fuelStore.count) cells, \(storeDrums.count) drums)")
+                done = true
+            }
+            if !done { print("RASTERSHOT: fuel store check skipped (none carved)") }
         }
 
         // DORMITORY check: generate levels until one has a dorm (a bunk cluster), then frame the hall

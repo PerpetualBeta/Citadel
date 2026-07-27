@@ -2371,6 +2371,29 @@ enum GPURaymarch {
                 iCylinder(SIMD3(0, 0.452, 0), r: 0.168, halfH: 0.022, round: 0.012, rim, 0.012)]   // rolled top rim
     }
 
+    /// A wall-mounted MARINE BULKHEAD LIGHT (~0.3 m): a steel base plate, a warm glass dome, and a
+    /// protective wire cage of ribs + a hoop. Authored back-to-wall (−Z), dome facing +Z into the room,
+    /// at eye height — mount via emitProp/packProp yaw + flush-to-wall. The dome is over-bright so it
+    /// self-glows (low wattage — modest peak). The single geometry source, reused wherever a bulkhead hangs.
+    static func bulkheadShapes() -> [GShape] {
+        let steel = SIMD3<Float>(0.24, 0.25, 0.28)
+        let cage  = SIMD3<Float>(0.13, 0.13, 0.15)
+        let dome  = SIMD3<Float>(2.0, 1.45, 0.72)        // warm low-watt glow (over-bright → emissive)
+        let y: Float = 0.56                              // eye height (mounted at authored height, floored:false)
+        var out: [GShape] = [
+            iBox(SIMD3(0, y, 0.018), SIMD3(0.105, 0.078, 0.024), 0.03, steel, 0.01),   // oval-ish steel base plate (rounded)
+            iBox(SIMD3(0, y, 0.028), SIMD3(0.088, 0.061, 0.02), 0.02, steel * 1.15, 0.008), // raised bezel ring
+            iSphere(SIMD3(0, y, 0.052), 0.062, dome),                                   // warm glass dome
+        ]
+        // wire cage: two verticals + one horizontal hoop bar across the dome
+        for dx in [Float(-0.042), 0.042] {
+            out.append(iBox(SIMD3(dx, y, 0.066), SIMD3(0.006, 0.066, 0.006), 0.003, cage, 0.002))
+        }
+        out.append(iBox(SIMD3(0, y, 0.078), SIMD3(0.07, 0.006, 0.006), 0.003, cage, 0.002))   // horizontal cage bar
+        out.append(iBox(SIMD3(0, y + 0.086, 0.03), SIMD3(0.03, 0.012, 0.016), 0.006, steel, 0.004))  // top conduit lug
+        return out
+    }
+
     // ── recharge socket (material c.z = 5) — a flush WALL PANEL, not a floor unit ──
     // Wall-mounted infrastructure: a recessed housing with a vertical capacity bar
     // (segments lit up to the remaining charge) and a plug-in port, at chest height.

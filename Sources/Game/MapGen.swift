@@ -715,14 +715,26 @@ enum MapGen {
                 } }
             }
             if !sealed || !doorClear(map, dCell) { continue }
-            map.floor[dCell] = theme.floor.rawValue; map.ceil[dCell] = theme.ceil.rawValue; map.light[dCell] = 0.6
+            map.floor[dCell] = FlatTex.concrete.rawValue; map.ceil[dCell] = FlatTex.ceilStone.rawValue; map.light[dCell] = 0.42
             map.wall[dCell] = WallTex.doorHazard.rawValue                      // hazard-striped DOOR leaves — the "fuel store" sign
             map.doors[dCell] = DoorState()
             var cells: [SIMD2<Float>] = []
             for (cx, cy) in chamber {
                 let i = map.idx(cx, cy)
-                map.wall[i] = 0; map.floor[i] = theme.floor.rawValue; map.ceil[i] = theme.ceil.rawValue; map.light[i] = 0.6
+                // BARE CONCRETE throughout — a fireproof store, not a steel/lit-panel room; dim baked ambient
+                // (0.16) so the wall-mounted BULKHEAD lights do the lighting (no overhead), added in the render.
+                map.wall[i] = 0; map.floor[i] = FlatTex.concrete.rawValue; map.ceil[i] = FlatTex.ceilStone.rawValue; map.light[i] = 0.16
                 cells.append(SIMD2(Float(cx) + 0.5, Float(cy) + 0.5))
+            }
+            // line the chamber's own bounding walls with concrete (retexWalls ran earlier and left lit
+            // panels / lockers on them); the full 8-neighbourhood, since the SDF rounds diagonal corners.
+            for (cx, cy) in chamber {
+                for oy in -1...1 { for ox in -1...1 where !(ox == 0 && oy == 0) {
+                    let nx = cx + ox, ny = cy + oy
+                    guard map.inBounds(nx, ny) else { continue }
+                    let ni = map.idx(nx, ny)
+                    if ni != dCell, map.wall[ni] != 0, map.doors[ni] == nil { map.wall[ni] = WallTex.concrete.rawValue }
+                }}
             }
             return cells
         }
@@ -1193,13 +1205,13 @@ enum MapGen {
                                 placed.append(pp)
                             }
                         }
-                        for s in slots where placeProp(.locker, s) { break }
+                        for s in slots where !featureBacked(s) && placeProp(.locker, s) { break }   // a locker must never cover a display/CRT bank
                     }
                 } else {
                     // utility: a couple of lockers and (space permitting) a desk
                     for s in slots {
                         if used >= 2 { break }
-                        if placeProp(.locker, s) { used += 1 }
+                        if !featureBacked(s), placeProp(.locker, s) { used += 1 }                    // never in front of a display panel
                     }
                     if !hazard { for s in slots where placeProp(.desk, s) { break } }
                 }
