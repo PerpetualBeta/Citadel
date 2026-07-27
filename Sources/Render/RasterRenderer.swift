@@ -871,10 +871,10 @@ final class RasterRenderer {
 
     /// Emit an axis-aligned box [lo,hi] with flat outward normals and material `m`. Winding is
     /// irrelevant (the passes cull .none) — only the NORMALS must point out. Used for door leaves.
-    private func emitAABB(_ lo: SIMD3<Float>, _ hi: SIMD3<Float>, _ m: Mat, into v: inout [PVert]) {
+    private func emitAABB(_ lo: SIMD3<Float>, _ hi: SIMD3<Float>, _ m: Mat, tid: Float = -1, into v: inout [PVert]) {
         func vert(_ p: SIMD3<Float>, _ n: SIMD3<Float>) -> PVert {
             PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
-                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z)
+                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z, tid: tid)
         }
         func face(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>, _ d: SIMD3<Float>, _ n: SIMD3<Float>) {
             v += [vert(a, n), vert(b, n), vert(c, n), vert(a, n), vert(c, n), vert(d, n)]
@@ -1007,17 +1007,22 @@ final class RasterRenderer {
             let lx = dmap.inBounds(cx - 1, cy) && dmap.wall[dmap.idx(cx - 1, cy)] != 0
             let rx = dmap.inBounds(cx + 1, cy) && dmap.wall[dmap.idx(cx + 1, cy)] != 0
             let slideX = lx && rx                                         // both side walls solid → slides along X (mirrors doorSlidesAlongX)
+            // TEXTURED leaves — sample the cell's baked art (door panels 12–18; a SECRET door keeps its
+            // WALL id, so its leaf textures as the surrounding wall and stays disguised). World-anchored UV
+            // (the vertex shader) → a closed door shows the full art with the seam at centre; a secret door
+            // aligns with the neighbouring wall.
             let mat = wallMat(WallTex(rawValue: dmap.wall[i]) ?? .doorPanel)
+            let tid = Float(dmap.wall[i])
             let t: Float = 0.07                                          // leaf half-thickness (through-axis)
             let fx = Float(cx), fz = Float(cy)
             if slideX {
                 let zc = fz + 0.5
-                emitAABB(SIMD3(fx, 0, zc - t),            SIMD3(fx + halfOpen, 1, zc + t), mat, into: &v)   // left leaf → its jamb
-                emitAABB(SIMD3(fx + 1 - halfOpen, 0, zc - t), SIMD3(fx + 1, 1, zc + t), mat, into: &v)      // right leaf → its jamb
+                emitAABB(SIMD3(fx, 0, zc - t),            SIMD3(fx + halfOpen, 1, zc + t), mat, tid: tid, into: &v)   // left leaf → its jamb
+                emitAABB(SIMD3(fx + 1 - halfOpen, 0, zc - t), SIMD3(fx + 1, 1, zc + t), mat, tid: tid, into: &v)      // right leaf → its jamb
             } else {
                 let xc = fx + 0.5
-                emitAABB(SIMD3(xc - t, 0, fz),            SIMD3(xc + t, 1, fz + halfOpen), mat, into: &v)   // near leaf
-                emitAABB(SIMD3(xc - t, 0, fz + 1 - halfOpen), SIMD3(xc + t, 1, fz + 1), mat, into: &v)      // far leaf
+                emitAABB(SIMD3(xc - t, 0, fz),            SIMD3(xc + t, 1, fz + halfOpen), mat, tid: tid, into: &v)   // near leaf
+                emitAABB(SIMD3(xc - t, 0, fz + 1 - halfOpen), SIMD3(xc + t, 1, fz + 1), mat, tid: tid, into: &v)      // far leaf
             }
         }
         // furniture / fixtures / pipe runs / the reel-to-reel (material: rough painted metal)
@@ -2068,6 +2073,38 @@ final class RasterRenderer {
                     Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-display-\(n).png"))
                 }
                 print("RASTERSHOT: wrote raster-display-0/1/2.png (animated CRT bank at \(cx),\(cy))")
+                break search
+            } }
+        }
+
+        // DOOR check: paint a wall cell ahead as a door and frame it from a few cells back — a RED key door
+        // part-open (textured leaves + centre-split gap), then a SECRET door closed (keeps its WALL id, so
+        // its leaf textures as the surrounding wall → invisible until it parts).
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+            world.monsters = []; world.props = []; world.drums = []; world.colonists = []
+            search: for cy in 5..<(m.h - 5) { for cx in 5..<(m.w - 5) where op(cx, cy) {
+                // need a solid wall ahead (cy-1) with solid sides (slide-X) and clear standoff behind
+                guard m.inBounds(cx, cy - 1), m.wall[m.idx(cx, cy - 1)] != 0, m.doors[m.idx(cx, cy - 1)] == nil,
+                      m.wall[m.idx(cx - 1, cy - 1)] != 0, m.wall[m.idx(cx + 1, cy - 1)] != 0,
+                      op(cx, cy + 1), op(cx, cy + 2), op(cx, cy + 3) else { continue }
+                let dcell = m.idx(cx, cy - 1)
+                let origWall = m.wall[dcell]
+                m.wall[m.idx(cx, cy - 2)] = 0                                          // carve a cell behind so the door opens onto a gap
+                m.wall[m.idx(cx, cy - 3)] = 0
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy + 2) + 0.5)
+                world.player.dir = -.pi / 2
+                // 1 · RED key door, part-open
+                m.wall[dcell] = WallTex.doorRed.rawValue; m.doors[dcell] = DoorState(open: 0.35)
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-door-red.png"))
+                // 2 · SECRET door, closed — keeps the wall id so its leaf reads as the surrounding wall
+                m.wall[dcell] = origWall; m.doors[dcell] = DoorState(secret: true)   // open 0 = closed
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-door-secret.png"))
+                print("RASTERSHOT: wrote raster-door-red.png + raster-door-secret.png (door at \(cx),\(cy-1))")
                 break search
             } }
         }
