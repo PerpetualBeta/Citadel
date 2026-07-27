@@ -17,7 +17,7 @@ import simd
 final class RasterRenderer {
 
     // pos, normal, and the surface's baked PBR material (albedo, rough, metal, emissive).
-    struct PVert { var px, py, pz, nx, ny, nz, ar, ag, ab, rough, metal, er, eg, eb: Float }
+    struct PVert { var px, py, pz, nx, ny, nz, ar, ag, ab, rough, metal, er, eg, eb: Float; var tid: Float = -1 }   // tid≥0 = sample walls[id]; -1 = flat material
 
     struct Cam {
         var mvp: simd_float4x4
@@ -85,6 +85,7 @@ final class RasterRenderer {
     private let firePS, brightPS, blurPS, compositePS: MTLRenderPipelineState
     private struct FireU { var invVP: simd_float4x4; var eye, camFwd, misc: SIMD4<Float> }
     private struct Fx { var a: SIMD4<Float> }
+    private let wallArrTex: MTLTexture?        // the baked wall-texture array (the SAME art the raymarcher samples) → textured walls
 
     // ── M4 creatures: the animated Tripo meshes (reused verbatim from the raymarch path;
     // they reproduce this renderer's camera exactly), composited over the lit world using
@@ -150,6 +151,7 @@ final class RasterRenderer {
             print("RasterRenderer: fire pipeline failed"); return nil
         }
         self.firePS = fps; self.brightPS = bps; self.blurPS = blps; self.compositePS = cps
+        self.wallArrTex = GPURaymarch.makeTextureArray(device, Textures.shared.walls)   // baked wall art (textured walls)
         self.meshQueen = MeshCreature(device: device, kind: .queen)
         self.meshDrone = MeshCreature(device: device, kind: .drone)
         let sd = MTLTextureDescriptor()
@@ -298,6 +300,7 @@ final class RasterRenderer {
             me.setFragmentTexture(fieldTex, index: 1)
             me.setFragmentTexture(lampMaskTex, index: 2)   // analytic overhead lamp presence
             me.setFragmentTexture(floorIdTex, index: 3)    // M6 per-cell floor id → liquid surface treatment
+            me.setFragmentTexture(wallArrTex, index: 4)    // baked wall-texture array → textured walls (display walls, lit panels)
             me.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: nVerts)
             if nDynVerts > 0 {                                    // the visible props, lit by the same forward pass
                 me.setVertexBuffer(dynBuf, offset: 0, index: 0)
@@ -346,6 +349,7 @@ final class RasterRenderer {
                 ve.setFragmentTexture(fieldTex, index: 1)
                 ve.setFragmentTexture(lampMaskTex, index: 2)
                 ve.setFragmentTexture(floorIdTex, index: 3)
+                ve.setFragmentTexture(wallArrTex, index: 4)
                 ve.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: nVMVerts)
                 ve.endEncoding()
             }
@@ -358,7 +362,7 @@ final class RasterRenderer {
         fullscreen(blurPS, to: bloomB) { e in e.setFragmentBytes(&bh, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(bloomA, index: 0) }
         var bv = Fx(a: SIMD4(0, 1.0 / Float(H), Float(W), Float(H)))
         fullscreen(blurPS, to: bloomA) { e in e.setFragmentBytes(&bv, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(bloomB, index: 0) }
-        var cx = Fx(a: SIMD4(0.9, 0, Float(W), Float(H)))                            // bloom gain
+        var cx = Fx(a: SIMD4(0.7, 0, Float(W), Float(H)))                            // bloom gain (dialled back — less blown-out)
         fullscreen(compositePS, to: colTex) { e in
             e.setFragmentBytes(&cx, length: MemoryLayout<Fx>.stride, index: 0)
             e.setFragmentTexture(frame, index: 0); e.setFragmentTexture(bloomA, index: 1)
@@ -535,13 +539,15 @@ final class RasterRenderer {
             guard map.inBounds(x, y) else { return false }
             let i = map.idx(x, y); return map.wall[i] == 0 || map.doors[i] != nil
         }
-        func vert(_ p: SIMD3<Float>, _ n: SIMD3<Float>, _ m: Mat) -> PVert {
+        func vert(_ p: SIMD3<Float>, _ n: SIMD3<Float>, _ m: Mat, _ tid: Float = -1) -> PVert {
             PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
-                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z)
+                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z, tid: tid)
         }
-        func quad(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>, _ d: SIMD3<Float>, _ n: SIMD3<Float>, _ m: Mat) {
-            v += [vert(a, n, m), vert(b, n, m), vert(c, n, m), vert(a, n, m), vert(c, n, m), vert(d, n, m)]
+        func quad(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>, _ d: SIMD3<Float>, _ n: SIMD3<Float>, _ m: Mat, _ tid: Float = -1) {
+            v += [vert(a, n, m, tid), vert(b, n, m, tid), vert(c, n, m, tid), vert(a, n, m, tid), vert(c, n, m, tid), vert(d, n, m, tid)]
         }
+        // the solid wall id at a neighbour cell → the texture slice to sample (−1 = out of bounds)
+        func wallIdF(_ x: Int, _ y: Int) -> Float { map.inBounds(x, y) ? Float(map.wall[map.idx(x, y)]) : -1 }
         // A floor/ceiling cell is emitted as an 8-triangle CENTRE FAN whose material is C0-continuous
         // across cell edges: corner verts carry the mean material of the 2×2 open cells meeting there,
         // edge-midpoints the mean of the two open cells sharing that edge, and only the CENTRE vert keeps
@@ -585,10 +591,10 @@ final class RasterRenderer {
                 floorIdData[i] = UInt8(truncatingIfNeeded: map.floor[i])   // M6: the fragment reads this to give nukage/rock/blood cells the liquid surface
                 blendedSurface(x, y, 0, SIMD3(0, 1, 0)) { map.floor[$0] }
                 blendedSurface(x, y, 1, SIMD3(0, -1, 0)) { map.ceil[$0] }
-                if !openGeo(x - 1, y) { quad(SIMD3(fx, 0, fz), SIMD3(fx, 0, fz + 1), SIMD3(fx, 1, fz + 1), SIMD3(fx, 1, fz), SIMD3(1, 0, 0), wallTexAt(map, x - 1, y)) }
-                if !openGeo(x + 1, y) { quad(SIMD3(fx + 1, 0, fz + 1), SIMD3(fx + 1, 0, fz), SIMD3(fx + 1, 1, fz), SIMD3(fx + 1, 1, fz + 1), SIMD3(-1, 0, 0), wallTexAt(map, x + 1, y)) }
-                if !openGeo(x, y - 1) { quad(SIMD3(fx + 1, 0, fz), SIMD3(fx, 0, fz), SIMD3(fx, 1, fz), SIMD3(fx + 1, 1, fz), SIMD3(0, 0, 1), wallTexAt(map, x, y - 1)) }
-                if !openGeo(x, y + 1) { quad(SIMD3(fx, 0, fz + 1), SIMD3(fx + 1, 0, fz + 1), SIMD3(fx + 1, 1, fz + 1), SIMD3(fx, 1, fz + 1), SIMD3(0, 0, -1), wallTexAt(map, x, y + 1)) }
+                if !openGeo(x - 1, y) { quad(SIMD3(fx, 0, fz), SIMD3(fx, 0, fz + 1), SIMD3(fx, 1, fz + 1), SIMD3(fx, 1, fz), SIMD3(1, 0, 0), wallTexAt(map, x - 1, y), wallIdF(x - 1, y)) }
+                if !openGeo(x + 1, y) { quad(SIMD3(fx + 1, 0, fz + 1), SIMD3(fx + 1, 0, fz), SIMD3(fx + 1, 1, fz), SIMD3(fx + 1, 1, fz + 1), SIMD3(-1, 0, 0), wallTexAt(map, x + 1, y), wallIdF(x + 1, y)) }
+                if !openGeo(x, y - 1) { quad(SIMD3(fx + 1, 0, fz), SIMD3(fx, 0, fz), SIMD3(fx, 1, fz), SIMD3(fx + 1, 1, fz), SIMD3(0, 0, 1), wallTexAt(map, x, y - 1), wallIdF(x, y - 1)) }
+                if !openGeo(x, y + 1) { quad(SIMD3(fx, 0, fz + 1), SIMD3(fx + 1, 0, fz + 1), SIMD3(fx + 1, 1, fz + 1), SIMD3(fx, 1, fz + 1), SIMD3(0, 0, -1), wallTexAt(map, x, y + 1), wallIdF(x, y + 1)) }
                 // overhead ceiling lamp (one per open cell on the grid — see the lamp* statics):
                 // a VISIBLE glowing housing so the pools it casts have a source you can see, PLUS
                 // the presence-mask bit AND (via the shared statics) the shader's analytic light —
@@ -1147,8 +1153,8 @@ final class RasterRenderer {
 
     struct Cam { float4x4 mvp; float4x4 lmvp[3]; float4 eye; float4 params; float4 amb; float4 headFwd; float4 shX; float4 shZ; float4 camFwd; float4 water; };
     struct Light { float4 posR; float4 colI; };          // posR=(x,y,z,1/r²)  colI=(rgb,intensity)
-    struct PV { float px,py,pz, nx,ny,nz, ar,ag,ab, rough, metal, er,eg,eb; };
-    struct VOut { float4 clip [[position]]; float3 wp; float3 wn; float3 alb; float rgh; float mtl; float3 emis; };
+    struct PV { float px,py,pz, nx,ny,nz, ar,ag,ab, rough, metal, er,eg,eb, tid; };
+    struct VOut { float4 clip [[position]]; float3 wp; float3 wn; float3 alb; float rgh; float mtl; float3 emis; float2 uv; float tid; };
     struct SOut { float4 clip [[position]]; };
 
     float h21(float2 p){ p = fract(p*float2(127.1,311.7)); p += dot(p,p+34.5); return fract(p.x*p.y); }
@@ -1179,7 +1185,9 @@ final class RasterRenderer {
     vertex VOut rr_vertex(uint vid [[vertex_id]], constant PV* vs [[buffer(0)]], constant Cam& C [[buffer(1)]]){
         PV p=vs[vid]; float3 wp=float3(p.px,p.py,p.pz);
         VOut o; o.clip=C.mvp*float4(wp,1); o.wp=wp; o.wn=normalize(float3(p.nx,p.ny,p.nz));
-        o.alb=float3(p.ar,p.ag,p.ab); o.rgh=p.rough; o.mtl=p.metal; o.emis=float3(p.er,p.eg,p.eb); return o;
+        o.alb=float3(p.ar,p.ag,p.ab); o.rgh=p.rough; o.mtl=p.metal; o.emis=float3(p.er,p.eg,p.eb);
+        // wall texture UV: along-wall (world X or Z by facing) × height, tiled per cell (repeat sampler)
+        o.uv=float2(abs(o.wn.x)>0.5 ? wp.z : wp.x, 1.0 - wp.y); o.tid=p.tid; return o;
     }
     vertex SOut rr_shadow_vertex(uint vid [[vertex_id]], constant PV* vs [[buffer(0)]], constant float4x4& lmvp [[buffer(2)]]){
         PV p=vs[vid]; SOut o; o.clip=lmvp*float4(p.px,p.py,p.pz,1); return o;
@@ -1203,13 +1211,61 @@ final class RasterRenderer {
         return lit/16.0;
     }
 
+    // per-id wall self-illumination (matches GPURaymarch.wallEmissive): litPanel/computer/exit/doors glow
+    inline float wallEmis(uint id){
+        if(id==4u) return 0.85; if(id==16u) return 1.05; if(id==10u) return 0.60;
+        if(id==13u||id==14u||id==15u||id==17u) return 0.45; if(id==18u) return 0.5; return 0.0;
+    }
     struct RROut { float4 color [[color(0)]]; float perp [[color(1)]]; };
     fragment RROut rr_fragment(VOut in [[stage_in]], constant Cam& C [[buffer(1)]],
                                 constant Light* lights [[buffer(2)]],
                                 constant float4* decals [[buffer(3)]],
                                 depth2d_array<float> smap [[texture(0)]], texture2d<float> field [[texture(1)]],
-                                texture2d<float> lampMask [[texture(2)]], texture2d<uint> floorId [[texture(3)]]){
-        float3 alb=in.alb; float rough=in.rgh, metal=in.mtl;
+                                texture2d<float> lampMask [[texture(2)]], texture2d<uint> floorId [[texture(3)]],
+                                texture2d_array<float> wallArr [[texture(4)]]){
+        float3 alb=in.alb; float rough=in.rgh, metal=in.mtl; float wemis=0.0; float3 wallGlow=float3(0.0);
+        if(in.tid>=0.0){                                    // TEXTURED WALL — the SAME baked art the raymarcher samples
+            constexpr sampler ws(address::repeat, filter::linear);
+            uint wid=uint(in.tid+0.5);
+            alb=wallArr.sample(ws, in.uv, wid).rgb;
+            wemis=wallEmis(wid);                            // self-lit fixtures (CRT screens, strip-lights) → bloom in the HDR pass
+            float wt=C.amb.y;                               // time
+            if(wid==10u){
+                // COMPUTER BANK — live ANIMATED amber monitors (ported from the SDF renderer): a 4×4 grid,
+                // each a distinct readout (scrolling log · oscilloscope · spectrum · dashboard), pure
+                // time-driven math OVER the baked screen so the content genuinely MOVES.
+                float2 g4=in.uv*4.0; float2 mcell=floor(g4); float2 muv=fract(g4);
+                float mh=h21(mcell), mh2=h21(mcell+7.0); bool dead=h21(mcell+19.0)>0.86;
+                float2 s=(muv-0.09)/0.82;
+                if(s.x>0.0&&s.x<1.0&&s.y>0.0&&s.y<1.0&&!dead){
+                    float sp=0.6+1.6*mh2;
+                    float glow=0.05*(step(0.92,fract(s.x*8.0))+step(0.92,fract(s.y*6.0)));   // graticule
+                    if(mh<0.34){ float ry=s.y*13.0+wt*(1.3+sp); float row=floor(ry);          // SCROLLING LOG
+                        float len=0.15+0.80*h21(float2(row,mcell.x+mcell.y*3.0));
+                        float ch=step(0.40,fract(s.x*16.0+h21(float2(row,2.0))*17.0));
+                        glow+=0.85*ch*step(s.x,len)*step(0.20,fract(ry)); }
+                    else if(mh<0.56){ float y=0.5+0.20*sin(s.x*16.0+wt*(3.0+sp))+0.09*sin(s.x*37.0-wt*(5.0+sp));
+                        glow+=1.0-smoothstep(0.0,0.035,abs(s.y-y)); }                           // OSCILLOSCOPE
+                    else if(mh<0.78){ float bar=floor(s.x*14.0);                                // SPECTRUM
+                        float h=0.12+0.80*pow(0.5+0.5*sin(wt*(2.4+sp)+bar*0.8+mh*6.0),2.0);
+                        glow+=0.85*step(s.y,h)*step(0.28,fract(s.x*14.0)); }
+                    else { if(s.y>0.64){ float meter=(s.y>0.82)?0.45+0.45*sin(wt*(1.4+sp)):0.30+0.55*fract(wt*0.35+mh);
+                            glow+=0.85*step(s.x,meter)*step(0.10,fract(s.x*26.0)); }            // DASHBOARD
+                        else if(s.y>0.28){ float row=floor(s.y*8.0+wt*(0.8+sp));
+                            glow+=0.80*step(0.50,fract(s.x*18.0+row*4.0))*step(s.x,0.92); }
+                        else { glow+=1.0-smoothstep(0.0,0.03,abs(s.y-(0.14+0.09*sin(s.x*26.0+wt*4.0)))); } }
+                    glow*=0.9+0.15*(0.6+0.4*sin(wt*31.0+mh*17.0));                              // tube flicker
+                    // Content lives ONLY in the emissive term; the glass stays near-BLACK so unlit screen
+                    // reads black (high contrast), and glow² crushes the graticule/dim mids so only the
+                    // real readout glows + blooms — no tan wash.
+                    alb=float3(0.006,0.004,0.002); rough=1.0; metal=0.0;                        // near-BLACK MATTE CRT glass — no amber env-spec sheen, room can't lift it
+                    wallGlow=float3(1.0,0.60,0.13)*pow(clamp(glow,0.0,1.5),1.5)*2.5;            // amber content, self-lit (γ crush → dark mids, bright readout)
+                    wemis=0.0;
+                } else { alb=dead?float3(0.012,0.012,0.014):float3(0.02,0.022,0.026); rough=1.0; wemis=0.0; }  // dark MATTE steel bezel / dead unit → blacks read black
+            } else if(wid==4u){
+                wemis*=0.86+0.14*sin(wt*9.0+h21(floor(in.wp.xz))*23.0);                         // litPanel/bulkhead strip: gentle flicker
+            }
+        }
         float3 gn=normalize(in.wn);
         // Surfaces are CONTINUOUS — no per-metre panel grid (that read as tiled squares). Large-scale
         // form + grime come from the tri-planar noise below; real panel JOINTS are authored into the
@@ -1395,7 +1451,10 @@ final class RasterRenderer {
         float ao = clamp(0.55+0.45*grime, 0.35, 1.0);
         col += baked * C.amb.w * alb * ao;
         col += f0 * baked * 0.6 * pow(1.0-ndv,3.0) * (1.0-rough);                    // env-ish spec off the baked field
-        float3 emisTerm = in.emis + decalEmis + waterEmis;                           // self-lit fixtures + decal embers/papers + pulsing nukage
+        // textured walls carry their emission via the texture (wemis/wallGlow), so drop the flat-material
+        // emissive there (it was a uniform amber wash washing the CRT blacks out).
+        float3 baseEmis = (in.tid >= 0.0) ? float3(0.0) : in.emis;
+        float3 emisTerm = baseEmis + decalEmis + waterEmis + alb * wemis + wallGlow;  // self-lit fixtures + decals + textured-wall glow (CRT/panel) + CRT content
         col += emisTerm;
         // LINEAR HDR out; alpha = EMISSION MASK so only emitters bloom (never merely bright-lit walls).
         // The whole frame is bloomed, then ACES-graded, gamma-corrected and vignetted ONCE in composite_frag.
@@ -1982,6 +2041,33 @@ final class RasterRenderer {
                 _ = rr.render(world, into: canvas)
                 Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-fire-jet.png"))
                 print("RASTERSHOT: wrote raster-fire-jet.png (flamethrower jet at \(cx),\(cy))")
+                break search
+            } }
+        }
+
+        // DISPLAY WALL check: paint a 3-wide amber CRT bank on a wall ahead and render it at THREE times —
+        // verify the live animated monitors (scrolling log / oscilloscope / spectrum / dashboard) genuinely
+        // MOVE frame-to-frame, glow and bloom, plus the surrounding walls now carry their baked art.
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+            world.monsters = []; world.props = []; world.drums = []; world.colonists = []
+            search: for cy in 5..<(m.h - 5) { for cx in 5..<(m.w - 5) where op(cx, cy) {
+                guard m.inBounds(cx, cy - 1), m.wall[m.idx(cx, cy - 1)] != 0, m.doors[m.idx(cx, cy - 1)] == nil,
+                      op(cx, cy + 1), op(cx, cy + 2) else { continue }
+                for dx in -1...1 where m.inBounds(cx + dx, cy - 1) && m.wall[m.idx(cx + dx, cy - 1)] != 0
+                                    && m.doors[m.idx(cx + dx, cy - 1)] == nil {
+                    m.wall[m.idx(cx + dx, cy - 1)] = WallTex.computer.rawValue          // amber CRT bank
+                }
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy + 2) + 0.5)
+                world.player.dir = -.pi / 2                                            // face the bank (−Z)
+                for (n, t) in [Float(0.0), 0.6, 1.4].enumerated() {
+                    world.elapsed = t
+                    _ = rr.render(world, into: canvas)
+                    Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-display-\(n).png"))
+                }
+                print("RASTERSHOT: wrote raster-display-0/1/2.png (animated CRT bank at \(cx),\(cy))")
                 break search
             } }
         }
