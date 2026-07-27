@@ -74,6 +74,10 @@ final class RasterRenderer {
     private var dynScratch: [PVert] = []       // reusable CPU staging so the frame loop allocates nothing
     private let dynCap = 300_000               // max prop verts/frame (buffer sized once; overflow is dropped)
     private var nDynVerts = 0
+    private let vmBuf: MTLBuffer               // per-frame first-person weapon viewmodel mesh (drawn as an always-on-top overlay)
+    private var vmScratch: [PVert] = []
+    private let vmCap = 20_000
+    private var nVMVerts = 0
 
     // ── M4 creatures: the animated Tripo meshes (reused verbatim from the raymarch path;
     // they reproduce this renderer's camera exactly), composited over the lit world using
@@ -131,6 +135,10 @@ final class RasterRenderer {
             print("RasterRenderer: prop buffer alloc failed"); return nil
         }
         self.dynBuf = db
+        guard let vb = device.makeBuffer(length: MemoryLayout<PVert>.stride * 20_000, options: .storageModeShared) else {
+            print("RasterRenderer: viewmodel buffer alloc failed"); return nil
+        }
+        self.vmBuf = vb
     }
 
     // ── entry point (mirrors GPUWorldRenderer.render(_:into:)) ────────────────
@@ -213,6 +221,14 @@ final class RasterRenderer {
         if nDynVerts > 0 {
             dynScratch.withUnsafeBytes { _ = memcpy(dynBuf.contents(), $0.baseAddress!, nDynVerts * MemoryLayout<PVert>.stride) }
         }
+        // the marine's held weapon (first-person viewmodel) — tessellated at the eye anchor, drawn last as
+        // an always-on-top overlay (pass 2b) so a near wall never eats it.
+        vmScratch.removeAll(keepingCapacity: true)
+        buildViewmodel(world, eye: eye, dir: p.dir, into: &vmScratch)
+        nVMVerts = min(vmScratch.count, vmCap)
+        if nVMVerts > 0 {
+            vmScratch.withUnsafeBytes { _ = memcpy(vmBuf.contents(), $0.baseAddress!, nVMVerts * MemoryLayout<PVert>.stride) }
+        }
 
         guard let cmd = queue.makeCommandBuffer() else { return false }
 
@@ -261,6 +277,30 @@ final class RasterRenderer {
                 me.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: nDynVerts)
             }
             me.endEncoding()
+        }
+        // pass 2b — the first-person weapon: an always-on-top overlay. SAME PBR shader (so the gun takes the
+        // room's sector fill, lamp pools, shadows + emission), but its OWN cleared depth so it self-occludes
+        // yet is never occluded by a near wall; it writes a near perp-depth, keeping later creature/particle
+        // composites behind it (the gun is closest to the eye).
+        if nVMVerts > 0 {
+            let vrp = MTLRenderPassDescriptor()
+            vrp.colorAttachments[0].texture = colTex;  vrp.colorAttachments[0].loadAction = .load;  vrp.colorAttachments[0].storeAction = .store
+            vrp.colorAttachments[1].texture = perpTex; vrp.colorAttachments[1].loadAction = .load;  vrp.colorAttachments[1].storeAction = .store
+            vrp.depthAttachment.texture = zTex; vrp.depthAttachment.loadAction = .clear; vrp.depthAttachment.storeAction = .dontCare; vrp.depthAttachment.clearDepth = 1.0
+            if let ve = cmd.makeRenderCommandEncoder(descriptor: vrp) {
+                ve.setRenderPipelineState(mainPS); ve.setDepthStencilState(dss); ve.setCullMode(.none)
+                ve.setVertexBuffer(vmBuf, offset: 0, index: 0)
+                ve.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+                ve.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+                ve.setFragmentBytes(&lights, length: MemoryLayout<Light>.stride * lights.count, index: 2)
+                ve.setFragmentBytes(&decalArr, length: MemoryLayout<SIMD4<Float>>.stride * decalArr.count, index: 3)
+                ve.setFragmentTexture(shadowArr, index: 0)
+                ve.setFragmentTexture(fieldTex, index: 1)
+                ve.setFragmentTexture(lampMaskTex, index: 2)
+                ve.setFragmentTexture(floorIdTex, index: 3)
+                ve.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: nVMVerts)
+                ve.endEncoding()
+            }
         }
         cmd.commit(); cmd.waitUntilCompleted()
 
@@ -664,6 +704,69 @@ final class RasterRenderer {
             tri(a0, a1, b1, n0, n1, n1); tri(a0, b1, b0, n0, n1, n0)
             if r1 > 1e-4 { tri(A, a1, a0, -axis, -axis, -axis) }
             if r2 > 1e-4 { tri(B, b0, b1, axis, axis, axis) }
+        }
+    }
+
+    // ══ first-person weapon viewmodel ════════════════════════════════════════
+    //  Reuses the SHARED gun geometry (Viewmodel.pack → gun-local GShapes, x=right y=up z=forward),
+    //  so the raster gun is the SAME model the raymarcher marches. Tessellated at the eye anchor and
+    //  drawn in pass 2b as an always-on-top overlay, lit by the world's PBR pass.
+
+    /// Tessellate the held weapon at its eye-anchored transform into `v`. Hidden when the marine is down.
+    private func buildViewmodel(_ world: World, eye: SIMD3<Float>, dir: Float, into v: inout [PVert]) {
+        guard !world.player.dead else { return }
+        let vm = Viewmodel.pack(player: world.player, time: world.elapsed)
+        let rU = SIMD3<Float>(-sinf(dir), 0, cosf(dir))     // gun-local +x → world right
+        let up = SIMD3<Float>(0, 1, 0)                      // gun-local +y → world up
+        let fU = SIMD3<Float>(cosf(dir), 0, sinf(dir))      // gun-local +z → world forward
+        let anchor = eye + fU * Viewmodel.anchorFwd + rU * Viewmodel.anchorRight - up * Viewmodel.anchorDown
+        let xf: (SIMD3<Float>) -> SIMD3<Float> = { l in anchor + rU * l.x + up * l.y + fU * l.z }
+        let xn: (SIMD3<Float>) -> SIMD3<Float> = { n in rU * n.x + up * n.y + fU * n.z }
+        for sh in vm.shapes { tessVMShape(sh, xf, xn, into: &v) }
+    }
+
+    /// Tessellate ONE viewmodel GShape. Unlike tessShape (props), a glow sphere (b.w=-5) is a real
+    /// emissive sphere, and the cylinder/glow `em` term drives self-illumination (the prop path keys
+    /// emission off colour>1 only) — so the plasma cell, LEDs, pilot flame and muzzle flash bloom.
+    private func tessVMShape(_ sh: GPURaymarch.GShape,
+                             _ xf: (SIMD3<Float>) -> SIMD3<Float>,
+                             _ xn: (SIMD3<Float>) -> SIMD3<Float>,
+                             into v: inout [PVert]) {
+        let col = SIMD3(sh.col.x, sh.col.y, sh.col.z), bw = sh.b.w
+        var em: Float = 0                                    // emission gain: glow packs it in b.x, cylinders in b.z
+        if bw < -4.5 { em = sh.b.x } else if bw < -2.5 { em = sh.b.z }
+        let peak = max(col.x, max(col.y, col.z))
+        let m: Mat
+        if em > 0.001 || peak > 1.0 {                        // self-lit part → low albedo + HDR emission
+            let base = peak > 1e-3 ? col / peak : col
+            let gain = max(em, peak > 1 ? peak : 0)
+            m = M(base * 0.25, 0.40, 0.0, base * gain * 0.9)
+        } else {
+            m = M(col, 0.34, 0.55)                           // gunmetal: semi-glossy, fairly metallic
+        }
+        func push(_ lp: SIMD3<Float>, _ ln: SIMD3<Float>) {
+            let p = xf(lp); let n = simd_normalize(xn(ln))
+            v.append(PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
+                           ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z))
+        }
+        func tri(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>,
+                 _ na: SIMD3<Float>, _ nb: SIMD3<Float>, _ nc: SIMD3<Float>) { push(a, na); push(b, nb); push(c, nc) }
+        func quad(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>, _ d: SIMD3<Float>, _ n: SIMD3<Float>) {
+            tri(a, b, c, n, n, n); tri(a, c, d, n, n, n)
+        }
+        let c = SIMD3(sh.a.x, sh.a.y, sh.a.z)
+        if bw < -4.5 {                                       // glow → emissive sphere
+            tessSphere(c, r: sh.a.w, tri: tri)
+        } else if bw < -3.5 {                                // z-cylinder (barrel / coils / nozzle) — axis +Z
+            tessAxial(c, r: sh.a.w, half: sh.b.y, axis: SIMD3(0, 0, 1), rad1: SIMD3(1, 0, 0), rad2: SIMD3(0, 1, 0), tri: tri)
+        } else if bw < -2.5 {                                // y-cylinder (fuel tank / cell housing) — axis +Y
+            tessAxial(c, r: sh.a.w, half: sh.b.y, axis: SIMD3(0, 1, 0), rad1: SIMD3(1, 0, 0), rad2: SIMD3(0, 0, 1), tri: tri)
+        } else if bw < -1.5 {                                // box
+            tessBox(c, h: SIMD3(sh.b.x, sh.b.y, sh.b.z), quad: quad)
+        } else if bw < 0 {                                   // sphere
+            tessSphere(c, r: sh.a.w, tri: tri)
+        } else {                                             // round cone A(r1) → B(r2)
+            tessCone(c, SIMD3(sh.b.x, sh.b.y, sh.b.z), r1: sh.a.w, r2: sh.b.w, tri: tri)
         }
     }
 
@@ -1600,6 +1703,28 @@ final class RasterRenderer {
                 _ = rr.render(world, into: canvas)
                 Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-bed.png"))
                 print("RASTERSHOT: wrote raster-bed.png (institutional bed at \(cx),\(cy))")
+                break search
+            } }
+        }
+
+        // VIEWMODEL check: stand in a lamp-lit room and frame each held weapon (plasma / flamethrower /
+        // rocket) — verify the first-person gun tessellates from the shared Viewmodel shapes, anchors to the
+        // eye, is lit by the room (glinting under the lamp) and blooms its emissive parts (cell / pilot / bead).
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
+            world.monsters = []; world.props = []; world.drums = []
+            search: for cy in 4..<(m.h - 4) { for cx in 4..<(m.w - 4) where cx % 4 == 2 && cy % 4 == 2 && op(cx, cy) {
+                guard op(cx, cy - 1), op(cx, cy - 2), op(cx, cy - 3) else { continue }
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy) + 0.5)
+                world.player.dir = -.pi / 2                                  // look down −Z into the open room
+                for w in WeaponKind.allCases {
+                    world.player.current = w
+                    _ = rr.render(world, into: canvas)
+                    Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-viewmodel-\(w).png"))
+                    print("RASTERSHOT: wrote raster-viewmodel-\(w).png (held weapon at \(cx),\(cy))")
+                }
                 break search
             } }
         }
