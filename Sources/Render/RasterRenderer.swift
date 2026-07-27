@@ -78,7 +78,8 @@ final class RasterRenderer {
     private var vmScratch: [PVert] = []
     private let vmCap = 20_000
     private var nVMVerts = 0
-    // ── volumetric fire + bloom (the raymarcher's fireEmission, run as a full-screen HDR pass) ──
+    // ── HDR pipeline: the whole raster frame renders to half-float, blooms, then tonemaps to 8-bit ──
+    private let hdrTex: MTLTexture             // rgba16Float: the linear-HDR world + viewmodel (before fire/bloom/tonemap)
     private let fireHDR: MTLTexture            // rgba16Float: world + fire composited in HDR
     private let bloomA, bloomB: MTLTexture     // rgba16Float ping-pong for the bright-pass blur
     private let firePS, brightPS, blurPS, compositePS: MTLRenderPipelineState
@@ -107,7 +108,7 @@ final class RasterRenderer {
         let mpd = MTLRenderPipelineDescriptor()
         mpd.vertexFunction = lib.makeFunction(name: "rr_vertex")
         mpd.fragmentFunction = lib.makeFunction(name: "rr_fragment")
-        mpd.colorAttachments[0].pixelFormat = .rgba8Unorm
+        mpd.colorAttachments[0].pixelFormat = .rgba16Float       // LINEAR HDR (emissives/fire >1) — tonemapped in the final pass
         mpd.colorAttachments[1].pixelFormat = .r32Float          // perp-depth output (for the mesh-creature composite)
         mpd.depthAttachmentPixelFormat = .depth32Float
         let spd = MTLRenderPipelineDescriptor()
@@ -129,7 +130,8 @@ final class RasterRenderer {
         self.zTex = tex(.depth32Float, W, H, .private, [.renderTarget])
         self.perpTex = tex(.r32Float, W, H, .shared, [.renderTarget, .shaderRead])    // .shaderRead: the fire pass reads it as tmax
         self.perpScratch = [Float](repeating: 1e9, count: W * H)
-        // volumetric fire + bloom — HDR targets + full-screen pipelines
+        // HDR pipeline — half-float targets + full-screen bloom/tonemap pipelines
+        self.hdrTex  = tex(.rgba16Float, W, H, .private, [.renderTarget, .shaderRead])
         self.fireHDR = tex(.rgba16Float, W, H, .private, [.renderTarget, .shaderRead])
         self.bloomA  = tex(.rgba16Float, W, H, .private, [.renderTarget, .shaderRead])
         self.bloomB  = tex(.rgba16Float, W, H, .private, [.renderTarget, .shaderRead])
@@ -277,7 +279,7 @@ final class RasterRenderer {
         }
         // pass 2 — main PBR: baked ambient field + point lights + emission
         let mrp = MTLRenderPassDescriptor()
-        mrp.colorAttachments[0].texture = colTex
+        mrp.colorAttachments[0].texture = hdrTex           // LINEAR HDR world target (bloomed + tonemapped → colTex below)
         mrp.colorAttachments[0].loadAction = .clear; mrp.colorAttachments[0].storeAction = .store
         mrp.colorAttachments[0].clearColor = MTLClearColor(red: 0.008, green: 0.009, blue: 0.013, alpha: 1)
         mrp.colorAttachments[1].texture = perpTex          // perp-depth for the mesh composite; cleared FAR so empty pixels never occlude a creature
@@ -303,47 +305,34 @@ final class RasterRenderer {
             }
             me.endEncoding()
         }
-        // ── VOLUMETRIC FIRE (+ bloom) ── run the raymarcher's fireEmission over the lit world, BEFORE the
-        // gun and the creatures. Reads colTex (background) + perpTex (tmax, so walls occlude it), composites
-        // bg·transmittance + HDR emission into fireHDR, bright-passes + blurs the hot cores, then composites
-        // fire + bloom back into colTex. The gun (pass 2b) and the mesh creatures (CPU) then draw over it —
-        // so a corpse reads over its own pyre, exactly as on the GPU path.
+        // full-screen pass helper (fire, bloom, tonemap) — a fixed 3-vertex triangle through a chosen pipeline
+        func fullscreen(_ ps: MTLRenderPipelineState, to target: MTLTexture, _ setup: (MTLRenderCommandEncoder) -> Void) {
+            let rp = MTLRenderPassDescriptor()
+            rp.colorAttachments[0].texture = target; rp.colorAttachments[0].loadAction = .dontCare; rp.colorAttachments[0].storeAction = .store
+            guard let e = cmd.makeRenderCommandEncoder(descriptor: rp) else { return }
+            e.setRenderPipelineState(ps); e.setCullMode(.none); setup(e)
+            e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3); e.endEncoding()
+        }
+        // ── VOLUMETRIC FIRE ── the raymarcher's fireEmission over the lit HDR world (walls occlude via
+        // perp-depth): bg·transmittance + emission → fireHDR. Runs BEFORE the gun + creatures so a corpse
+        // reads over its own pyre; the whole HDR frame is bloomed + tonemapped below.
         let fireEmitters = GPURaymarch.gatherFireEmitters(world)
         if !fireEmitters.isEmpty {
             var fu = FireU(invVP: cam.mvp.inverse, eye: SIMD4(eye, world.elapsed),
                            camFwd: SIMD4(camFwd, 1.0), misc: SIMD4(Float(fireEmitters.count), Float(W), Float(H), 0))
             var emitters = fireEmitters
-            func fullscreen(_ ps: MTLRenderPipelineState, to target: MTLTexture, _ setup: (MTLRenderCommandEncoder) -> Void) {
-                let rp = MTLRenderPassDescriptor()
-                rp.colorAttachments[0].texture = target; rp.colorAttachments[0].loadAction = .dontCare; rp.colorAttachments[0].storeAction = .store
-                guard let e = cmd.makeRenderCommandEncoder(descriptor: rp) else { return }
-                e.setRenderPipelineState(ps); e.setCullMode(.none); setup(e)
-                e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3); e.endEncoding()
-            }
-            fullscreen(firePS, to: fireHDR) { e in                                   // 1 · fire → HDR
+            fullscreen(firePS, to: fireHDR) { e in
                 e.setFragmentBytes(&fu, length: MemoryLayout<FireU>.stride, index: 0)
                 e.setFragmentBytes(&emitters, length: MemoryLayout<GPURaymarch.FireEmitter>.stride * emitters.count, index: 1)
-                e.setFragmentTexture(colTex, index: 0); e.setFragmentTexture(perpTex, index: 1)
-            }
-            var bx = Fx(a: SIMD4(0, 0, Float(W), Float(H)))                          // 2 · bright-pass → bloomA
-            fullscreen(brightPS, to: bloomA) { e in e.setFragmentBytes(&bx, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(fireHDR, index: 0) }
-            var bh = Fx(a: SIMD4(1.0 / Float(W), 0, Float(W), Float(H)))             // 3 · blur H → bloomB
-            fullscreen(blurPS, to: bloomB) { e in e.setFragmentBytes(&bh, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(bloomA, index: 0) }
-            var bv = Fx(a: SIMD4(0, 1.0 / Float(H), Float(W), Float(H)))             // 4 · blur V → bloomA
-            fullscreen(blurPS, to: bloomA) { e in e.setFragmentBytes(&bv, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(bloomB, index: 0) }
-            var cx = Fx(a: SIMD4(1.15, 0, Float(W), Float(H)))                       // 5 · composite fire + bloom → colTex
-            fullscreen(compositePS, to: colTex) { e in
-                e.setFragmentBytes(&cx, length: MemoryLayout<Fx>.stride, index: 0)
-                e.setFragmentTexture(fireHDR, index: 0); e.setFragmentTexture(bloomA, index: 1)
+                e.setFragmentTexture(hdrTex, index: 0); e.setFragmentTexture(perpTex, index: 1)
             }
         }
-        // pass 2b — the first-person weapon: an always-on-top overlay. SAME PBR shader (so the gun takes the
-        // room's sector fill, lamp pools, shadows + emission), but its OWN cleared depth so it self-occludes
-        // yet is never occluded by a near wall; it writes a near perp-depth, keeping later creature/particle
-        // composites behind it (the gun is closest to the eye).
+        let frame = fireEmitters.isEmpty ? hdrTex : fireHDR    // the current HDR frame (world, + fire if any)
+        // pass 2b — the first-person weapon, drawn INTO the HDR frame (its emissives bloom too). Own cleared
+        // depth so it self-occludes but a near wall never eats it; writes a near perp-depth so creatures stay behind.
         if nVMVerts > 0 {
             let vrp = MTLRenderPassDescriptor()
-            vrp.colorAttachments[0].texture = colTex;  vrp.colorAttachments[0].loadAction = .load;  vrp.colorAttachments[0].storeAction = .store
+            vrp.colorAttachments[0].texture = frame;   vrp.colorAttachments[0].loadAction = .load;  vrp.colorAttachments[0].storeAction = .store
             vrp.colorAttachments[1].texture = perpTex; vrp.colorAttachments[1].loadAction = .load;  vrp.colorAttachments[1].storeAction = .store
             vrp.depthAttachment.texture = zTex; vrp.depthAttachment.loadAction = .clear; vrp.depthAttachment.storeAction = .dontCare; vrp.depthAttachment.clearDepth = 1.0
             if let ve = cmd.makeRenderCommandEncoder(descriptor: vrp) {
@@ -360,6 +349,19 @@ final class RasterRenderer {
                 ve.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: nVMVerts)
                 ve.endEncoding()
             }
+        }
+        // ── BLOOM + TONEMAP ── bright-pass the WHOLE HDR frame (emissive fixtures, plasma, LEDs + fire cores),
+        // separable blur, then add the bloom and ACES-grade/gamma/vignette down to the 8-bit colTex.
+        var bx = Fx(a: SIMD4(0, 0, Float(W), Float(H)))
+        fullscreen(brightPS, to: bloomA) { e in e.setFragmentBytes(&bx, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(frame, index: 0) }
+        var bh = Fx(a: SIMD4(1.0 / Float(W), 0, Float(W), Float(H)))
+        fullscreen(blurPS, to: bloomB) { e in e.setFragmentBytes(&bh, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(bloomA, index: 0) }
+        var bv = Fx(a: SIMD4(0, 1.0 / Float(H), Float(W), Float(H)))
+        fullscreen(blurPS, to: bloomA) { e in e.setFragmentBytes(&bv, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(bloomB, index: 0) }
+        var cx = Fx(a: SIMD4(0.9, 0, Float(W), Float(H)))                            // bloom gain
+        fullscreen(compositePS, to: colTex) { e in
+            e.setFragmentBytes(&cx, length: MemoryLayout<Fx>.stride, index: 0)
+            e.setFragmentTexture(frame, index: 0); e.setFragmentTexture(bloomA, index: 1)
         }
         cmd.commit(); cmd.waitUntilCompleted()
 
@@ -1393,17 +1395,12 @@ final class RasterRenderer {
         float ao = clamp(0.55+0.45*grime, 0.35, 1.0);
         col += baked * C.amb.w * alb * ao;
         col += f0 * baked * 0.6 * pow(1.0-ndv,3.0) * (1.0-rough);                    // env-ish spec off the baked field
-        col += in.emis + decalEmis + waterEmis;                                      // self-lit fixtures + decal embers/papers + pulsing nukage
-
-        if(C.eye.w>0.5){
-            col *= 0.9;
-            float lum=dot(col,float3(0.299,0.587,0.114));
-            col=mix(col*float3(0.84,0.96,1.16), col*float3(1.14,1.0,0.80), clamp(lum,0.0,1.0));
-            col=(col*(2.51*col+0.03))/(col*(2.43*col+0.59)+0.14);
-            col=pow(clamp(col,0.0,1.0), float3(1.0/2.2));
-            float2 dd=(in.clip.xy/float2(1280.0,800.0))*2.0-1.0; col *= 1.0-0.20*dot(dd,dd);
-        } else { col=pow(clamp(col,0.0,1.0), float3(1.0/2.2)); }
-        RROut o; o.color=float4(col,1); o.perp=dot(in.wp - C.eye.xyz, C.camFwd.xyz);   // perp-depth for the mesh composite
+        float3 emisTerm = in.emis + decalEmis + waterEmis;                           // self-lit fixtures + decal embers/papers + pulsing nukage
+        col += emisTerm;
+        // LINEAR HDR out; alpha = EMISSION MASK so only emitters bloom (never merely bright-lit walls).
+        // The whole frame is bloomed, then ACES-graded, gamma-corrected and vignetted ONCE in composite_frag.
+        float emL = dot(emisTerm, float3(0.299, 0.587, 0.114));
+        RROut o; o.color=float4(max(col, 0.0), min(emL, 1.0)); o.perp=dot(in.wp - C.eye.xyz, C.camFwd.xyz);
         return o;
     }
     """
@@ -1526,18 +1523,20 @@ final class RasterRenderer {
         float perp = perpTex.sample(s, uv).r;
         float denom = max(1e-3, dot(rd, U.camFwd.xyz));
         float tmax = perp >= 1e8 ? 1e8 : perp / denom;                   // perp-depth → ray distance
-        float3 bg = bgTex.sample(s, uv).rgb;
+        float4 bg = bgTex.sample(s, uv);
         float bgTrans;
         float3 emis = fireEmission(ro, rd, tmax, U.camFwd.w, F, int(U.misc.x), U.eye.w, bgTrans);
-        return float4(bg * bgTrans + emis, 1.0);
+        float emL = dot(emis, float3(0.299, 0.587, 0.114));                  // fire cores glow
+        return float4(bg.rgb * bgTrans + emis, max(bg.a * bgTrans, min(emL, 1.0)));   // preserve world emission mask under the flame
     }
 
-    // BRIGHT-PASS — keep only the hot (>threshold) energy that should bloom
+    // BRIGHT-PASS — bloom the EMITTERS only, via the emission mask in alpha (fixtures, plasma cells, LEDs,
+    // lit screens, fire cores). A bright-LIT wall has alpha 0 and never blooms — no headlamp white-out.
     fragment float4 bright_frag(FSOut in [[stage_in]], constant Fx& X [[buffer(0)]], texture2d<float> src [[texture(0)]]) {
         float2 uv = in.clip.xy / X.a.zw;
         constexpr sampler s(filter::linear, address::clamp_to_edge);
-        float3 c = src.sample(s, uv).rgb;
-        return float4(max(c - 0.85, 0.0), 1.0);
+        float4 c = src.sample(s, uv);
+        return float4(c.rgb * clamp(c.a, 0.0, 1.0), 1.0);
     }
 
     // separable Gaussian blur (a.xy = texel step)
@@ -1553,13 +1552,20 @@ final class RasterRenderer {
         return float4(acc, 1.0);
     }
 
-    // composite HDR fire + bloom → LDR (bg is already ≤1, so no global tonemap — cores clip white, bloom glows)
+    // FINAL TONEMAP — HDR frame + bloom → the headlamp grade (dim + warm/cool luma tint), ACES filmic
+    // tonemap, gamma and vignette, all applied ONCE to the whole composited frame → 8-bit. (X.a.x = bloom gain.)
     fragment float4 composite_frag(FSOut in [[stage_in]], constant Fx& X [[buffer(0)]],
                                    texture2d<float> hdr [[texture(0)]], texture2d<float> bloom [[texture(1)]]) {
         float2 uv = in.clip.xy / X.a.zw;
         constexpr sampler s(filter::linear, address::clamp_to_edge);
-        float3 c = hdr.sample(s, uv).rgb + X.a.x * bloom.sample(s, uv).rgb;
-        return float4(clamp(c, 0.0, 1.0), 1.0);
+        float3 c = hdr.sample(s, uv).rgb + X.a.x * bloom.sample(s, uv).rgb;    // HDR world/fire + bloom
+        c *= 0.9;                                                             // headlamp dim
+        float lum = dot(c, float3(0.299, 0.587, 0.114));
+        c = mix(c * float3(0.84, 0.96, 1.16), c * float3(1.14, 1.0, 0.80), clamp(lum, 0.0, 1.0));   // cool shadows, warm highs
+        c = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);         // ACES filmic
+        c = pow(clamp(c, 0.0, 1.0), float3(1.0 / 2.2));                       // gamma
+        float2 dd = uv * 2.0 - 1.0; c *= 1.0 - 0.20 * dot(dd, dd);            // vignette
+        return float4(c, 1.0);
     }
     """
 
