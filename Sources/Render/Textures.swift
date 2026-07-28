@@ -28,6 +28,7 @@ enum WallTex: Int, CaseIterable {
     case doorPanel, doorRed, doorBlue, doorYellow, exitSwitch, doorHazard, elevatorSealed
     case liftWall            // elevator-car lining — a machined steel box (no relief/grime; see MapGen.steelBoxCar)
     case concrete            // bare cast concrete — fireproof stores (fuel chamber); smooth grey, no steel relief
+    case opsBoard            // operations-centre BIG BOARD — the one full-colour (RGB) display in the complex
 }
 enum FlatTex: Int, CaseIterable {
     case concrete = 0, metalFloor, grate, nukage, ceilTech, ceilDark, ceilStone, rock, blood, teleportPad
@@ -400,6 +401,21 @@ final class Textures {
                 set(x, y, rgb(v, v + 3, v + 8))
             }}
 
+        case .opsBoard:
+            // The operations centre's BIG BOARD: a wall of large screens in a bezelled frame. Only the dark
+            // glass and its mullions are baked — the picture itself is drawn live per-fragment (mining, shipping,
+            // launches, orbital track) in the raster shader, because a plot board that doesn't move is a poster.
+            // Deliberately near-BLACK so unlit board reads black and the colour content owns all the contrast.
+            for y in 0..<s { for x in 0..<s {
+                let n = fbm(Float(x) / 40, Float(y) / 40, 16, 91, 3)
+                var v = 12 + Int((n - 0.5) * 8)
+                let cw = s / 2, ch = s / 2                                   // a 2×2 grid of big panels
+                let cx = x % cw, cy = y % ch
+                if cx < 5 || cy < 5 || cx >= cw - 5 || cy >= ch - 5 { v += 26 }        // brushed mullion
+                if cx < 2 || cy < 2 { v -= 6 }                                        // groove inside the bezel
+                set(x, y, rgb(v, v + 1, v + 4))
+            }}
+
         case .concrete:
             // bare cast concrete — a fireproof store: smooth neutral grey with faint cloudy
             // mottling, a coarse grid of form-tie dimples, and thin vertical damp-stains. No
@@ -511,6 +527,7 @@ final class Textures {
         case .computer: return 0.5           // just the bezels
         case .liftWall: return 0.3           // barely-there brushing — a machined box
         case .concrete: return 0.25          // poured concrete — near-flat, only the tie dimples catch
+        case .opsBoard: return 0.4           // just the bezels between the board's panels
         case .glass: return 0.25             // just the frame / mullions
         case .none: return 0
         }

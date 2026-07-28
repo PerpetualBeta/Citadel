@@ -76,6 +76,22 @@ enum MapGen {
     /// nobody monitors down here, so dormitories and CRT display banks are both suppressed. Set once at the
     /// top of attemptGen (generation is sequential), like `fuelStoreCells`.
     private static var industrialFloor = false
+    // ── OPERATIONS CENTRE ── one per floor on 1–6: the room from which the colony ran its mining, shipping,
+    // launches/landings and orbital work. Pure scenery — ranks of amber operator consoles facing a big board
+    // that is the ONE full-colour display in the complex. No bunks, no lockers, no fuel drums; power points and
+    // pickups are fine. Chosen once per level and consulted by the furnishing passes, like `fuelStoreCells`.
+    private static var opsRoomIndex = -1
+    private static var opsBoardSide = (0, 0)      // room interior → the wall carrying the board
+    static let opsMinDim = 4                      // both dims ≥ this, so at least one ranked row + an aisle fits
+    private static func isOpsCentre(_ ri: Int) -> Bool { ri == opsRoomIndex }
+    /// Read-only view of the chosen ops room, for the ASCII layout dump.
+    static var debugOpsRoom: Int { opsRoomIndex }
+    /// Any damaging floor inside the room (the ops-centre pick needs this at attemptGen scope, where
+    /// populate's own local `roomHasHazard` isn't in view).
+    private static func roomHasHazardCells(_ map: GameMap, _ r: Room) -> Bool {
+        for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) where map.hazard[map.idx(xx, yy)] { return true } }
+        return false
+    }
     /// A room is a DORMITORY iff it's large enough and is neither the start room (arrival
     /// elevator) nor the exit room (exit elevator/teleporter) — so no elevator ever sits in a
     /// dorm. The Queen may still lair in one. `roomCount-1` is the exit room (see attemptGen).
@@ -373,6 +389,52 @@ enum MapGen {
         // ── ARC terminal banks in the office-to-be rooms (before the bake, so
         //    their amber wash lights the room) ──
         placeTerminalBanks(map, rooms: rooms, rng: &rng)
+
+        // ── OPERATIONS CENTRE (floors 1–6) ── pick the room and paint its big board. Runs AFTER retexWalls so
+        //    the board survives the per-room wall pass. The board takes the room's longest UNBROKEN wall (no
+        //    doorway in it, nothing already special like a terminal bank) so the picture is never cut in half.
+        opsRoomIndex = -1; opsBoardSide = (0, 0)
+        if !industrialFloor {
+            // Score the longest CONTIGUOUS clear stretch on each side, not the whole side: insisting a side be
+            // unbroken end to end left some floors with no ops centre at all, and a board occupying part of a
+            // wall is how a real control room looks anyway. Board width then varies floor to floor for free.
+            var best = (score: 0, ri: -1, side: (0, 0), from: 0, len: 0)
+            for (ri, r) in rooms.enumerated() where ri != 0 && ri != rooms.count - 1 {
+                guard min(r.w, r.h) >= opsMinDim, !roomHasHazardCells(map, r) else { continue }
+                for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
+                    let horiz = (dy != 0)
+                    let n = horiz ? r.w : r.h
+                    var runFrom = 0, runLen = 0, bestFrom = 0, bestLen = 0
+                    for t in 0..<n {
+                        let fx = horiz ? r.x + t : (dx > 0 ? r.x + r.w - 1 : r.x)
+                        let fy = horiz ? (dy > 0 ? r.y + r.h - 1 : r.y) : r.y + t
+                        let wx = fx + dx, wy = fy + dy
+                        var ok = map.inBounds(wx, wy) && map.inBounds(fx, fy)
+                        if ok {
+                            let wi = map.idx(wx, wy), fi = map.idx(fx, fy)
+                            // solid wall behind, no doorway in it, and open floor in front to stand on
+                            ok = map.wall[wi] != 0 && map.doors[wi] == nil && map.wall[fi] == 0 && map.doors[fi] == nil
+                                 && map.wall[wi] != WallTex.computer.rawValue      // a CRT bank wall isn't the big board
+                        }
+                        if ok { if runLen == 0 { runFrom = t }; runLen += 1
+                                if runLen > bestLen { bestLen = runLen; bestFrom = runFrom } }
+                        else { runLen = 0 }
+                    }
+                    guard bestLen >= 3 else { continue }
+                    let score = bestLen * 10 + r.w * r.h                 // widest board first, then the roomiest
+                    if score > best.score { best = (score, ri, (dx, dy), bestFrom, bestLen) }
+                }
+            }
+            if best.ri >= 0 {
+                opsRoomIndex = best.ri; opsBoardSide = best.side
+                let r = rooms[best.ri], (dx, dy) = best.side, horiz = (dy != 0)
+                for t in best.from..<(best.from + best.len) {
+                    let fx = horiz ? r.x + t : (dx > 0 ? r.x + r.w - 1 : r.x)
+                    let fy = horiz ? (dy > 0 ? r.y + r.h - 1 : r.y) : r.y + t
+                    map.wall[map.idx(fx + dx, fy + dy)] = WallTex.opsBoard.rawValue
+                }
+            }
+        }
 
         // ── colored sector lighting (baked once; raycaster just samples it) ──
         Lighting.bake(map, level: level)
@@ -984,6 +1046,7 @@ enum MapGen {
                 for attempt in 0..<40 {
                     let ri = rng.i(1, rooms.count - 1)
                     if dormRoom[ri] { continue }               // no fuel drums in dormitories
+                    if isOpsCentre(ri) { continue }           // nor in the operations centre — volatile fuel has no place at the consoles
                     let r = rooms[ri]
                     var p: SIMD2<Float>? = nil
                     if attempt < 28 {                              // prefer free corners
@@ -1188,6 +1251,37 @@ enum MapGen {
             let hazard = roomHasHazard(r)
             // structural support for ANY large hall — dorm, open room, or a large start/exit chamber
             if min(r.w, r.h) >= MapGen.dormMinDim { placeColumns(r, ri) }
+            // ── OPERATIONS CENTRE ── ranks of operator consoles facing the big board, and NOTHING else: no
+            //    bunks, no lockers, no drums (handled by taking this branch before any of those paths run).
+            //    Rows run parallel to the board with a walkable aisle between each, and every row is broken by
+            //    a gangway so the player can always cross the room — it is scenery, never a barricade.
+            if isOpsCentre(ri) && !hazard {
+                let (bdx, bdy) = opsBoardSide
+                let horiz = (bdy != 0)                                   // board on a N/S wall → rows run along X
+                let faceDir = SIMD2<Float>(-Float(bdx), -Float(bdy))     // board → room: the console's +Z (operator side)
+                let rowsAvail = horiz ? r.h : r.w
+                let alongN = horiz ? r.w : r.h
+                // A crossing gangway is only worth reserving when the row is long enough to be a barricade —
+                // in a narrow room the skip could delete the only console the row can hold.
+                let gangway = (alongN - 2) >= 4 ? alongN / 2 : -1
+                // depth 1 is the board's own front row (kept clear so the board is readable), then rows every 2
+                var depth = 2
+                while depth <= max(2, rowsAvail - 2) {
+                    for t in 1..<max(2, alongN - 1) where t != gangway {
+                        // walk from the board inward by `depth`
+                        let xx = horiz ? r.x + t : (bdx > 0 ? r.x + r.w - 1 - depth : r.x + depth)
+                        let yy = horiz ? (bdy > 0 ? r.y + r.h - 1 - depth : r.y + depth) : r.y + t
+                        guard map.inBounds(xx, yy), map.wall[map.idx(xx, yy)] == 0, map.doors[map.idx(xx, yy)] == nil,
+                              !map.hazard[map.idx(xx, yy)], !nearOpening(xx, yy, ri) else { continue }
+                        let p = SIMD2<Float>(Float(xx) + 0.5, Float(yy) + 0.5)
+                        guard freeCell(p, 0.85) else { continue }
+                        props.append(Prop(kind: .console, pos: p, yaw: yawFor(faceDir)))
+                        placed.append(p)
+                    }
+                    depth += 2                                           // console row, then an aisle
+                }
+                continue
+            }
             // ── DORMITORY: large, hazard-free, not the start/exit room → a dedicated sleeping hall ──
             if isDormitory(r, ri, rooms.count) && !hazard {
                 furnishDormitory(r, ri)
@@ -1316,6 +1410,11 @@ enum MapGen {
                     else if max(abs(dx), abs(dy)) == 1 && map.wall[ni] == 0 && roomOf[ni] != ri { clear = false }  // 1 cell off a room-mouth
                     else if max(abs(dx), abs(dy)) == 1 && map.wall[ni] == WallTex.computer.rawValue { clear = false }  // a pipe never flows ACROSS a terminal bank
                 } }
+                // never in front of the operations BIG BOARD — services are not plumbed across the plot
+                // displays. Done here, in the shared routing mask, so BOTH renderers respect it.
+                for (ox, oy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] where map.inBounds(xx + ox, yy + oy) {
+                    if map.wall[map.idx(xx + ox, yy + oy)] == WallTex.opsBoard.rawValue { clear = false }
+                }
                 if clear { map.pipe[i] = 1 }
             } }
         }

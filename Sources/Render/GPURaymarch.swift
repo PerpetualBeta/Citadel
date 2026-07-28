@@ -2327,6 +2327,21 @@ enum GPURaymarch {
             return [iCylinder(SIMD3(0, 0.5, 0),  r: r,        halfH: 0.5,  round: 0.01, steel, 0.01), // shaft
                     iCylinder(SIMD3(0, 0.05, 0), r: r + 0.06, halfH: 0.05, round: 0.01, darkM, 0.008),// base plinth
                     iCylinder(SIMD3(0, 0.95, 0), r: r + 0.06, halfH: 0.05, round: 0.01, darkM, 0.008)]// capital (meets the ceiling)
+        case .console:
+            // OPERATIONS CONSOLE — the operator sits on the +Z side, so the amber screen and keyboard face +Z
+            // while the −Z face (toward the big board the operator is watching) carries an indicator strip
+            // rather than a blank slab. Screen is ARC amber phosphor, over-bright so it self-glows like every
+            // other terminal in the complex; the big board is the ONE display that breaks into full colour.
+            let work = SIMD3<Float>(0.34, 0.35, 0.39), amber = SIMD3<Float>(1.04, 0.78, 0.34)
+            let lampW = SIMD3<Float>(1.06, 0.96, 0.74)
+            return [iBox(SIMD3(0, 0.16, 0), SIMD3(0.30, 0.16, 0.20), 0.012, work, 0.006),                  // console pedestal
+                    iBox(SIMD3(0, 0.345, 0), SIMD3(0.32, 0.022, 0.22), 0.008, work * 1.1, 0.005),          // worktop
+                    iBox(SIMD3(0, 0.52, -0.06), SIMD3(0.26, 0.16, 0.05), 0.012, darkM, 0.006),             // monitor bank housing
+                    iBox(SIMD3(0, 0.535, -0.004), SIMD3(0.125, 0.082, 0.012), 0.004, amber, d),            // glowing amber screen (faces +Z) — modest, framed by the housing
+                    iBox(SIMD3(0, 0.372, 0.10), SIMD3(0.155, 0.014, 0.055), 0.004, darkM, d),              // keyboard
+                    iBox(SIMD3(0, 0.30, -0.205), SIMD3(0.22, 0.032, 0.014), 0.004, amber * 0.42, d),       // indicator strip, board side
+                    iBox(SIMD3(0.245, 0.60, -0.02), SIMD3(0.013, 0.115, 0.013), 0.005, steel, d),          // task-lamp stalk
+                    iBox(SIMD3(0.245, 0.715, 0.03), SIMD3(0.055, 0.022, 0.045), 0.012, lampW, d)]          // task-lamp head (warm)
         case .wallPipe:
             return pipeRunShapes(length: 1)                    // length comes from the Prop at pack time
         }

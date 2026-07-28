@@ -113,6 +113,7 @@ enum MaterialPreview {
         case .elevatorSealed: return "elevatorSealed"
         case .liftWall: return "liftWall"
         case .concrete: return "concrete"
+        case .opsBoard: return "opsBoard"
         }
     }
     private static func nameF(_ f: FlatTex) -> String {

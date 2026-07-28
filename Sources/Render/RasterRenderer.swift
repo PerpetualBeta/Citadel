@@ -813,6 +813,9 @@ final class RasterRenderer {
             for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
                 let nx = x + dx, ny = y + dy
                 guard map.inBounds(nx, ny), map.wall[map.idx(nx, ny)] != 0, map.doors[map.idx(nx, ny)] == nil else { continue }
+                // Services are never run across the operations big board — nobody plumbs pipework over the
+                // plot displays. The board wall is skipped, so the run either picks another wall or stops.
+                if map.wall[map.idx(nx, ny)] == WallTex.opsBoard.rawValue { continue }
                 return (dx, dy)
             }
             return nil
@@ -991,6 +994,7 @@ final class RasterRenderer {
         case .elevatorSealed: return M(SIMD3(0.40, 0.42, 0.47), 0.50, 0.60)
         case .liftWall:       return M(SIMD3(0.42, 0.44, 0.49), 0.50, 0.62)
         case .concrete:       return M(SIMD3(0.52, 0.51, 0.48), 0.92, 0.02)   // matte poured concrete — no metal, no glow
+        case .opsBoard:       return M(SIMD3(0.05, 0.055, 0.065), 0.42, 0.20)   // dark glass; the RGB content is emissive (see rr_fragment)
         }
     }
     private func flatMat(_ id: Int) -> Mat {
@@ -1996,6 +2000,76 @@ final class RasterRenderer {
                     wallGlow=float3(1.0,0.60,0.13)*pow(clamp(glow,0.0,1.5),1.5)*2.5;            // amber content, self-lit (γ crush → dark mids, bright readout)
                     wemis=0.0;
                 } else { alb=dead?float3(0.012,0.012,0.014):float3(0.02,0.022,0.026); rough=1.0; wemis=0.0; }  // dark MATTE steel bezel / dead unit → blacks read black
+            } else if(wid==21u){
+                // ── THE BIG BOARD (ops centre) ── the ONE full-colour display in the colony: everything else
+                // is amber phosphor, so the plot board reads as the room that matters. Four panels, each a live
+                // operational picture: ORBITAL ground-track, MINING shaft/tonnage, SHIPPING manifest+bays, and
+                // LAUNCH pad status. Drawn per-fragment so it genuinely moves — a static plot board is a poster.
+                float2 g2 = in.uv * float2(0.5, 2.0);                               // BIG panels: one per 2 cells, 2 high
+                float2 pc = floor(g2); float2 q = fract(g2);
+                // PARITY, not the raw cell index: the along-wall coordinate grows without bound and goes
+                // NEGATIVE (the U axis flips by wall facing), so indexing on it put every panel in one branch.
+                float ax = fract(pc.x * 0.5) * 2.0, ay = fract(pc.y * 0.5) * 2.0;    // each 0 or 1
+                float panel = ax + ay * 2.0;                                         // 0..3
+                float2 s = (q - 0.055) / 0.89;                                      // inside the bezel
+                float3 pic = float3(0.0);
+                if(s.x > 0.0 && s.x < 1.0 && s.y > 0.0 && s.y < 1.0){
+                    float grid = 0.035 * (step(0.965, fract(s.x*10.0)) + step(0.965, fract(s.y*7.0)));
+                    if(panel < 0.5){
+                        // ORBITAL OPERATIONS — a ground track sinusoid crawling over a plate carrée world
+                        pic += float3(0.05,0.12,0.22) + float3(0.0,0.10,0.18)*grid*4.0;         // ocean
+                        float land = vnoise(float2(s.x*7.0, s.y*4.0));
+                        pic = mix(pic, float3(0.10,0.26,0.14), smoothstep(0.52,0.60,land));      // landmass
+                        float track = 0.5 + 0.30*sin(s.x*9.4 - wt*0.30);
+                        pic += float3(0.20,1.00,0.55) * (1.0 - smoothstep(0.0,0.010,abs(s.y-track)));
+                        float sx = fract(wt*0.055);                                              // the vehicle
+                        float d2 = length((s - float2(sx, 0.5 + 0.30*sin(sx*9.4 - wt*0.30))) * float2(1.0,1.6));
+                        pic += float3(1.0,0.85,0.30) * (1.0 - smoothstep(0.0,0.030,d2));
+                    } else if(panel < 1.5){
+                        // MINING — shaft section with ore seams + a live tonnage histogram
+                        pic += float3(0.16,0.13,0.10)*(0.5+0.5*vnoise(float2(s.x*9.0,s.y*9.0))) + grid;
+                        float seam = vnoise(float2(s.x*5.0, s.y*3.0 + 11.0));
+                        pic = mix(pic, float3(0.95,0.55,0.12), smoothstep(0.62,0.72,seam)*0.85); // ore seam
+                        if(s.y < 0.42){                                                          // tonnage bars
+                            float b = floor(s.x*11.0);
+                            float hgt = 0.06 + 0.34*pow(0.5+0.5*sin(wt*0.9 + b*1.7), 1.6);
+                            float on = step(s.y, hgt) * step(0.18, fract(s.x*11.0));
+                            pic = mix(pic, mix(float3(0.15,0.85,0.35), float3(0.95,0.25,0.15), smoothstep(0.22,0.38,hgt)), on);
+                        }
+                        pic += float3(0.9,0.15,0.10) * step(0.985, fract(wt*0.5)) * 0.6;         // fault klaxon flash
+                    } else if(panel < 2.5){
+                        // SHIPPING — a cargo-bay allocation grid beside a scrolling manifest
+                        pic += float3(0.05,0.06,0.09) + grid;
+                        if(s.x < 0.52){                                                          // bay grid
+                            float2 c2 = floor(float2(s.x*7.0, s.y*6.0));
+                            float st = h21(c2 + floor(wt*0.20));
+                            float3 col = st > 0.72 ? float3(0.15,0.80,0.35) : (st > 0.42 ? float3(0.95,0.72,0.12) : float3(0.20,0.28,0.40));
+                            float ins = step(0.14, fract(s.x*7.0)) * step(0.16, fract(s.y*6.0));
+                            pic = mix(pic, col, ins*0.9);
+                        } else {                                                                 // manifest rows
+                            float row = floor(s.y*12.0 + wt*0.55);
+                            float len = 0.10 + 0.34*h21(float2(row, 3.0));
+                            float ch = step(0.42, fract((s.x-0.54)*22.0 + h21(float2(row,7.0))*13.0));
+                            pic += float3(0.55,0.85,1.00) * ch * step(s.x-0.54, len) * step(0.22, fract(s.y*12.0 + wt*0.55));
+                        }
+                    } else {
+                        // LAUNCH / LANDING — pad status lamps over an ascent profile
+                        pic += float3(0.04,0.05,0.07) + grid;
+                        float prof = pow(clamp(s.x*1.15, 0.0, 1.0), 2.2);                        // ascent curve
+                        pic += float3(0.35,0.75,1.00) * (1.0 - smoothstep(0.0,0.012,abs(s.y - 0.10 - prof*0.72)));
+                        for(int pi = 0; pi < 4; pi++){                                           // four pads
+                            float fx2 = 0.13 + float(pi)*0.25;
+                            float ph2 = fract(wt*0.13 + float(pi)*0.31);
+                            float3 lamp = ph2 < 0.45 ? float3(0.15,0.85,0.30) : (ph2 < 0.75 ? float3(0.95,0.70,0.10) : float3(0.95,0.20,0.12));
+                            float d3 = length((s - float2(fx2, 0.88)) * float2(1.0,1.5));
+                            pic += lamp * (1.0 - smoothstep(0.012,0.030,d3));
+                        }
+                        float cd = fract(wt*0.09);                                               // countdown bar
+                        pic += float3(0.95,0.85,0.25) * step(s.y,0.055) * step(s.x,cd) * step(0.03,s.y);
+                    }
+                    pic *= 0.94 + 0.10*sin(wt*23.0 + panel*5.0);                                 // panel refresh shimmer
+                }
+                wallGlow += pic * 0.45;
             } else if(wid==4u){
                 wemis*=0.86+0.14*sin(wt*9.0+h21(floor(in.wp.xz))*23.0);                         // litPanel/bulkhead strip: gentle flicker
             }
@@ -3072,6 +3146,36 @@ final class RasterRenderer {
             } else {
                 print("RASTERSHOT: elevator check skipped (no exit-cell door)")
             }
+        }
+
+        // OPERATIONS CENTRE check — stand at the back of the room on the board's axis, looking down the ranks of
+        // amber consoles at the full-colour big board: the one display in the colony that isn't amber phosphor.
+        for lvl in [1, 3] {
+            let world = World(level: lvl, colonyIndex: 0, seed: 3)
+            let m = world.map
+            world.monsters = []; world.colonists = []
+            let board = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.opsBoard.rawValue }
+            guard !board.isEmpty else { print("RASTERSHOT: ops centre check skipped (no board on level \(lvl))"); continue }
+            // the board's centre cell, and the room direction is whichever side of it is open
+            let bc = board[board.count / 2], bx = bc % m.w, by = bc / m.w
+            var rdx = 0, rdy = 0
+            for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)]
+                where m.inBounds(bx + dx, by + dy) && m.wall[m.idx(bx + dx, by + dy)] == 0 { rdx = dx; rdy = dy; break }
+            guard rdx != 0 || rdy != 0 else { continue }
+            var back = 1                                                       // walk out from the board while open
+            while back < 5, m.inBounds(bx + rdx * (back + 1), by + rdy * (back + 1)),
+                  m.wall[m.idx(bx + rdx * (back + 1), by + rdy * (back + 1))] == 0 { back += 1 }
+            // …and never stand INSIDE a console: its own screen then fills the whole frame (which is exactly
+            // how this check first misled me into thinking the board was blown out).
+            while back > 1, world.props.contains(where: { $0.kind == .console &&
+                  simd_length($0.pos - SIMD2(Float(bx + rdx * back) + 0.5, Float(by + rdy * back) + 0.5)) < 0.7 }) { back -= 1 }
+            world.player.pos = SIMD2(Float(bx + rdx * back) + 0.5, Float(by + rdy * back) + 0.5)
+            world.player.dir = atan2(Float(-rdy), Float(-rdx))                 // face the board
+            _ = rr.render(world, into: canvas)
+            Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1,
+                              to: dir.appendingPathComponent("raster-ops-\(lvl).png"))
+            let consoles = world.props.filter { $0.kind == .console }.count
+            print("RASTERSHOT: wrote raster-ops-\(lvl).png (board \(board.count) cells at \(bx),\(by); \(consoles) consoles; stood \(back) back)")
         }
 
         // CORPSE/DRONE POSE-RESOLVE check — a NUMERIC assertion, not a picture: a body settling into a wall at a
