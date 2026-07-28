@@ -23,6 +23,8 @@ enum FurnitureKind: Int, CaseIterable {
     case console     // operations-centre operator console — amber screen, keyboard, task lamp; ranked in rows facing the big board
     case cabinet     // MEDICAL — stainless steel counter/cabinet run with drawers (lines a wall)
     case sink        // MEDICAL — stainless steel scrub sink with mixer tap and splashback
+    case range       // CANTEEN — stainless range: hob rings, oven door, extraction hood over
+    case canteenTable // CANTEEN — dining table with a bench seat either side (free-standing, ranked in rows)
 }
 
 struct Prop {

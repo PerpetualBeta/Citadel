@@ -996,6 +996,7 @@ final class RasterRenderer {
         case .concrete:       return M(SIMD3(0.52, 0.51, 0.48), 0.92, 0.02)   // matte poured concrete — no metal, no glow
         case .opsBoard:       return M(SIMD3(0.05, 0.055, 0.065), 0.42, 0.20)   // dark glass; the RGB content is emissive (see rr_fragment)
         case .medWall:        return M(SIMD3(0.82, 0.83, 0.82), 0.68, 0.02)     // white painted concrete — bright, matte, sterile
+        case .subwayTile:     return M(SIMD3(0.86, 0.87, 0.86), 0.24, 0.04)     // glazed ceramic — bright and a touch shiny
         }
     }
     private func flatMat(_ id: Int) -> Mat {
@@ -3148,6 +3149,32 @@ final class RasterRenderer {
             } else {
                 print("RASTERSHOT: elevator check skipped (no exit-cell door)")
             }
+        }
+
+        // CANTEEN check — stand off the range and look down the galley line, so the subway tile, the stainless
+        // fittings under the extraction hood and (where they share the room) the dining tables all read.
+        for lvl in [3, 4] {
+            let world = World(level: lvl, colonyIndex: 0, seed: 3)
+            let m = world.map
+            world.monsters = []; world.colonists = []
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+            var shot = false
+            for pr in world.props where !shot && pr.kind == .range {
+                for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)] {
+                    let sx = Int(pr.pos.x) + dx * 3, sy = Int(pr.pos.y) + dy * 3
+                    guard op(sx, sy), op(Int(pr.pos.x) + dx, Int(pr.pos.y) + dy), op(Int(pr.pos.x) + dx * 2, Int(pr.pos.y) + dy * 2) else { continue }
+                    world.player.pos = SIMD2(Float(sx) + 0.5, Float(sy) + 0.5)
+                    world.player.dir = atan2(Float(-dy), Float(-dx))     // look back at the galley
+                    _ = rr.render(world, into: canvas)
+                    Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1,
+                                      to: dir.appendingPathComponent("raster-canteen-\(lvl).png"))
+                    let tiles = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.subwayTile.rawValue }.count
+                    let tables = world.props.filter { $0.kind == .canteenTable }.count
+                    print("RASTERSHOT: wrote raster-canteen-\(lvl).png (\(tiles) tiled cells, \(tables) tables)")
+                    shot = true; break
+                }
+            }
+            if !shot { print("RASTERSHOT: canteen check skipped on level \(lvl)") }
         }
 
         // MEDICAL CENTRE check — stand back from a bed that sits in a white-walled room and look across it, so

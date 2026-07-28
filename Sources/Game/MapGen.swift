@@ -90,6 +90,25 @@ enum MapGen {
     private static var medRooms = Set<Int>()
     static let medMinDim = 4
     private static func isMedical(_ ri: Int) -> Bool { medRooms.contains(ri) }
+    // ── CANTEEN / GALLEY ── one per floor on 1–6: white ceramic subway tile, white painted ceiling, concrete
+    // deck, brightly but WARMLY lit — people ate here. A galley line down one wall (range under its extraction
+    // hood, scrub sink, stainless prep counters, dry-store lockers) and ranked dining tables in the middle.
+    private static var canteenRoom = -1        // the GALLEY (kitchen end)
+    private static var canteenMess = -1        // a separate MESS HALL next door, or −1 when the galley also seats
+    static let canteenMinDim = 4
+    /// Both halves count as canteen for surfacing and for keeping fuel drums out.
+    private static func isCanteen(_ ri: Int) -> Bool { ri == canteenRoom || (canteenMess >= 0 && ri == canteenMess) }
+    /// Two rooms are NEIGHBOURS when they face each other across a wall — their extent overlaps on one axis
+    /// and the gap on the other is a wall's thickness. Used to put the mess hall next to the galley.
+    private static func roomsAdjacent(_ a: Room, _ b: Room) -> Bool {
+        let xOverlap = a.x < b.x + b.w && b.x < a.x + a.w
+        let yOverlap = a.y < b.y + b.h && b.y < a.y + a.h
+        let xGap = max(a.x - (b.x + b.w), b.x - (a.x + a.w))
+        let yGap = max(a.y - (b.y + b.h), b.y - (a.y + a.h))
+        if xOverlap && yGap >= 0 && yGap <= 2 { return true }
+        if yOverlap && xGap >= 0 && xGap <= 2 { return true }
+        return false
+    }
     /// Read-only view of the chosen ops room, for the ASCII layout dump.
     static var debugOpsRoom: Int { opsRoomIndex }
     /// Any damaging floor inside the room (the ops-centre pick needs this at attemptGen scope, where
@@ -442,6 +461,51 @@ enum MapGen {
             }
         }
 
+        // ── CANTEEN (floors 1–6) ── the colony's mess. Chosen from what's left after the ops centre, the
+        //    dormitories and the sick bays have taken theirs, so the room types never fight over a room.
+        canteenRoom = -1
+        if !industrialFloor {
+            var best = (score: 0, ri: -1)
+            for (ri, r) in rooms.enumerated() where ri != 0 && ri != rooms.count - 1 {
+                guard min(r.w, r.h) >= canteenMinDim, !roomHasHazardCells(map, r),
+                      ri != opsRoomIndex, !isDormitory(r, ri, rooms.count) else { continue }
+                let score = r.w * r.h                                  // the roomiest candidate — a mess hall wants space
+                if score > best.score { best = (score, ri) }
+            }
+            canteenMess = -1
+            if best.ri >= 0 {
+                canteenRoom = best.ri
+                // A modest room cannot hold a working galley line AND ranked tables, so if there is a free room
+                // NEXT DOOR, put the mess hall in it — galley one side of the wall, seating the other, which is
+                // how a real canteen is laid out anyway. A genuinely big room keeps both under one roof.
+                if min(rooms[best.ri].w, rooms[best.ri].h) < 7 {
+                    var bestMess = (score: 0, ri: -1)
+                    for (ri, r2) in rooms.enumerated() where ri != 0 && ri != rooms.count - 1 && ri != best.ri {
+                        guard min(r2.w, r2.h) >= canteenMinDim, !roomHasHazardCells(map, r2), ri != opsRoomIndex,
+                              !isDormitory(r2, ri, rooms.count), roomsAdjacent(rooms[best.ri], r2) else { continue }
+                        if r2.w * r2.h > bestMess.score { bestMess = (r2.w * r2.h, ri) }
+                    }
+                    canteenMess = bestMess.ri
+                }
+                for ri in [canteenRoom, canteenMess] where ri >= 0 {
+                    let r = rooms[ri]
+                    for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) {
+                        let i = map.idx(xx, yy)
+                        guard map.wall[i] == 0, map.doors[i] == nil else { continue }
+                        map.floor[i] = FlatTex.concrete.rawValue       // plain concrete deck
+                        map.ceil[i] = FlatTex.ceilWhite.rawValue       // white painted ceiling
+                    } }
+                    for yy in (r.y - 1)...(r.y + r.h) { for xx in (r.x - 1)...(r.x + r.w) where map.inBounds(xx, yy) {
+                        let i = map.idx(xx, yy)
+                        guard map.wall[i] != 0, map.doors[i] == nil,
+                              map.wall[i] != WallTex.opsBoard.rawValue, map.wall[i] != WallTex.liftWall.rawValue,
+                              map.wall[i] != WallTex.doorHazard.rawValue, map.wall[i] != WallTex.medWall.rawValue else { continue }
+                        map.wall[i] = WallTex.subwayTile.rawValue      // white ceramic subway tile
+                    } }
+                }
+            }
+        }
+
         // ── MEDICAL CENTRES ── one or more per floor. Any room that isn't already claimed and carries no hazard
         //    (toxic pools are barred outright) becomes a sick bay: white painted concrete walls, a white painted
         //    ceiling with its light run, and a plain concrete deck. Every floor gets at least one where the
@@ -451,7 +515,7 @@ enum MapGen {
             var cands: [Int] = []
             for (ri, r) in rooms.enumerated() where ri != 0 && ri != rooms.count - 1 {
                 guard min(r.w, r.h) >= medMinDim, !roomHasHazardCells(map, r), ri != opsRoomIndex,
-                      !isDormitory(r, ri, rooms.count) else { continue }
+                      ri != canteenRoom, ri != canteenMess, !isDormitory(r, ri, rooms.count) else { continue }
                 cands.append(ri)
             }
             let want = min(cands.count, rooms.count >= 9 ? 2 : 1)
@@ -493,6 +557,16 @@ enum MapGen {
                 guard map.wall[i] == 0 else { continue }
                 map.light[i] = max(map.light[i], 0.95)
                 map.lightColor[i] = SIMD3(0.97, 0.98, 1.0)
+            } }
+        }
+        // The canteen is bright but WARM — a mess hall, not a clinic.
+        for ri in [canteenRoom, canteenMess] where ri >= 0 {
+            let r = rooms[ri]
+            for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) {
+                let i = map.idx(xx, yy)
+                guard map.wall[i] == 0 else { continue }
+                map.light[i] = max(map.light[i], 0.90)
+                map.lightColor[i] = SIMD3(1.0, 0.965, 0.90)
             } }
         }
         for c in [map.exitCell, map.entryCell] where c >= 0 {
@@ -1100,6 +1174,7 @@ enum MapGen {
                     if dormRoom[ri] { continue }               // no fuel drums in dormitories
                     if isOpsCentre(ri) { continue }           // nor in the operations centre — volatile fuel has no place at the consoles
                     if isMedical(ri) { continue }             // nor in a medical centre — it is a sterile room
+                    if isCanteen(ri) { continue }             // nor in the canteen — nobody stores fuel where people eat
                     let r = rooms[ri]
                     var p: SIMD2<Float>? = nil
                     if attempt < 28 {                              // prefer free corners
@@ -1304,6 +1379,54 @@ enum MapGen {
             let hazard = roomHasHazard(r)
             // structural support for ANY large hall — dorm, open room, or a large start/exit chamber
             if min(r.w, r.h) >= MapGen.dormMinDim { placeColumns(r, ri) }
+            // ── CANTEEN / GALLEY ── the mess: a working galley line down the wall with the most room (range under
+            //    its hood, scrub sink, stainless prep counters, dry stores), and ranked dining tables through the
+            //    middle with an aisle between every row, so the hall stays crossable.
+            if isCanteen(ri) && !hazard {
+                // When the canteen is split across two rooms, this room is EITHER the galley OR the mess — the
+                // galley line goes in one and the tables in the other. Unsplit, one room does both.
+                let isGalley = (ri == canteenRoom)
+                let seats = (canteenMess >= 0) ? (ri == canteenMess) : true
+                let slots = wallSlots(r, ri)
+                var byWall: [SIMD2<Float>: [Slot]] = [:]
+                for s in slots { byWall[s.inward, default: []].append(s) }
+                let walls = byWall.keys.sorted { (byWall[$0]?.count ?? 0) > (byWall[$1]?.count ?? 0) }
+                // GALLEY LINE on the longest wall, in service order: range, sink, then prep counters
+                if isGalley, let galley = walls.first, let run = byWall[galley]?.sorted(by: { ($0.x + $0.y) < ($1.x + $1.y) }) {
+                    var placedRange = false, placedSink = false, counters = 0
+                    for s in run {
+                        if !placedRange { if placeProp(.range, s) { placedRange = true; continue } }
+                        if !placedSink { if placeProp(.sink, s) { placedSink = true; continue } }
+                        if counters < 3 { if placeProp(.cabinet, s) { counters += 1; continue } }
+                    }
+                }
+                // DRY STORES on another wall
+                if isGalley, walls.count > 1, let run = byWall[walls[1]] {
+                    var locks = 0
+                    for s in run where locks < 2 { if placeProp(.locker, s) { locks += 1 } }
+                }
+                // DINING TABLES on a 2-cell grid across the room's INTERIOR, which adapts to whatever shape the
+                // generator hands us — a fixed "rows from depth 2" scheme silently produced nothing at all in a
+                // 4-cell-wide room. The 2-cell step leaves a clear lane between every table.
+                let horiz = r.w >= r.h
+                for gy in stride(from: r.y + 1, through: r.y + r.h - 2, by: 2) where seats {
+                    for gx in stride(from: r.x + 1, through: r.x + r.w - 2, by: 2) {
+                        let xx = gx, yy = gy
+                        guard map.inBounds(xx, yy), map.wall[map.idx(xx, yy)] == 0, map.doors[map.idx(xx, yy)] == nil,
+                              !map.hazard[map.idx(xx, yy)] else { continue }
+                        var byDoor = false                                 // clear of the doorway itself, not its whole margin
+                        for (ox, oy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] where map.inBounds(xx + ox, yy + oy) {
+                            if map.doors[map.idx(xx + ox, yy + oy)] != nil { byDoor = true }
+                        }
+                        guard !byDoor else { continue }
+                        let p = SIMD2<Float>(Float(xx) + 0.5, Float(yy) + 0.5)
+                        guard freeCell(p, 1.0) else { continue }
+                        props.append(Prop(kind: .canteenTable, pos: p, yaw: horiz ? 0 : .pi / 2))
+                        placed.append(p)
+                    }
+                }
+                continue
+            }
             // ── MEDICAL CENTRE ── a sick bay: beds down one wall, a desk with its terminal and a chair, stainless
             //    cabinet runs and lockers for supplies, and a scrub sink. Beds appear here as well as in the
             //    dormitories — this is the other place a colony puts a bed. Everything lines the walls, so the

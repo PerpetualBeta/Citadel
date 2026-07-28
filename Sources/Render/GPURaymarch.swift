@@ -2368,6 +2368,40 @@ enum GPURaymarch {
                     iBox(SIMD3(0, 0.50, -0.12), SIMD3(0.016, 0.055, 0.016), 0.008, inoxB, 0.004),         // tap riser
                     iBox(SIMD3(0, 0.552, -0.075), SIMD3(0.014, 0.014, 0.055), 0.008, inoxB, 0.004),       // spout
                     iBox(SIMD3(0.055, 0.565, -0.115), SIMD3(0.055, 0.012, 0.012), 0.006, inoxB, 0.004)]   // lever handle
+        case .range:
+            // CANTEEN range: a stainless block with a hob top, four rings, an oven door with a handle, and the
+            // extraction hood over it. Authored back-to-wall (−Z) so it lines the galley wall.
+            let inoxR = SIMD3<Float>(0.62, 0.64, 0.68), inoxL = SIMD3<Float>(0.76, 0.78, 0.82)
+            let hobD = SIMD3<Float>(0.11, 0.11, 0.12)
+            var rg: [GShape] = [
+                iBox(SIMD3(0, 0.22, -0.02), SIMD3(0.34, 0.22, 0.17), 0.012, inoxR, 0.006),                // range body
+                iBox(SIMD3(0, 0.452, -0.01), SIMD3(0.35, 0.020, 0.185), 0.008, hobD, 0.004),              // hob top
+                iBox(SIMD3(0, 0.30, 0.165), SIMD3(0.30, 0.135, 0.016), 0.008, inoxR * 1.08, 0.005),       // oven door
+                iBox(SIMD3(0, 0.40, 0.192), SIMD3(0.26, 0.016, 0.016), 0.008, inoxL, 0.004),              // oven handle
+                iBox(SIMD3(0, 0.88, -0.06), SIMD3(0.36, 0.10, 0.20), 0.02, inoxL, 0.006),                 // extraction hood
+                iBox(SIMD3(0, 0.755, -0.06), SIMD3(0.30, 0.028, 0.165), 0.012, hobD, 0.005),              // hood filter throat
+            ]
+            for (rx, rz) in [(-0.16, -0.07), (0.16, -0.07), (-0.16, 0.06), (0.16, 0.06)] {                // four rings
+                rg.append(iCylinder(SIMD3(Float(rx), 0.470, Float(rz)), r: 0.062, halfH: 0.006, round: 0.004, inoxR * 0.8, 0.004))
+            }
+            return rg
+        case .canteenTable:
+            // CANTEEN table with a bench either side — one prop, so a row of them ranks up cleanly. Wipe-clean
+            // stainless top on a steel frame; the benches are backless, as a works canteen would be.
+            let topM = SIMD3<Float>(0.70, 0.72, 0.75), frameM = SIMD3<Float>(0.34, 0.36, 0.40)
+            let benchM = SIMD3<Float>(0.42, 0.40, 0.37)
+            var ct: [GShape] = [
+                iBox(SIMD3(0, 0.36, 0), SIMD3(0.40, 0.022, 0.24), 0.008, topM, 0.004),                    // table top
+                iBox(SIMD3(-0.32, 0.18, 0), SIMD3(0.022, 0.18, 0.20), 0.006, frameM, 0.004),              // end frames
+                iBox(SIMD3( 0.32, 0.18, 0), SIMD3(0.022, 0.18, 0.20), 0.006, frameM, 0.004),
+                iBox(SIMD3(0, 0.10, 0), SIMD3(0.30, 0.018, 0.020), 0.005, frameM, 0.004),                 // stretcher rail
+            ]
+            for bz in [Float(-0.42), 0.42] {                                                              // a bench each side
+                ct.append(iBox(SIMD3(0, 0.235, bz), SIMD3(0.38, 0.020, 0.085), 0.006, benchM, 0.004))
+                ct.append(iBox(SIMD3(-0.28, 0.115, bz), SIMD3(0.020, 0.115, 0.065), 0.005, frameM, 0.004))
+                ct.append(iBox(SIMD3( 0.28, 0.115, bz), SIMD3(0.020, 0.115, 0.065), 0.005, frameM, 0.004))
+            }
+            return ct
         case .wallPipe:
             return pipeRunShapes(length: 1)                    // length comes from the Prop at pack time
         }
