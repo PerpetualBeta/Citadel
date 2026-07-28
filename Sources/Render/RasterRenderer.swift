@@ -69,6 +69,13 @@ final class RasterRenderer {
     private var distTex: MTLTexture?           // rg32Float wall-distance field (.r) — the mesh-creature wall-clip trims limbs at wall faces
     private var mapW = 1, mapH = 1
     private var lampCells: [SIMD2<Float>] = [] // centres of the overhead ceiling lamps (even/even open cells)
+    // The industrial floors (7–8) have NO ceiling strip grid: the plant is lit by wall BULKHEAD fixtures.
+    // Honoured by buildMesh (housing + mask + lampCells) and by the shader's analytic lamp loop via Cam.water.w,
+    // so lamp, housing, mask and light stay in lockstep exactly as the grid statics intend.
+    private var ceilingLampsOn = true
+    /// Wall-mounted bulkhead fixtures that light the PLANT floors (7–8), which carry no ceiling grid.
+    /// Computed once per level (a whole-map walk); (mount on the wall, yaw so the lens faces the room, lens pos).
+    private var plantLamps: [(pos: SIMD2<Float>, yaw: Float, light: SIMD2<Float>)] = []
     // The level cache key must be a WEAK REFERENCE, never an ObjectIdentifier: an identifier outlives the
     // object it names, and a freed World's address is readily reused by the next one — so a stored identifier
     // could MATCH a brand-new level and skip prepareLevel, leaving the previous floor's mesh/floor-ids/light
@@ -221,6 +228,16 @@ final class RasterRenderer {
         }
         // NB: the door warning lamps are emissive geometry on the leaves (bloom only) — NO point light here, as the
         //     raster fixture lights are unshadowed and would leak amber through the closed door into the store.
+        // PLANT floors (7–8): the bulkheads ARE the lighting (no ceiling grid), so surface the nearest few as real
+        // point lights — nearest-first, since a whole floor's worth would blow the shader's light budget.
+        if !plantLamps.isEmpty {
+            let near = plantLamps.map { (simd_length($0.light - p.pos), $0) }
+                                 .sorted { $0.0 < $1.0 }.prefix(10)
+            for (_, b) in near {
+                lights.append(GPURaymarch.GPULight(posR: SIMD4(b.light.x, 0.56, b.light.y, 1 / (3.4 * 3.4)),
+                                                   colI: SIMD4(1.0, 0.74, 0.42, 1.35)))
+            }
+        }
         if lights.count > 64 { lights = Array(lights.prefix(64)) }
         if lights.isEmpty { lights = [Light(posR: SIMD4(0, -99, 0, 1), colI: SIMD4(0, 0, 0, 0))] }   // dummy so setFragmentBytes has length>0 (dr2>=1 skips it)
         // Shadows: the nearest overhead lamp CELLS select which lamps CAST (the selection may follow
@@ -253,7 +270,8 @@ final class RasterRenderer {
             headFwd: SIMD4(headFwd, headInt),                   // the marine's headlamp — a broad pool, tilted DOWN to light footing
             shX: shX, shZ: shZ,                                 // shadowed lamp cells (integer) for the analytic loop's shadow match
             camFwd: SIMD4(camFwd, 0),
-            water: SIMD4(Lighting.floodLevel(level: world.level), world.waterOff.x, world.waterOff.y, 0)   // M6: flood + this level's puddle-field offset (matches the raymarch/CPU field)
+            water: SIMD4(Lighting.floodLevel(level: world.level), world.waterOff.x, world.waterOff.y,
+                         ceilingLampsOn ? 1 : 0)   // M6: flood + puddle-field offset (matches the raymarch/CPU field) · w = ceiling-lamp grid on (0 on the plant floors)
         )
 
         // ── per-frame prop mesh: tessellate the visible furniture/drums/sockets/mines/debris
@@ -510,6 +528,8 @@ final class RasterRenderer {
 
     // ── per-level build: world mesh + baked light-field texture ───────────────
     private func prepareLevel(_ world: World) {
+        ceilingLampsOn = Progression.floorInBuilding(world.level) < 7   // 7–8 = the plant: bulkheads, not ceiling strips
+        buildPlantLamps(world.map)
         buildMesh(world.map)
         mapW = world.map.w; mapH = world.map.h
         var lc = [SIMD4<Float>](repeating: .zero, count: mapW * mapH)
@@ -613,7 +633,7 @@ final class RasterRenderer {
                 // a VISIBLE glowing housing so the pools it casts have a source you can see, PLUS
                 // the presence-mask bit AND (via the shared statics) the shader's analytic light —
                 // all authored HERE so lamp / housing / mask / light can never drift apart.
-                if x % Self.lampGridStride == Self.lampGridPhase && y % Self.lampGridStride == Self.lampGridPhase {
+                if ceilingLampsOn, x % Self.lampGridStride == Self.lampGridPhase && y % Self.lampGridStride == Self.lampGridPhase {
                     lampCells.append(SIMD2(fx + 0.5, fz + 0.5))
                     lampMaskData[i] = 255
                     let cx = fx + 0.5, cz = fz + 0.5, hs: Float = 0.26, y0: Float = 0.985
@@ -624,6 +644,32 @@ final class RasterRenderer {
         }
         nVerts = v.count
         vbuf = v.isEmpty ? nil : device.makeBuffer(bytes: v, length: MemoryLayout<PVert>.stride * v.count)
+    }
+
+    /// Site the PLANT floors' bulkhead fixtures (7–8 only; the upper floors keep their ceiling grid). Walk a
+    /// coarse grid of open cells and, where one backs onto a solid wall, hang a fixture on that wall facing into
+    /// the room at eye height. Deliberately offset from the ceiling-lamp grid's phase so the two never coincide.
+    private func buildPlantLamps(_ map: GameMap) {
+        plantLamps.removeAll(keepingCapacity: true)
+        guard !ceilingLampsOn else { return }
+        let stride = 4, phase = 1                                   // one fixture per ~4 cells of wall run — enough to
+                                                                    // navigate by; the plant stays deliberately gloomy
+        for y in 1..<(map.h - 1) where y % stride == phase {
+            for x in 1..<(map.w - 1) where x % stride == phase {
+                let i = map.idx(x, y)
+                guard map.wall[i] == 0, map.doors[i] == nil, !map.hazard[i] else { continue }
+                for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {          // first solid neighbour = the mounting wall
+                    let wx = x + dx, wy = y + dy
+                    guard map.inBounds(wx, wy) else { continue }
+                    let wi = map.idx(wx, wy)
+                    guard map.wall[wi] != 0, map.doors[wi] == nil else { continue }
+                    let inward = SIMD2<Float>(-Float(dx), -Float(dy))          // wall → room
+                    let mount = SIMD2<Float>(Float(x) + 0.5, Float(y) + 0.5) - inward * 0.46   // sit on the wall face
+                    plantLamps.append((mount, atan2(-inward.x, inward.y), mount + inward * 0.16))
+                    break
+                }
+            }
+        }
     }
 
     private func wallTexAt(_ map: GameMap, _ x: Int, _ y: Int) -> Mat {
@@ -1245,27 +1291,34 @@ final class RasterRenderer {
         return [mount(-1), mount(1)]
     }
 
-    /// Mount the fuel-store bulkhead light fixtures (procedural marine caged lamp). Their warm glow is added
-    /// as point lights in render(); here we emit the fixture geometry (the dome self-glows via over-bright).
-    private func buildFuelStore(_ world: World, into v: inout [PVert]) {
-        let lamp = loadBulkhead()
+    /// Wall-mount ONE bulkhead fixture: the imported brass lamp plus its lit, ribbed lens (or the procedural
+    /// caged lamp if the mesh is unavailable). Shared by every placement — the fuel store and the plant floors.
+    private func emitBulkheadFixture(pos: SIMD2<Float>, yaw: Float, inward: SIMD2<Float>, into v: inout [PVert]) {
         let glow = M(SIMD3(0.95, 0.78, 0.5), 0.4, 0.0, SIMD3(1.7, 1.05, 0.42))     // warm GOLDEN lens (matches the brass reference), modest so the frame reads
+        guard let lamp = loadBulkhead() else {                            // fallback: the procedural caged lamp
+            emitProp(GPURaymarch.bulkheadShapes(), pos: pos, yaw: yaw, floored: false, rough: 0.5, metal: 0.7, into: &v)
+            return
+        }
+        emitBulkheadMesh(lamp, pos: pos, yaw: yaw, height: 0.56, into: &v)  // imported bulkhead mesh (vertical), at eye height
+        // a lit lens — a warm, VERTICAL rounded glow set just inside the cage so the frame stays visible over it
+        let n = SIMD3<Float>(inward.x, 0, inward.y), u = SIMD3<Float>(-inward.y, 0, inward.x), up = SIMD3<Float>(0, 1, 0)
+        let c = SIMD3<Float>(pos.x, 0.56, pos.y) + n * 0.03
+        emitEllipse(c, u, up, 0.045, 0.11, n, glow, into: &v)
+        // fluted-glass RIBBING (the reference's ribbed lens): a few thin darker verticals over the glow
+        let rib = M(SIMD3(0.5, 0.36, 0.12), 0.5, 0.0, SIMD3(0.5, 0.34, 0.12))
+        for rx in [Float(-0.026), 0, 0.026] {
+            emitEllipse(c + n * 0.002 + u * rx, u, up, 0.004, 0.095, n, rib, into: &v)
+        }
+    }
+
+    /// Mount the wall BULKHEAD fixtures — the fuel store's pair, plus (on the plant floors 7–8, which carry no
+    /// ceiling grid) the fixtures that light the workings. Their glow is added as point lights in render().
+    private func buildFuelStore(_ world: World, into v: inout [PVert]) {
         for b in fuelBulkheads(world) where simd_length(b.pos - world.player.pos) < 24 {
-            if let lamp {                                                // imported bulkhead mesh (vertical), mounted at eye height
-                emitBulkheadMesh(lamp, pos: b.pos, yaw: b.yaw, height: 0.56, into: &v)
-                // a lit lens — a warm, VERTICAL rounded glow set just inside the cage so the frame stays visible over it
-                let inward = simd_normalize(b.light - b.pos)
-                let n = SIMD3<Float>(inward.x, 0, inward.y), u = SIMD3<Float>(-inward.y, 0, inward.x), up = SIMD3<Float>(0, 1, 0)
-                let c = SIMD3<Float>(b.pos.x, 0.56, b.pos.y) + n * 0.03
-                emitEllipse(c, u, up, 0.045, 0.11, n, glow, into: &v)
-                // fluted-glass RIBBING (the reference's ribbed lens): a few thin darker verticals over the glow
-                let rib = M(SIMD3(0.5, 0.36, 0.12), 0.5, 0.0, SIMD3(0.5, 0.34, 0.12))
-                for rx in [Float(-0.026), 0, 0.026] {
-                    emitEllipse(c + n * 0.002 + u * rx, u, up, 0.004, 0.095, n, rib, into: &v)
-                }
-            } else {                                                     // fallback: the procedural caged lamp
-                emitProp(GPURaymarch.bulkheadShapes(), pos: b.pos, yaw: b.yaw, floored: false, rough: 0.5, metal: 0.7, into: &v)
-            }
+            emitBulkheadFixture(pos: b.pos, yaw: b.yaw, inward: simd_normalize(b.light - b.pos), into: &v)
+        }
+        for b in plantLamps where simd_length(b.pos - world.player.pos) < 26 {
+            emitBulkheadFixture(pos: b.pos, yaw: b.yaw, inward: simd_normalize(b.light - b.pos), into: &v)
         }
     }
 
@@ -1489,6 +1542,35 @@ final class RasterRenderer {
         float a=h21(i),b=h21(i+float2(1,0)),c=h21(i+float2(0,1)),d=h21(i+float2(1,1));
         return mix(mix(a,b,f.x),mix(c,d,f.x),f.y); }
     float fbm(float2 p){ float s=0,a=0.5; for(int i=0;i<5;i++){ s+=a*vnoise(p); p*=2.03; a*=0.5;} return s; }
+    // Height field for BLASTED ROCK: a few octaves with a ridged fold, so faces break into chunky planes
+    // separated by sharp fractures rather than rolling smoothly. Sampled in the wall's own tangent plane and
+    // differenced for the normal — that gradient, not the baked colour, is what makes rock read as rock.
+    // One Voronoi layer of TILTED PLANES: each cell is a facet, and because dot(offset, dir) is linear inside
+    // a cell every facet differentiates to a constant normal, so neighbours meet at a sharp crease — how
+    // fractured stone actually breaks. (Smooth fbm ridges read as brain coral; stacked fbm reads as moss.)
+    float voroFacet(float2 p, float seed){
+        float2 ip = floor(p), fp = fract(p);
+        float bd = 1e9, bid = 0.0; float2 br = float2(0.0);
+        for(int j=-1;j<=1;j++){ for(int i=-1;i<=1;i++){
+            float2 g = float2(float(i), float(j));
+            float2 o = float2(h21(ip+g+seed), h21(ip+g+seed+31.7));    // jittered site in that cell
+            float2 r = g + o - fp;
+            float d = dot(r,r);
+            if(d < bd){ bd = d; br = r; bid = h21(ip+g+seed+7.3); }
+        }}
+        float a = bid * 6.2831853;                                     // per-facet tilt direction
+        return bid*0.55 + dot(br, float2(cos(a), sin(a)))*0.45;
+    }
+    float rockH(float2 p){
+        // A raw Voronoi alone reads as regular CRAZY PAVING, so DOMAIN-WARP it first: the cells stretch and
+        // shear into irregular shards. Two scales — big broken chunks plus smaller chips knocked off their
+        // edges — then a whisper of grit.
+        float2 q = p * 2.4;
+        q += float2(fbm(q*0.5), fbm(q*0.5 + 19.0)) * 1.5;
+        return voroFacet(q, 0.0) * 1.00
+             + voroFacet(q*2.7 + 13.0, 5.0) * 0.28
+             + vnoise(q*4.0) * 0.06;
+    }
     // ── M6 standing water: the INTEGER-hash value-noise puddle field, byte-identical to
     // Lighting.puddle / GPURaymarch.puddleField, so the raster water pools EXACTLY where the
     // game wades + drips and the raymarcher draws it (the fixtureBusted lockstep trick). ──
@@ -1605,6 +1687,32 @@ final class RasterRenderer {
         float3 N=normalize(gn - (tn.y*T+tn.z*B)*0.3);
         float grime=tn.x; rough=clamp(rough+(grime-0.5)*0.32,0.05,1.0); alb *= (0.74+0.48*grime);
 
+        // ── BLASTED ROCK (wall ids 8 stone · 9 stoneSteel) ── the baked art alone reads as flat CAMO blotches:
+        //    rock needs 3-D form. Compress the blotchy albedo toward one stone hue, then rebuild the surface
+        //    from multi-scale triplanar noise: chunky broken faces, chisel/blast fractures cut as sharp creases,
+        //    and crevice AO. The normal — not the colour — is what makes it read as hewn rock.
+        if(in.tid >= 7.5 && in.tid < 9.5){
+            // 1. KILL THE CAMO: the baked art's blotches live in its luminance, so compress that range hard to
+            //    one dry stone hue. Colour must stay near-uniform — the FORM has to come from the normal.
+            float lum = dot(alb, float3(0.299,0.587,0.114));
+            float flat = 0.5 + (lum - 0.5) * 0.18;                        // ±0.09 instead of the full swing
+            alb = float3(0.335,0.305,0.272) * (0.72 + 0.56*flat);
+            // 2. REBUILD THE SURFACE from a height field sampled in the wall's OWN tangent plane, differenced
+            //    for a correct gradient (the triplanar helper's derivatives are Y-plane only — wrong on a
+            //    vertical face, which is why the wall stayed flat).
+            float2 rp = float2(dot(in.wp, T), dot(in.wp, B));
+            float e = 0.045;
+            float hC = rockH(rp);
+            float2 grad = float2(rockH(rp + float2(e,0)) - hC, rockH(rp + float2(0,e)) - hC) / e;
+            N = normalize(gn - (T*grad.x + B*grad.y) * 0.38);             // chunky broken faces
+            // 3. crevice AO + a touch of dust catching on the up-facing ledges
+            float lowness = smoothstep(1.05, 0.35, hC);                   // 1 deep in a fracture, 0 on a proud face
+            alb *= mix(1.0, 0.62, lowness);                               // gentle: heavy AO outlines every facet like mortar
+            alb *= 0.88 + 0.24 * smoothstep(0.0, 0.5, dot(N, float3(0,1,0)));   // ledges lighter (settled dust)
+            rough = clamp(0.88 + 0.10*fbm(rp*22.0), 0.74, 0.99);          // dry, matte, never shiny
+            metal = 0.0;
+        }
+
         // ── FUEL DRUM weathering (tid≈−5) — a matte, rusted, ribbed industrial barrel, ported from the
         //    raymarcher's drum branch so raster drums read the same: rolling hoops, mottled rust eating the
         //    paint, streaks bleeding down, a darker steel lid. (Emitted matte: metal 0.20, rough 0.86.)
@@ -1702,6 +1810,21 @@ final class RasterRenderer {
                 rough = mix(rough, 0.42, 1.0 - duct);                    // worn iron bars catch a little sheen
                 metal = mix(metal, 0.62, 1.0 - duct);
             }
+            // PLANT DECK STAINS (floors 7–8, flagged by C.water.w == 0 — those floors run no ceiling grid):
+            // the deck stays SMOOTH, but decades of machinery leave it stained — broad dark grease pools,
+            // spilled-lubricant slicks that go glossy, and a scatter of drip marks. Albedo + roughness only.
+            if(C.water.w < 0.5 && !liquid){
+                float2 q = in.wp.xz;
+                float pool  = smoothstep(0.52, 0.86, fbm(q*0.55));               // big soaked-in grease patches
+                float slick = smoothstep(0.68, 0.93, fbm(q*1.9 + 17.0));         // fresher lubricant, still wet-looking
+                float drips = smoothstep(0.80, 0.97, fbm(q*7.5 + 43.0));         // small drip marks + spatter
+                float oil = clamp(pool*0.85 + drips*0.5, 0.0, 1.0);
+                alb = mix(alb, float3(0.055,0.048,0.042), oil*0.80);             // grease darkens the deck
+                alb = mix(alb, float3(0.035,0.032,0.030), slick*0.70);           // lubricant slick, darker still
+                rough = mix(rough, 0.22, slick*0.85);                            // slicks read WET/glossy
+                rough = clamp(rough + oil*0.10, 0.05, 1.0);                      // dried grease is duller
+                metal = mix(metal, 0.12, slick*0.5);
+            }
             float flood = C.water.x, dtime = C.amb.y;
             float wet = max(flood, liquid ? 1.0 : 0.0);                 // the lowest floor drowns (flood); pools always wet
             if(!liquid && fid == 7 && wet < 0.01){                      // floor-7 rock: water finds its way down → it POOLS
@@ -1753,7 +1876,7 @@ final class RasterRenderer {
         //  checks presence via the R8 mask (integer cell fetch, bounds-guarded), and lights from each
         //  real lamp at (cell+0.5, kLampY, cell+0.5). The nearest-3 shadow slices apply by EXACT cell
         //  match, gated to up-facing surfaces (a top-down ortho map is meaningless on a vertical wall).
-        {
+        if(C.water.w > 0.5){                 // no ceiling-lamp grid on the plant floors (7–8) — bulkheads light those
             int shadowN=int(C.params.y+0.5);
             int mw=int(C.params.z), mh=int(C.params.w);
             int gx0=int(floor((in.wp.x-kGridOff)/kGridStep));
@@ -2626,6 +2749,56 @@ final class RasterRenderer {
                 if !placed { print("RASTERSHOT: elevator check skipped (no open standoff)") }
             } else {
                 print("RASTERSHOT: elevator check skipped (no exit-cell door)")
+            }
+        }
+
+        // INDUSTRIAL FLOORS check (7–8): the working plant. Frame the longest clear run in a floor-7 level and
+        // the widest room — verify raw ROCK walls with riveted IRON where a run was finished, rock deck, and
+        // NO display banks / NO dormitory bunks (those belong to the upper floors).
+        do {
+            let world = World(level: 7, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+            world.monsters = []; world.colonists = []                     // clear so the architecture reads
+            // longest clear axis-run → a corridor/hall view down its length
+            var best = (len: 0, x: 0, y: 0, dx: 1, dy: 0)
+            for y in 1..<(m.h - 1) { for x in 1..<(m.w - 1) where op(x, y) {
+                for (dx, dy) in [(1, 0), (0, 1)] {
+                    var n = 0
+                    while op(x + dx * n, y + dy * n) { n += 1 }
+                    if n > best.len { best = (n, x, y, dx, dy) }
+                }
+            } }
+            if best.len >= 5 {
+                world.player.pos = SIMD2(Float(best.x) + 0.5 + Float(best.dx) * 0.6, Float(best.y) + 0.5 + Float(best.dy) * 0.6)
+                world.player.dir = atan2(Float(best.dy), Float(best.dx))
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-industrial.png"))
+                let banks = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.computer.rawValue }.count
+                let bunks = world.props.filter { $0.kind == .bunk }.count
+                let rock = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.stone.rawValue }.count
+                let iron = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.ironPlate.rawValue }.count
+                print("RASTERSHOT: wrote raster-industrial.png (floor 7, run \(best.len) at \(best.x),\(best.y); rock \(rock), iron \(iron), display-bank cells \(banks), bunks \(bunks))")
+            } else { print("RASTERSHOT: industrial check skipped (no long run)") }
+            // BULKHEAD on the plant wall — mirror buildPlantLamps' rule (open cell on the 5/1 grid backing onto
+            // solid wall) and stand off it, so the fixture that lights these floors is verified in place.
+            outer: for y in 1..<(m.h - 1) where y % 4 == 1 {
+                for x in 1..<(m.w - 1) where x % 4 == 1 && op(x, y) {
+                    for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
+                        let wx = x + dx, wy = y + dy
+                        guard m.inBounds(wx, wy), m.wall[m.idx(wx, wy)] != 0, m.doors[m.idx(wx, wy)] == nil else { continue }
+                        guard op(x - dx * 2, y - dy * 2), op(x - dx * 3, y - dy * 3) else { continue }   // room to stand back and face it
+                        // nothing in the sight line — a structural column in the way hides the fixture entirely
+                        let sight = (0...2).map { SIMD2<Float>(Float(x - dx * $0) + 0.5, Float(y - dy * $0) + 0.5) }
+                        if world.props.contains(where: { pr in sight.contains { simd_length(pr.pos - $0) < 0.75 } }) { continue }
+                        world.player.pos = SIMD2(Float(x - dx * 3) + 0.5, Float(y - dy * 3) + 0.5)
+                        world.player.dir = atan2(Float(dy), Float(dx))
+                        _ = rr.render(world, into: canvas)
+                        Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-plantlamp.png"))
+                        print("RASTERSHOT: wrote raster-plantlamp.png (bulkhead on the wall at \(wx),\(wy))")
+                        break outer
+                    }
+                }
             }
         }
 

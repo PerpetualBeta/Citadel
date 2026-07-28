@@ -52,11 +52,13 @@ enum MapGen {
         case 5...6:   // deep workings — stone starts to intrude
             return Theme(walls: [.ironPlate, .stoneSteel, .pipework],
                          floor: .concrete, ceil: .ceilDark, hazardFloor: .nukage)
-        default:      // the depths — blasted rock; the last steel is strut-work
-                      // bolted to it (more cavern than building — panelled walls
-                      // don't belong seven storeys down)
-            return Theme(walls: [.stone, .stone, .stoneSteel],
-                         floor: .rock, ceil: .ceilStone, hazardFloor: .blood)
+        default:      // floors 7–8: the WORKING INDUSTRIAL HEART of the citadel. Dark, damp, greasy,
+                      // noisy. Blasted out of hard rock and never finished: most walls are still raw
+                      // rock, and where a run WAS finished it is riveted iron panel. No display banks
+                      // and no dormitories down here (see isDormitory / placeTerminalBanks) — the
+                      // light comes from bulkhead fixtures, not ceiling strips.
+            return Theme(walls: [.stone, .ironPlate, .stone],
+                         floor: .rock, ceil: .ceilStone, hazardFloor: .nukage)
         }
     }
 
@@ -70,11 +72,16 @@ enum MapGen {
     static let dormSingleRowMinInterior = 3   // interior depth (span−2) ≥ this → one centre row
     static let dormDoubleRowMinInterior = 6   // ≥ this → two centre rows, head-to-head
     static let dormColumnStride = 4      // riveted-steel columns every N cells along a big hall
+    /// True while generating the citadel's WORKING FLOORS (7–8): the industrial plant. Nobody sleeps and
+    /// nobody monitors down here, so dormitories and CRT display banks are both suppressed. Set once at the
+    /// top of attemptGen (generation is sequential), like `fuelStoreCells`.
+    private static var industrialFloor = false
     /// A room is a DORMITORY iff it's large enough and is neither the start room (arrival
     /// elevator) nor the exit room (exit elevator/teleporter) — so no elevator ever sits in a
     /// dorm. The Queen may still lair in one. `roomCount-1` is the exit room (see attemptGen).
+    /// NEVER on the industrial floors — those are working plant, not living quarters.
     private static func isDormitory(_ r: Room, _ ri: Int, _ roomCount: Int) -> Bool {
-        min(r.w, r.h) >= dormMinDim && ri != 0 && ri != roomCount - 1
+        !industrialFloor && min(r.w, r.h) >= dormMinDim && ri != 0 && ri != roomCount - 1
     }
 
     static func generate(level: Int, colonyIndex: Int, seed: UInt64) -> GeneratedLevel {
@@ -128,6 +135,7 @@ enum MapGen {
 
     private static func attemptGen(level: Int, colonyIndex: Int, seed: UInt64, allowLocks: Bool) -> GeneratedLevel? {
         var rng = Rng(seed: seed)
+        industrialFloor = Progression.floorInBuilding(level) >= 7   // 7–8: the working plant (no dorms, no display banks)
         let th = theme(colonyIndex, level: level)
         let size = min(58, 40 + level * 2)
         let map = GameMap(w: size, h: size)
@@ -429,6 +437,7 @@ enum MapGen {
     // the sector light like any other fixture. (The busted-fixture spark system
     // in World already covers computer walls.)
     private static func placeTerminalBanks(_ map: GameMap, rooms: [Room], rng: inout Rng) {
+        if industrialFloor { return }        // no display/CRT walls on the working plant floors (7–8)
         for r in rooms {
             var hazard = false
             for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) where map.hazard[map.idx(xx, yy)] { hazard = true } }
