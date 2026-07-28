@@ -2342,6 +2342,32 @@ enum GPURaymarch {
                     iBox(SIMD3(0, 0.30, -0.205), SIMD3(0.22, 0.032, 0.014), 0.004, amber * 0.42, d),       // indicator strip, board side
                     iBox(SIMD3(0.245, 0.60, -0.02), SIMD3(0.013, 0.115, 0.013), 0.005, steel, d),          // task-lamp stalk
                     iBox(SIMD3(0.245, 0.715, 0.03), SIMD3(0.055, 0.022, 0.045), 0.012, lampW, d)]          // task-lamp head (warm)
+        case .cabinet:
+            // MEDICAL stainless counter: a plinth, a bright worktop lipped at the front, and drawer fronts with
+            // pull handles. Authored back-to-wall (−Z) so it lines a wall like the lockers do.
+            let inox = SIMD3<Float>(0.66, 0.68, 0.72), inoxT = SIMD3<Float>(0.76, 0.78, 0.82)
+            var cab: [GShape] = [
+                iBox(SIMD3(0, 0.21, -0.02), SIMD3(0.34, 0.21, 0.17), 0.01, inox, 0.005),                  // carcass
+                iBox(SIMD3(0, 0.435, -0.01), SIMD3(0.36, 0.022, 0.19), 0.008, inoxT, 0.004),              // worktop
+                iBox(SIMD3(0, 0.405, 0.175), SIMD3(0.36, 0.018, 0.014), 0.006, inoxT, 0.004),             // front lip
+            ]
+            for k in 0..<3 {                                                                              // drawer fronts + handles
+                let dy = 0.10 + Float(k) * 0.115
+                cab.append(iBox(SIMD3(0, dy, 0.152), SIMD3(0.315, 0.048, 0.014), 0.006, inox * 1.06, 0.004))
+                cab.append(iBox(SIMD3(0, dy + 0.032, 0.172), SIMD3(0.12, 0.010, 0.012), 0.005, inoxT, 0.004))
+            }
+            return cab
+        case .sink:
+            // MEDICAL scrub sink: stainless basin recessed into a counter, splashback up the wall, mixer tap
+            // with a long lever — the fitting that says "clinical" more than anything else in the room.
+            let inox2 = SIMD3<Float>(0.66, 0.68, 0.72), inoxB = SIMD3<Float>(0.78, 0.80, 0.84)
+            return [iBox(SIMD3(0, 0.21, -0.02), SIMD3(0.30, 0.21, 0.16), 0.01, inox2, 0.005),             // pedestal
+                    iBox(SIMD3(0, 0.435, -0.01), SIMD3(0.32, 0.022, 0.18), 0.008, inoxB, 0.004),          // counter
+                    iBox(SIMD3(0, 0.408, 0.00), SIMD3(0.19, 0.020, 0.115), 0.03, inox2 * 0.72, 0.004),    // recessed basin
+                    iBox(SIMD3(0, 0.70, -0.175), SIMD3(0.32, 0.245, 0.014), 0.006, inoxB, 0.004),         // splashback
+                    iBox(SIMD3(0, 0.50, -0.12), SIMD3(0.016, 0.055, 0.016), 0.008, inoxB, 0.004),         // tap riser
+                    iBox(SIMD3(0, 0.552, -0.075), SIMD3(0.014, 0.014, 0.055), 0.008, inoxB, 0.004),       // spout
+                    iBox(SIMD3(0.055, 0.565, -0.115), SIMD3(0.055, 0.012, 0.012), 0.006, inoxB, 0.004)]   // lever handle
         case .wallPipe:
             return pipeRunShapes(length: 1)                    // length comes from the Prop at pack time
         }

@@ -84,6 +84,12 @@ enum MapGen {
     private static var opsBoardSide = (0, 0)      // room interior → the wall carrying the board
     static let opsMinDim = 4                      // both dims ≥ this, so at least one ranked row + an aisle fits
     private static func isOpsCentre(_ ri: Int) -> Bool { ri == opsRoomIndex }
+    // ── MEDICAL CENTRE ── one or more per floor: white painted concrete, plain concrete deck, brightly lit and
+    // kept sterile. Beds, a desk + chair with its terminal, stainless cabinets, lockers and a scrub sink. Power
+    // points and pickups are welcome; fuel drums and toxic pools are not (the room is chosen hazard-free).
+    private static var medRooms = Set<Int>()
+    static let medMinDim = 4
+    private static func isMedical(_ ri: Int) -> Bool { medRooms.contains(ri) }
     /// Read-only view of the chosen ops room, for the ASCII layout dump.
     static var debugOpsRoom: Int { opsRoomIndex }
     /// Any damaging floor inside the room (the ops-centre pick needs this at attemptGen scope, where
@@ -436,6 +442,41 @@ enum MapGen {
             }
         }
 
+        // ── MEDICAL CENTRES ── one or more per floor. Any room that isn't already claimed and carries no hazard
+        //    (toxic pools are barred outright) becomes a sick bay: white painted concrete walls, a white painted
+        //    ceiling with its light run, and a plain concrete deck. Every floor gets at least one where the
+        //    layout allows, and larger levels get a second — a colony this size would not run on one sick bay.
+        medRooms.removeAll()
+        do {
+            var cands: [Int] = []
+            for (ri, r) in rooms.enumerated() where ri != 0 && ri != rooms.count - 1 {
+                guard min(r.w, r.h) >= medMinDim, !roomHasHazardCells(map, r), ri != opsRoomIndex,
+                      !isDormitory(r, ri, rooms.count) else { continue }
+                cands.append(ri)
+            }
+            let want = min(cands.count, rooms.count >= 9 ? 2 : 1)
+            for _ in 0..<want {
+                guard !cands.isEmpty else { break }
+                let pick = cands.remove(at: rng.i(0, cands.count - 1))
+                medRooms.insert(pick)
+                let r = rooms[pick]
+                for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) {
+                    let i = map.idx(xx, yy)
+                    guard map.wall[i] == 0, map.doors[i] == nil else { continue }
+                    map.floor[i] = FlatTex.concrete.rawValue          // plain concrete deck
+                    map.ceil[i] = FlatTex.ceilWhite.rawValue          // white painted ceiling + light run
+                } }
+                // paint the enclosing walls white — the full 8-neighbourhood, since the SDF rounds corners
+                for yy in (r.y - 1)...(r.y + r.h) { for xx in (r.x - 1)...(r.x + r.w) where map.inBounds(xx, yy) {
+                    let i = map.idx(xx, yy)
+                    guard map.wall[i] != 0, map.doors[i] == nil,
+                          map.wall[i] != WallTex.opsBoard.rawValue, map.wall[i] != WallTex.liftWall.rawValue,
+                          map.wall[i] != WallTex.doorHazard.rawValue else { continue }
+                    map.wall[i] = WallTex.medWall.rawValue
+                } }
+            }
+        }
+
         // ── colored sector lighting (baked once; raycaster just samples it) ──
         Lighting.bake(map, level: level)
         // The elevator cars are LIT interiors: the bake can't reach inside a door
@@ -443,6 +484,17 @@ enum MapGen {
         // a warm cabin level directly — the dynamic cabin lamp rides on top.
         // Teleporter pads get a COLD standby stamp instead: the transit machinery
         // is powered, and its light is alien to the colony's warm phosphor.
+        // A sick bay is WELL LIT and stays that way: stamp a bright, near-neutral level over the baked field
+        // (the bake only knows about placed fixtures, and this room's light is the point of it).
+        for ri in medRooms {
+            let r = rooms[ri]
+            for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) {
+                let i = map.idx(xx, yy)
+                guard map.wall[i] == 0 else { continue }
+                map.light[i] = max(map.light[i], 0.95)
+                map.lightColor[i] = SIMD3(0.97, 0.98, 1.0)
+            } }
+        }
         for c in [map.exitCell, map.entryCell] where c >= 0 {
             if map.floor[c] == FlatTex.teleportPad.rawValue {
                 map.lightColor[c] = SIMD3(0.72, 0.92, 1.0)
@@ -1047,6 +1099,7 @@ enum MapGen {
                     let ri = rng.i(1, rooms.count - 1)
                     if dormRoom[ri] { continue }               // no fuel drums in dormitories
                     if isOpsCentre(ri) { continue }           // nor in the operations centre — volatile fuel has no place at the consoles
+                    if isMedical(ri) { continue }             // nor in a medical centre — it is a sterile room
                     let r = rooms[ri]
                     var p: SIMD2<Float>? = nil
                     if attempt < 28 {                              // prefer free corners
@@ -1251,6 +1304,49 @@ enum MapGen {
             let hazard = roomHasHazard(r)
             // structural support for ANY large hall — dorm, open room, or a large start/exit chamber
             if min(r.w, r.h) >= MapGen.dormMinDim { placeColumns(r, ri) }
+            // ── MEDICAL CENTRE ── a sick bay: beds down one wall, a desk with its terminal and a chair, stainless
+            //    cabinet runs and lockers for supplies, and a scrub sink. Beds appear here as well as in the
+            //    dormitories — this is the other place a colony puts a bed. Everything lines the walls, so the
+            //    middle of the room stays clear to walk and work in.
+            if isMedical(ri) && !hazard {
+                let slots = wallSlots(r, ri)
+                guard !slots.isEmpty else { continue }
+                // group the slots by which wall they sit on, so a bed run reads as a ward rather than a scatter
+                var byWall: [SIMD2<Float>: [Slot]] = [:]
+                for s in slots { byWall[s.inward, default: []].append(s) }
+                let walls = byWall.keys.sorted { (byWall[$0]?.count ?? 0) > (byWall[$1]?.count ?? 0) }
+                var bedsPlaced = 0
+                let bedTarget = max(2, min(4, (r.w * r.h) / 6))
+                // BEDS along the longest wall, spaced so a body can get between them
+                if let longest = walls.first, let run = byWall[longest] {
+                    for s in run.sorted(by: { ($0.x + $0.y) < ($1.x + $1.y) }) where bedsPlaced < bedTarget {
+                        if placeProp(.bunk, s, gap: 1.25) { bedsPlaced += 1 }
+                    }
+                }
+                // the duty station: a desk with its terminal, and a chair tucked in front of it
+                var deskSlot: Slot? = nil
+                for w in walls.dropFirst() {
+                    guard let run = byWall[w] else { continue }
+                    for s in run where deskSlot == nil {
+                        if placeProp(.desk, s) { deskSlot = s }
+                    }
+                    if deskSlot != nil { break }
+                }
+                if let d = deskSlot {
+                    let seat = d.pos + d.inward * 0.62
+                    if freeCell(seat, 0.5) { props.append(Prop(kind: .chair, pos: seat, yaw: yawFor(-d.inward))); placed.append(seat) }
+                }
+                // stainless: a cabinet run, a scrub sink, and lockers for the rest
+                var cabs = 0, sinks = 0, locks = 0
+                for w in walls { guard let run = byWall[w] else { continue }
+                    for s in run {
+                        if sinks < 1 { if placeProp(.sink, s) { sinks += 1; continue } }
+                        if cabs < 2 { if placeProp(.cabinet, s) { cabs += 1; continue } }
+                        if locks < 2 { if placeProp(.locker, s) { locks += 1; continue } }
+                    }
+                }
+                continue
+            }
             // ── OPERATIONS CENTRE ── ranks of operator consoles facing the big board, and NOTHING else: no
             //    bunks, no lockers, no drums (handled by taking this branch before any of those paths run).
             //    Rows run parallel to the board with a walkable aisle between each, and every row is broken by

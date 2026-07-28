@@ -995,6 +995,7 @@ final class RasterRenderer {
         case .liftWall:       return M(SIMD3(0.42, 0.44, 0.49), 0.50, 0.62)
         case .concrete:       return M(SIMD3(0.52, 0.51, 0.48), 0.92, 0.02)   // matte poured concrete — no metal, no glow
         case .opsBoard:       return M(SIMD3(0.05, 0.055, 0.065), 0.42, 0.20)   // dark glass; the RGB content is emissive (see rr_fragment)
+        case .medWall:        return M(SIMD3(0.82, 0.83, 0.82), 0.68, 0.02)     // white painted concrete — bright, matte, sterile
         }
     }
     private func flatMat(_ id: Int) -> Mat {
@@ -1006,6 +1007,7 @@ final class RasterRenderer {
         case .ceilTech:    return M(SIMD3(0.17, 0.19, 0.23), 0.70, 0.32)
         case .ceilDark:    return M(SIMD3(0.10, 0.11, 0.13), 0.72, 0.22)
         case .ceilStone:   return M(SIMD3(0.30, 0.28, 0.25), 0.85, 0.02)
+        case .ceilWhite:   return M(SIMD3(0.80, 0.81, 0.80), 0.60, 0.02, SIMD3(0.10, 0.10, 0.098))   // painted panels + a faint light run
         case .rock:        return M(SIMD3(0.32, 0.29, 0.25), 0.90, 0.00)
         case .blood:       return M(SIMD3(0.18, 0.05, 0.05), 0.40, 0.00)
         case .teleportPad: return M(SIMD3(0.20, 0.30, 0.50), 0.30, 0.20, SIMD3(0.16, 0.30, 0.62))      // teleporter glow
@@ -3146,6 +3148,41 @@ final class RasterRenderer {
             } else {
                 print("RASTERSHOT: elevator check skipped (no exit-cell door)")
             }
+        }
+
+        // MEDICAL CENTRE check — stand back from a bed that sits in a white-walled room and look across it, so
+        // the sterile surfaces, the ward beds and the stainless fittings all read in one frame.
+        for lvl in [1, 3] {
+            let world = World(level: lvl, colonyIndex: 0, seed: 3)
+            let m = world.map
+            world.monsters = []; world.colonists = []
+            func medNear(_ p: SIMD2<Float>) -> Bool {                       // a white wall within a cell or two
+                let cx = Int(p.x), cy = Int(p.y)
+                for oy in -2...2 { for ox in -2...2 {
+                    let wx = cx + ox, wy = cy + oy
+                    guard m.inBounds(wx, wy) else { continue }
+                    if m.wall[m.idx(wx, wy)] == WallTex.medWall.rawValue { return true }
+                } }
+                return false
+            }
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+            var shot = false
+            for pr in world.props where !shot && pr.kind == .bunk && medNear(pr.pos) {
+                for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)] {
+                    let sx = Int(pr.pos.x) + dx * 3, sy = Int(pr.pos.y) + dy * 3
+                    guard op(sx, sy), op(Int(pr.pos.x) + dx, Int(pr.pos.y) + dy), op(Int(pr.pos.x) + dx * 2, Int(pr.pos.y) + dy * 2) else { continue }
+                    world.player.pos = SIMD2(Float(sx) + 0.5, Float(sy) + 0.5)
+                    world.player.dir = atan2(Float(-dy), Float(-dx))        // look back at the bed
+                    _ = rr.render(world, into: canvas)
+                    Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1,
+                                      to: dir.appendingPathComponent("raster-medical-\(lvl).png"))
+                    let white = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.medWall.rawValue }.count
+                    let fittings = world.props.filter { $0.kind == .cabinet || $0.kind == .sink }.count
+                    print("RASTERSHOT: wrote raster-medical-\(lvl).png (\(white) white-wall cells, \(fittings) stainless fittings)")
+                    shot = true; break
+                }
+            }
+            if !shot { print("RASTERSHOT: medical check skipped on level \(lvl)") }
         }
 
         // OPERATIONS CENTRE check — stand at the back of the room on the board's axis, looking down the ranks of

@@ -29,9 +29,11 @@ enum WallTex: Int, CaseIterable {
     case liftWall            // elevator-car lining — a machined steel box (no relief/grime; see MapGen.steelBoxCar)
     case concrete            // bare cast concrete — fireproof stores (fuel chamber); smooth grey, no steel relief
     case opsBoard            // operations-centre BIG BOARD — the one full-colour (RGB) display in the complex
+    case medWall             // MEDICAL CENTRE — white painted concrete: clean, sterile, almost no grime
 }
 enum FlatTex: Int, CaseIterable {
     case concrete = 0, metalFloor, grate, nukage, ceilTech, ceilDark, ceilStone, rock, blood, teleportPad
+    case ceilWhite           // MEDICAL CENTRE ceiling — white painted panels with a recessed light run
 }
 
 final class Textures {
@@ -416,6 +418,20 @@ final class Textures {
                 set(x, y, rgb(v, v + 1, v + 4))
             }}
 
+        case .medWall:
+            // MEDICAL: concrete painted white and kept that way. Deliberately the CLEANEST surface in the
+            // colony — only the faintest roller mottle, a scuff skirting where trolleys have clipped it, and a
+            // wipe-down dado line. Grime here would undo the whole point of the room.
+            for y in 0..<s { for x in 0..<s {
+                let n = fbm(Float(x) / 46, Float(y) / 46, 16, 131, 3)
+                var v = 206 + Int((n - 0.5) * 12)                         // near-white, softly uneven paint
+                if y > s - s / 7 { v -= 26 }                              // scuffed skirting
+                if abs(y - s * 5 / 8) < 2 { v -= 16 }                     // wipe-down dado rail
+                let cw = s / 2
+                if x % cw < 2 { v -= 10 }                                 // shallow panel joint
+                set(x, y, rgb(v, v, v - 3))
+            }}
+
         case .concrete:
             // bare cast concrete — a fireproof store: smooth neutral grey with faint cloudy
             // mottling, a coarse grid of form-tie dimples, and thin vertical damp-stains. No
@@ -528,6 +544,7 @@ final class Textures {
         case .liftWall: return 0.3           // barely-there brushing — a machined box
         case .concrete: return 0.25          // poured concrete — near-flat, only the tie dimples catch
         case .opsBoard: return 0.4           // just the bezels between the board's panels
+        case .medWall: return 0.2            // painted flat — only the skirting and dado catch
         case .glass: return 0.25             // just the frame / mullions
         case .none: return 0
         }
@@ -573,6 +590,7 @@ final class Textures {
         case .metalFloor: return 0.9
         case .concrete: return 0.8
         case .ceilTech: return 0.6
+        case .ceilWhite: return 0.35
         case .grate: return 0.5
         case .ceilDark: return 0.4
         case .teleportPad: return 0.35       // machined plate — the rings do the talking
@@ -651,6 +669,15 @@ final class Textures {
                 if cx >= 52 && cx <= 76 && cy >= 52 && cy <= 76 {                       // light fixture
                     let g = 150 + Int(fbm(Float(x) / 6, Float(y) / 6, 16, 2) * 80)
                     set(x, y, rgb(g, g, g - 20))
+                }
+            case .ceilWhite:
+                let cx = x % 128, cy = y % 128
+                var o = Int((fbm(Float(x) / 34, Float(y) / 34, 16, 137) - 0.5) * 10)
+                if cx < 2 || cy < 2 { o -= 20 }                                          // panel grid joint
+                set(x, y, rgb(198 + o, 200 + o, 198 + o))
+                if cy >= 46 && cy <= 82 {                                                // recessed light run
+                    let g = 224 + Int(fbm(Float(x) / 7, Float(y) / 7, 16, 139) * 26)
+                    set(x, y, rgb(g, g, g - 6))
                 }
             case .ceilDark:
                 let o = Int(fbm(Float(x) / 36, Float(y) / 36, 16, 8) * 20)

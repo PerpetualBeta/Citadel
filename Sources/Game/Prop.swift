@@ -21,6 +21,8 @@ enum FurnitureKind: Int, CaseIterable {
     case tapeDeck    // control-room reel-to-reel recorder — "THE SIGNAL" archive; USE (face it) to play the recording
     case column      // riveted-steel structural column, floor-to-ceiling — holds up the roof of the big dorm halls (free-standing, SOLID)
     case console     // operations-centre operator console — amber screen, keyboard, task lamp; ranked in rows facing the big board
+    case cabinet     // MEDICAL — stainless steel counter/cabinet run with drawers (lines a wall)
+    case sink        // MEDICAL — stainless steel scrub sink with mixer tap and splashback
 }
 
 struct Prop {

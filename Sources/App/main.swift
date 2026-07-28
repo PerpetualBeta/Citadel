@@ -564,11 +564,15 @@ if ProcessInfo.processInfo.environment["CITADEL_DORMDEBUG"] != nil {
             case .desk: grid[y][x] = "d"; case .chair: grid[y][x] = "c"; case .tapeDeck: grid[y][x] = "T"
             case .papers: grid[y][x] = "p"; case .wallPipe: grid[y][x] = "="
             case .console: grid[y][x] = "O"
+            case .cabinet: grid[y][x] = "n"; case .sink: grid[y][x] = "s"
             }
         }
         let boardCells = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.opsBoard.rawValue }.count
+        let medCells = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.medWall.rawValue }.count
+        let beds = g.props.filter { $0.kind == .bunk }.count
+        let stainless = g.props.filter { $0.kind == .cabinet || $0.kind == .sink }.count
         let consoles = g.props.filter { $0.kind == .console }.count
-        print("=== LEVEL \(lvl)  \(m.w)x\(m.h)  props=\(g.props.count) items=\(g.items.count) drums=\(g.drums.count) opsRoom=\(MapGen.debugOpsRoom) board=\(boardCells) consoles=\(consoles) ===")
+        print("=== LEVEL \(lvl)  \(m.w)x\(m.h)  props=\(g.props.count) items=\(g.items.count) drums=\(g.drums.count) opsRoom=\(MapGen.debugOpsRoom) board=\(boardCells) consoles=\(consoles) medWalls=\(medCells) beds=\(beds) stainless=\(stainless) ===")
         for row in grid { print(String(row)) }
         print("")
     }
