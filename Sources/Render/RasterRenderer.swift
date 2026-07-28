@@ -76,6 +76,7 @@ final class RasterRenderer {
     /// Wall-mounted bulkhead fixtures that light the PLANT floors (7–8), which carry no ceiling grid.
     /// Computed once per level (a whole-map walk); (mount on the wall, yaw so the lens faces the room, lens pos).
     private var plantLamps: [(pos: SIMD2<Float>, yaw: Float, light: SIMD2<Float>)] = []
+    private var hallLamps: [SIMD3<Float>] = []  // downlights slung under the halls' roof trusses (see buildHallSteelwork)
     private var pipeVerts = 0                  // vertices the static pipework contributes (reported by the harness)
     #if CITADEL_HARNESS
     var pipeVertCount: Int { pipeVerts }
@@ -241,6 +242,15 @@ final class RasterRenderer {
             for (_, b) in near {
                 lights.append(GPURaymarch.GPULight(posR: SIMD4(b.light.x, 0.56, b.light.y, 1 / (3.4 * 3.4)),
                                                    colI: SIMD4(1.0, 0.74, 0.42, 1.35)))
+            }
+        }
+        // the halls' truss downlights — a wider, cooler pool from above, so the double-height volume reads
+        if !hallLamps.isEmpty {
+            let near = hallLamps.map { (simd_length(SIMD2($0.x, $0.z) - p.pos), $0) }
+                                .sorted { $0.0 < $1.0 }.prefix(6)
+            for (_, l) in near {
+                lights.append(GPURaymarch.GPULight(posR: SIMD4(l.x, l.y, l.z, 1 / (5.0 * 5.0)),
+                                                   colI: SIMD4(0.94, 0.90, 0.80, 1.5)))
             }
         }
         if lights.count > 64 { lights = Array(lights.prefix(64)) }
@@ -664,11 +674,97 @@ final class RasterRenderer {
                 }
             }
         }
+        buildHallSteelwork(map, into: &v)     // roof trusses + slung downlights over the double-height halls
         let prePipe = v.count
         buildPipework(map, into: &v)          // copper wall runs + valves/gauges — static, so it lives in this mesh
         pipeVerts = v.count - prePipe
         nVerts = v.count
         vbuf = v.isEmpty ? nil : device.makeBuffer(bytes: v, length: MemoryLayout<PVert>.stride * v.count)
+    }
+
+    /// ROOF STEELWORK over the double-height machine halls: lattice trusses spanning the hall high up, with
+    /// downlights hung beneath them. Two jobs — it gives the eye something at height so the extra storey
+    /// actually READS (an empty black void above you just looks like fog), and it explains the architecture:
+    /// the corridors are a storey high because they run under this steel deck. Lamp positions are collected for
+    /// render() to surface as point lights, so the halls are lit from above as well as by the wall bulkheads.
+    private func buildHallSteelwork(_ map: GameMap, into v: inout [PVert]) {
+        hallLamps.removeAll(keepingCapacity: true)
+        guard !ceilingLampsOn else { return }              // plant floors only (they carry the tall halls)
+        let steel  = M(SIMD3(0.30, 0.31, 0.34), 0.52, 0.72)
+        let strut  = M(SIMD3(0.26, 0.27, 0.30), 0.56, 0.70)
+        let shade  = M(SIMD3(0.22, 0.22, 0.24), 0.50, 0.60)
+        let lampE  = M(SIMD3(0.95, 0.88, 0.72), 0.40, 0.0, SIMD3(2.3, 1.85, 1.15))   // the lit face, over-bright → blooms
+        let chordTop: Float = 1.42, chordBot: Float = 1.24  // the truss sits high in the hall, clear of sightlines
+        func tall(_ x: Int, _ y: Int) -> Bool {
+            guard map.inBounds(x, y) else { return false }
+            let i = map.idx(x, y); return map.wall[i] == 0 && map.doors[i] == nil && map.ceilY[i] > 1.5
+        }
+        // group the tall cells into halls (4-way flood fill) so each hall is trussed on its own axis
+        var seen = [Bool](repeating: false, count: map.w * map.h)
+        for y0 in 0..<map.h { for x0 in 0..<map.w where tall(x0, y0) && !seen[map.idx(x0, y0)] {
+            var region: [(Int, Int)] = [], stack = [(x0, y0)]
+            seen[map.idx(x0, y0)] = true
+            var lo = (x0, y0), hi = (x0, y0)
+            while let (cx, cy) = stack.popLast() {
+                region.append((cx, cy))
+                lo = (min(lo.0, cx), min(lo.1, cy)); hi = (max(hi.0, cx), max(hi.1, cy))
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let nx = cx + dx, ny = cy + dy
+                    guard tall(nx, ny), !seen[map.idx(nx, ny)] else { continue }
+                    seen[map.idx(nx, ny)] = true; stack.append((nx, ny))
+                }
+            }
+            let wide = hi.0 - lo.0 + 1, deep = hi.1 - lo.1 + 1
+            guard min(wide, deep) >= 3, region.count >= 12 else { continue }   // a real hall, not a nook
+            let inSet = Set(region.map { map.idx($0.0, $0.1) })
+            // trusses SPAN the shorter dimension and repeat along the longer one
+            let spanAlongX = wide <= deep
+            let alongLo = spanAlongX ? lo.1 : lo.0, alongHi = spanAlongX ? hi.1 : hi.0
+            var a = alongLo + 1
+            var bay = 0
+            while a <= alongHi - 1 {
+                // the truss's extent across the hall on this line = the contiguous tall cells through it
+                let mid = spanAlongX ? (lo.0 + hi.0) / 2 : (lo.1 + hi.1) / 2
+                guard inSet.contains(map.idx(spanAlongX ? mid : a, spanAlongX ? a : mid)) else { a += 3; continue }
+                var s = mid, e = mid
+                while inSet.contains(map.idx(spanAlongX ? s - 1 : a, spanAlongX ? a : s - 1)) { s -= 1 }
+                while inSet.contains(map.idx(spanAlongX ? e + 1 : a, spanAlongX ? a : e + 1)) { e += 1 }
+                guard e - s >= 2 else { a += 3; continue }
+                let c = Float(a) + 0.5, p0 = Float(s), p1 = Float(e + 1)
+                let hw: Float = 0.055                                          // chord half-width
+                // top + bottom chords
+                if spanAlongX {
+                    emitAABB(SIMD3(p0, chordTop - 0.035, c - hw), SIMD3(p1, chordTop + 0.035, c + hw), steel, into: &v)
+                    emitAABB(SIMD3(p0, chordBot - 0.030, c - hw * 0.8), SIMD3(p1, chordBot + 0.030, c + hw * 0.8), steel, into: &v)
+                } else {
+                    emitAABB(SIMD3(c - hw, chordTop - 0.035, p0), SIMD3(c + hw, chordTop + 0.035, p1), steel, into: &v)
+                    emitAABB(SIMD3(c - hw * 0.8, chordBot - 0.030, p0), SIMD3(c + hw * 0.8, chordBot + 0.030, p1), steel, into: &v)
+                }
+                // zig-zag web bracing between the chords — what makes it read as a truss, not two bars
+                var t = p0
+                var up = true
+                while t < p1 - 0.001 {
+                    let t2 = min(t + 0.5, p1)
+                    let yA = up ? chordBot : chordTop, yB = up ? chordTop : chordBot
+                    let pa = spanAlongX ? SIMD3<Float>(t, yA, c) : SIMD3<Float>(c, yA, t)
+                    let pb = spanAlongX ? SIMD3<Float>(t2, yB, c) : SIMD3<Float>(c, yB, t2)
+                    emitTube(pa, pb, r: 0.022, sides: 4, strut, caps: false, into: &v)
+                    t = t2; up = !up
+                }
+                // every other bay carries a downlight slung under the truss
+                if bay % 2 == 0 {
+                    let lx = spanAlongX ? Float(s + e + 1) * 0.5 : c
+                    let lz = spanAlongX ? c : Float(s + e + 1) * 0.5
+                    let hangTop = chordBot, lampY: Float = chordBot - 0.16
+                    emitTube(SIMD3(lx, hangTop, lz), SIMD3(lx, lampY + 0.05, lz), r: 0.012, sides: 5, strut, caps: false, into: &v)
+                    emitAABB(SIMD3(lx - 0.10, lampY + 0.02, lz - 0.10), SIMD3(lx + 0.10, lampY + 0.07, lz + 0.10), shade, into: &v)
+                    emitQuad(SIMD3(lx, lampY + 0.019, lz), SIMD3(0.085, 0, 0), SIMD3(0, 0, 0.085), SIMD3(0, -1, 0), lampE, into: &v)
+                    hallLamps.append(SIMD3(lx, lampY, lz))
+                }
+                bay += 1
+                a += 3                                                         // one truss every three cells
+            }
+        } }
     }
 
     /// A cast TEE: the main passes through a slightly fatter body, and the branch leaves it square. Real plant
