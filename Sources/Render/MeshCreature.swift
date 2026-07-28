@@ -636,13 +636,27 @@ final class MeshCreature {
             let wx = cx + ox, wy = cy + oy
             guard map.inBounds(wx, wy), map.wall[map.idx(wx, wy)] != 0 else { continue }
             if let d = map.doors[map.idx(wx, wy)], d.open >= GameMap.passThreshold { continue }   // an OPEN door is passable; a CLOSED one blocks (no snout through a shut door)
-            if wx == cx && wy == cy {                                   // p is INSIDE this solid cell → eject out the nearest face
-                let dl = p.x - Float(wx), dr = Float(wx + 1) - p.x, db = p.y - Float(wy), dt = Float(wy + 1) - p.y
-                let m = min(min(dl, dr), min(db, dt))
-                if      m == dl { push += SIMD2(-(dl + r), 0) }
-                else if m == dr { push += SIMD2(dr + r, 0) }
-                else if m == db { push += SIMD2(0, -(db + r)) }
-                else            { push += SIMD2(0, dt + r) }
+            if wx == cx && wy == cy {
+                // p is INSIDE this solid cell → eject through the nearest face that actually LEADS SOMEWHERE.
+                // Ejecting through the nearest face full stop was the corner bug: at a corner the closest face
+                // often backs onto more wall, so the body was shoved sideways THROUGH the block (or oscillated
+                // between two faces) instead of out of it — and a corpse, which never moves again, stayed buried.
+                func passable(_ ox2: Int, _ oy2: Int) -> Bool {
+                    let ax = wx + ox2, ay = wy + oy2
+                    guard map.inBounds(ax, ay) else { return false }
+                    let ai = map.idx(ax, ay)
+                    if map.wall[ai] == 0 { return true }
+                    if let d = map.doors[ai], d.open >= GameMap.passThreshold { return true }
+                    return false
+                }
+                let cands: [(Float, SIMD2<Float>, Bool)] = [
+                    (p.x - Float(wx),        SIMD2(-(p.x - Float(wx) + r), 0), passable(-1, 0)),
+                    (Float(wx + 1) - p.x,    SIMD2(Float(wx + 1) - p.x + r, 0), passable(1, 0)),
+                    (p.y - Float(wy),        SIMD2(0, -(p.y - Float(wy) + r)), passable(0, -1)),
+                    (Float(wy + 1) - p.y,    SIMD2(0, Float(wy + 1) - p.y + r), passable(0, 1)),
+                ]
+                let open = cands.filter { $0.2 }
+                if let pick = (open.isEmpty ? cands : open).min(by: { $0.0 < $1.0 }) { push += pick.1 }
                 continue
             }
             let nx = min(max(p.x, Float(wx)), Float(wx + 1)), ny = min(max(p.y, Float(wy)), Float(wy + 1))
@@ -665,22 +679,42 @@ final class MeshCreature {
     /// no-clip fix: the drone noses UP TO an obstruction and stops, mesh intact, instead of having
     /// the intruding snout culled (flesh must not simply vanish at a wall). Render-only. The capsule
     /// radius TAPERS toward the thin snout so the drone slides no further off a wall than it must.
+    /// `taperMin` floors how slim the capsule gets toward the snout. A LIVE drone tapers to its thin head so it
+    /// can nose right up to a wall; a CORPSE has been sprawled by the death collapse, so its flesh is nowhere
+    /// near as slim along that axis and a hard taper under-covers it.
     static func resolvePoseOutOfSolids(_ pos: SIMD2<Float>, fwd: SIMD2<Float>, r: Float,
-                                       back: Float, front: Float, map: GameMap, props: [World.PropBox]) -> SIMD2<Float> {
+                                       back: Float, front: Float, map: GameMap, props: [World.PropBox],
+                                       taperMin: Float = 0.4) -> SIMD2<Float> {
         guard r > 0.01 else { return pos }
         let dir = simd_length(fwd) > 1e-5 ? simd_normalize(fwd) : SIMD2<Float>(1, 0)
         var pos = pos
         let n = 5
-        for _ in 0..<8 {
-            var acc = SIMD2<Float>(0, 0)
+        // The capsule is LONGER AND WIDER THAN A GRID CELL, so in a one-cell corridor no position exists where
+        // every sample is clear — chasing "zero overlap" just oscillates. What must hold absolutely is that the
+        // TRUNK sits in open space: a buried trunk is exactly the "body disappeared into the wall" failure. So
+        // resolve in two stages, and never let the extremities drag the trunk back into a solid.
+        // STAGE 1 — seat the trunk. A single circle in an open cell is always satisfiable.
+        for _ in 0..<12 {
+            let p = clearPush(pos, r, map, props)
+            if simd_length(p) < 1e-4 { break }
+            pos += p
+        }
+        // STAGE 2 — ease the rest out, half a step at a time, re-asserting the trunk after every nudge. Taking
+        // the STRONGEST violation (not the mean of the samples) matters: averaging applies a sixth of the push a
+        // buried snout needs, so it can never climb out within the iteration budget.
+        for _ in 0..<12 {
+            var best = SIMD2<Float>(0, 0), bestMag: Float = 0
             for i in 0...n {
                 let t = back + (front - back) * Float(i) / Float(n)
-                let taper = t <= 0 ? 1.0 : max(0.4, 1.0 - 0.6 * (t / max(1e-3, front)))   // slim at the snout, full at the trunk
-                acc += clearPush(pos + dir * t, r * taper, map, props)
+                guard abs(t) > 1e-4 else { continue }                 // the trunk is stage 1's business
+                let taper = max(taperMin, 1.0 - 0.6 * (max(0, t) / max(1e-3, front)))   // slim at the snout, full at the trunk
+                let p = clearPush(pos + dir * t, r * taper, map, props)
+                let m = simd_length(p)
+                if m > bestMag { bestMag = m; best = p }
             }
-            let push = acc / Float(n + 1)
-            if simd_length(push) < 1e-4 { break }
-            pos += push
+            if bestMag < 1e-4 { break }
+            pos += best * 0.5
+            pos += clearPush(pos, r, map, props)                      // the trunk always wins
         }
         return pos
     }
@@ -987,8 +1021,12 @@ final class MeshCreature {
                 } else {
                     // corpse / dissolving: settle the WHOLE fallen body clear of walls + furniture too — the same
                     // capsule resolve as a live drone, NO clip, so a dead drone is never left buried in a wall.
+                    // A corpse gets a FATTER capsule: the death collapse sprawls it, so the live drone's slim
+                    // snout taper leaves real flesh outside the capsule — and a corpse never moves again, so a
+                    // body that settles inside a wall stays there for the rest of the level.
                     rpos = Self.resolvePoseOutOfSolids(inst.pos, fwd: aimW, r: clr,
-                                                       back: bbMin.x * scale, front: bbMax.x * scale, map: m, props: props)
+                                                       back: bbMin.x * scale, front: bbMax.x * scale, map: m, props: props,
+                                                       taperMin: 0.8)
                 }
             }
             let model = Self.T(rpos.x, 0, rpos.y) * rot

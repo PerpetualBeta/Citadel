@@ -3074,6 +3074,71 @@ final class RasterRenderer {
             }
         }
 
+        // CORPSE/DRONE POSE-RESOLVE check — a NUMERIC assertion, not a picture: a body settling into a wall at a
+        // corner is near-impossible to stage as a screenshot, but the invariant is exact. Drop a body deep inside
+        // every kind of wall corner, over a sweep of facings, resolve it, then measure how far any capsule sample
+        // still penetrates a solid. Every case must come out at ~0.
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            let back: Float = -0.35, front: Float = 0.45, r: Float = 0.30      // representative drone capsule
+            /// How far a circle of radius `rr` at `p` overlaps any blocking cell (0 = clear).
+            func penetration(_ p: SIMD2<Float>, _ rr: Float) -> Float {
+                var worst: Float = 0
+                let cx = Int(p.x.rounded(.down)), cy = Int(p.y.rounded(.down))
+                for oy in -1...1 { for ox in -1...1 {
+                    let wx = cx + ox, wy = cy + oy
+                    guard m.inBounds(wx, wy), m.wall[m.idx(wx, wy)] != 0 else { continue }
+                    if let d = m.doors[m.idx(wx, wy)], d.open >= GameMap.passThreshold { continue }
+                    if p.x > Float(wx), p.x < Float(wx + 1), p.y > Float(wy), p.y < Float(wy + 1) {
+                        let dl = p.x - Float(wx), dr = Float(wx + 1) - p.x, db = p.y - Float(wy), dt = Float(wy + 1) - p.y
+                        worst = max(worst, rr + min(min(dl, dr), min(db, dt))); continue      // strictly inside
+                    }
+                    let nx = min(max(p.x, Float(wx)), Float(wx + 1)), ny = min(max(p.y, Float(wy)), Float(wy + 1))
+                    let dist = simd_length(p - SIMD2(nx, ny))
+                    if dist < rr { worst = max(worst, rr - dist) }
+                } }
+                return worst
+            }
+            func capsuleWorst(_ pos: SIMD2<Float>, _ dir: SIMD2<Float>, _ taperMin: Float) -> Float {
+                var worst: Float = 0
+                for i in 0...5 {
+                    let t = back + (front - back) * Float(i) / 5
+                    let taper = t <= 0 ? 1.0 : max(taperMin, 1.0 - 0.6 * (t / max(1e-3, front)))
+                    worst = max(worst, penetration(pos + dir * t, r * taper))
+                }
+                return worst
+            }
+            // The capsule is bigger than a cell, so total clearance is unachievable in a corridor. The invariant
+            // that MUST hold is the TRUNK being clear — a buried trunk is the "body vanished into the wall" bug.
+            // Extremity overlap is reported separately and only needs to stay modest.
+            var cases = 0, trunkFail = 0
+            var trunkBefore: Float = 0, trunkAfter: Float = 0, tipAfter: Float = 0
+            for cy in 1..<(m.h - 1) { for cx in 1..<(m.w - 1) where m.wall[m.idx(cx, cy)] == 0 && m.doors[m.idx(cx, cy)] == nil {
+                // an OPEN cell touching a wall CORNER — where a body realistically dies and settles
+                var solidN = 0
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] where m.wall[m.idx(cx + dx, cy + dy)] != 0 { solidN += 1 }
+                guard solidN >= 2 else { continue }                            // two walls meeting = a corner
+                if (cx * 7 + cy * 13) % 11 != 0 { continue }                   // sample the map, don't grind all of it
+                for k in 0..<8 {                                               // a sweep of facings
+                    let ang = Float(k) / 8 * 2 * Float.pi
+                    let dir = SIMD2<Float>(cosf(ang), sinf(ang))
+                    // start shoved hard INTO the corner, as a death slide would leave it
+                    let start = SIMD2<Float>(Float(cx) + 0.5, Float(cy) + 0.5) + dir * 0.45
+                    cases += 1
+                    trunkBefore = max(trunkBefore, penetration(start, r))
+                    let fixed = MeshCreature.resolvePoseOutOfSolids(start, fwd: dir, r: r, back: back, front: front,
+                                                                   map: m, props: world.propColliders, taperMin: 0.8)
+                    let tp = penetration(fixed, r)
+                    trunkAfter = max(trunkAfter, tp)
+                    tipAfter = max(tipAfter, capsuleWorst(fixed, dir, 0.8))
+                    if tp > 0.02 { trunkFail += 1 }
+                }
+            } }
+            print(String(format: "RASTERSHOT: pose-resolve %d corner cases · TRUNK penetration before %.3f → after %.3f (%d buried) · worst extremity overlap %.3f",
+                         cases, trunkBefore, trunkAfter, trunkFail, tipAfter))
+        }
+
         // INDUSTRIAL FLOORS check (7–8): the working plant. Frame the longest clear run in a floor-7 level and
         // the widest room — verify raw ROCK walls with riveted IRON where a run was finished, rock deck, and
         // NO display banks / NO dormitory bunks (those belong to the upper floors).
