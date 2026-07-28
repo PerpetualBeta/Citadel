@@ -25,6 +25,9 @@ enum FurnitureKind: Int, CaseIterable {
     case sink        // MEDICAL — stainless steel scrub sink with mixer tap and splashback
     case range       // CANTEEN — stainless range: hob rings, oven door, extraction hood over
     case canteenTable // CANTEEN — dining table with a bench seat either side (free-standing, ranked in rows)
+    case washTrough  // SANITARY — stainless trough basin with taps and a mirror panel over it
+    case shower      // SANITARY — shower stall: tiled divider, head and valve
+    case cubicle     // SANITARY — WC cubicle: partition, door and pan
 }
 
 struct Prop {

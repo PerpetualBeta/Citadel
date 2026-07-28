@@ -116,6 +116,7 @@ enum MaterialPreview {
         case .opsBoard: return "opsBoard"
         case .medWall: return "medWall"
         case .subwayTile: return "subwayTile"
+        case .sanTile: return "sanTile"
         }
     }
     private static func nameF(_ f: FlatTex) -> String {

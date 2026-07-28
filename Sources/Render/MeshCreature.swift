@@ -629,13 +629,17 @@ final class MeshCreature {
     /// AND solid prop box. Nearest-point push for edge overlap; a strictly-INSIDE point is ejected
     /// through its nearest cell face (the snout can end up wholly inside a wall, where the nearest
     /// point degenerates). Shared by the capsule pose-resolve below.
-    private static func clearPush(_ p: SIMD2<Float>, _ r: Float, _ map: GameMap, _ props: [World.PropBox]) -> SIMD2<Float> {
+    private static func clearPush(_ p: SIMD2<Float>, _ r: Float, _ map: GameMap, _ props: [World.PropBox],
+                                  doorsBlock: Bool = true) -> SIMD2<Float> {
         var push = SIMD2<Float>(0, 0)
         let cx = Int(p.x.rounded(.down)), cy = Int(p.y.rounded(.down))
         for oy in -1...1 { for ox in -1...1 {
             let wx = cx + ox, wy = cy + oy
             guard map.inBounds(wx, wy), map.wall[map.idx(wx, wy)] != 0 else { continue }
-            if let d = map.doors[map.idx(wx, wy)], d.open >= GameMap.passThreshold { continue }   // an OPEN door is passable; a CLOSED one blocks (no snout through a shut door)
+            // An OPEN door is passable; a CLOSED one blocks, so a live drone cannot push its snout through it.
+            // A CORPSE ignores doors entirely (doorsBlock false): a body settled against a shut door would be
+            // shoved to a new place the moment that door opened, which read as the corpse snapping across the room.
+            if let d = map.doors[map.idx(wx, wy)], !doorsBlock || d.open >= GameMap.passThreshold { continue }
             if wx == cx && wy == cy {
                 // p is INSIDE this solid cell → eject through the nearest face that actually LEADS SOMEWHERE.
                 // Ejecting through the nearest face full stop was the corner bug: at a corner the closest face
@@ -682,9 +686,10 @@ final class MeshCreature {
     /// `taperMin` floors how slim the capsule gets toward the snout. A LIVE drone tapers to its thin head so it
     /// can nose right up to a wall; a CORPSE has been sprawled by the death collapse, so its flesh is nowhere
     /// near as slim along that axis and a hard taper under-covers it.
+    /// `doorsBlock` false lets a settled CORPSE ignore doors, so opening one cannot shove the body elsewhere.
     static func resolvePoseOutOfSolids(_ pos: SIMD2<Float>, fwd: SIMD2<Float>, r: Float,
                                        back: Float, front: Float, map: GameMap, props: [World.PropBox],
-                                       taperMin: Float = 0.4) -> SIMD2<Float> {
+                                       taperMin: Float = 0.4, doorsBlock: Bool = true) -> SIMD2<Float> {
         guard r > 0.01 else { return pos }
         let dir = simd_length(fwd) > 1e-5 ? simd_normalize(fwd) : SIMD2<Float>(1, 0)
         var pos = pos
@@ -695,7 +700,7 @@ final class MeshCreature {
         // resolve in two stages, and never let the extremities drag the trunk back into a solid.
         // STAGE 1 — seat the trunk. A single circle in an open cell is always satisfiable.
         for _ in 0..<12 {
-            let p = clearPush(pos, r, map, props)
+            let p = clearPush(pos, r, map, props, doorsBlock: doorsBlock)
             if simd_length(p) < 1e-4 { break }
             pos += p
         }
@@ -708,13 +713,13 @@ final class MeshCreature {
                 let t = back + (front - back) * Float(i) / Float(n)
                 guard abs(t) > 1e-4 else { continue }                 // the trunk is stage 1's business
                 let taper = max(taperMin, 1.0 - 0.6 * (max(0, t) / max(1e-3, front)))   // slim at the snout, full at the trunk
-                let p = clearPush(pos + dir * t, r * taper, map, props)
+                let p = clearPush(pos + dir * t, r * taper, map, props, doorsBlock: doorsBlock)
                 let m = simd_length(p)
                 if m > bestMag { bestMag = m; best = p }
             }
             if bestMag < 1e-4 { break }
             pos += best * 0.5
-            pos += clearPush(pos, r, map, props)                      // the trunk always wins
+            pos += clearPush(pos, r, map, props, doorsBlock: doorsBlock)   // the trunk always wins
         }
         return pos
     }
@@ -1026,7 +1031,7 @@ final class MeshCreature {
                     // body that settles inside a wall stays there for the rest of the level.
                     rpos = Self.resolvePoseOutOfSolids(inst.pos, fwd: aimW, r: clr,
                                                        back: bbMin.x * scale, front: bbMax.x * scale, map: m, props: props,
-                                                       taperMin: 0.8)
+                                                       taperMin: 0.8, doorsBlock: false)
                 }
             }
             let model = Self.T(rpos.x, 0, rpos.y) * rot

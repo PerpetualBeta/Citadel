@@ -31,6 +31,7 @@ enum WallTex: Int, CaseIterable {
     case opsBoard            // operations-centre BIG BOARD — the one full-colour (RGB) display in the complex
     case medWall             // MEDICAL CENTRE — white painted concrete: clean, sterile, almost no grime
     case subwayTile          // CANTEEN/GALLEY — white ceramic subway tiles in offset bond, grey grout
+    case sanTile             // SANITARY BLOCK — small square institutional tiles, pale green, dark grout
 }
 enum FlatTex: Int, CaseIterable {
     case concrete = 0, metalFloor, grate, nukage, ceilTech, ceilDark, ceilStone, rock, blood, teleportPad
@@ -446,6 +447,33 @@ final class Textures {
                 set(x, y, rgb(v, v, v - 4))
             }}
 
+        case .sanTile:
+            // SANITARY BLOCK: small square institutional tiles in that municipal pale green, on a straight grid
+            // with darker grout — deliberately NOT the canteen's white subway bond, so a washroom never reads as
+            // a galley. Water leaves its mark here: limescale bloom near the floor and a wetter sheen low down.
+            let ts = s / 8                     // 8 courses of small square tiles
+            let grt = 3
+            for y in 0..<s { for x in 0..<s {
+                let cx = x % ts, cy = y % ts
+                if cx < grt || cy < grt {
+                    let g = 104 + Int((fbm(Float(x) / 11, Float(y) / 11, 16, 171) - 0.5) * 16)
+                    set(x, y, rgb(g, g + 4, g + 2))                       // darker grout, grubbier than the canteen's
+                    continue
+                }
+                let tileID = hash(x / ts, y / ts, 177)
+                var r = 178, gg = 198, b = 186                            // pale institutional green
+                let dv = Int((tileID - 0.5) * 12) + Int((fbm(Float(x) / 8, Float(y) / 8, 16, 181) - 0.5) * 8)
+                r += dv; gg += dv; b += dv
+                if cx < grt + 2 || cy < grt + 2 { r += 12; gg += 12; b += 12 }        // bevel highlight
+                if cx >= ts - 2 || cy >= ts - 2 { r -= 14; gg -= 14; b -= 14 }        // bevel shadow
+                if y > s - s / 5 {                                                    // limescale + damp near the deck
+                    let lime = fbm(Float(x) / 14, Float(y) / 9, 16, 187)
+                    if lime > 0.55 { r += 18; gg += 16; b += 14 }
+                    r -= 8; gg -= 6; b -= 4
+                }
+                set(x, y, rgb(r, gg, b))
+            }}
+
         case .medWall:
             // MEDICAL: concrete painted white and kept that way. Deliberately the CLEANEST surface in the
             // colony — only the faintest roller mottle, a scuff skirting where trolleys have clipped it, and a
@@ -574,6 +602,7 @@ final class Textures {
         case .opsBoard: return 0.4           // just the bezels between the board's panels
         case .medWall: return 0.2            // painted flat — only the skirting and dado catch
         case .subwayTile: return 0.55        // the grout lines and tile bevels should read as real relief
+        case .sanTile: return 0.6            // a small-tile grid reads best with its grout genuinely recessed
         case .glass: return 0.25             // just the frame / mullions
         case .none: return 0
         }

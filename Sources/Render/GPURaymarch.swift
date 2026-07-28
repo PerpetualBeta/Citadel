@@ -2402,6 +2402,46 @@ enum GPURaymarch {
                 ct.append(iBox(SIMD3( 0.28, 0.115, bz), SIMD3(0.020, 0.115, 0.065), 0.005, frameM, 0.004))
             }
             return ct
+        case .washTrough:
+            // SANITARY trough basin: one long stainless trough on brackets, a run of pillar taps, and a mirror
+            // panel above it. Authored back-to-wall (−Z). The mirror is a bright, low-roughness plate — enough
+            // to read as glass without needing a reflection.
+            let inoxW = SIMD3<Float>(0.68, 0.70, 0.74), inoxD = SIMD3<Float>(0.40, 0.42, 0.45)
+            let mirror = SIMD3<Float>(0.74, 0.79, 0.82)
+            var wt: [GShape] = [
+                iBox(SIMD3(0, 0.40, -0.02), SIMD3(0.36, 0.030, 0.15), 0.012, inoxW, 0.005),               // trough rim
+                iBox(SIMD3(0, 0.365, -0.02), SIMD3(0.32, 0.032, 0.115), 0.03, inoxD, 0.005),              // the basin well
+                iBox(SIMD3(-0.30, 0.24, -0.10), SIMD3(0.022, 0.14, 0.030), 0.006, inoxD, 0.004),          // brackets
+                iBox(SIMD3( 0.30, 0.24, -0.10), SIMD3(0.022, 0.14, 0.030), 0.006, inoxD, 0.004),
+                iBox(SIMD3(0, 0.145, -0.09), SIMD3(0.040, 0.10, 0.040), 0.010, inoxD, 0.004),             // waste trap
+                iBox(SIMD3(0, 0.80, -0.175), SIMD3(0.34, 0.185, 0.012), 0.006, mirror, 0.003),            // mirror panel
+            ]
+            for tx in [Float(-0.20), 0.0, 0.20] {                                                         // pillar taps
+                wt.append(iBox(SIMD3(tx, 0.455, -0.115), SIMD3(0.014, 0.045, 0.014), 0.007, inoxW, 0.004))
+                wt.append(iBox(SIMD3(tx, 0.495, -0.075), SIMD3(0.012, 0.012, 0.045), 0.007, inoxW, 0.004))
+            }
+            return wt
+        case .shower:
+            // SANITARY shower stall: a tiled divider each side, the head on its riser, and a mixer valve. Open
+            // fronted (no door), which is what a works washroom has.
+            let divid = SIMD3<Float>(0.72, 0.78, 0.75), chrome = SIMD3<Float>(0.74, 0.76, 0.80)
+            return [iBox(SIMD3(-0.34, 0.50, -0.06), SIMD3(0.030, 0.50, 0.20), 0.008, divid, 0.005),       // divider L
+                    iBox(SIMD3( 0.34, 0.50, -0.06), SIMD3(0.030, 0.50, 0.20), 0.008, divid, 0.005),       // divider R
+                    iBox(SIMD3(0, 0.02, -0.06), SIMD3(0.33, 0.022, 0.20), 0.008, divid * 0.86, 0.005),    // shallow tray upstand
+                    iBox(SIMD3(0, 0.72, -0.175), SIMD3(0.016, 0.20, 0.016), 0.008, chrome, 0.004),        // riser
+                    iBox(SIMD3(0, 0.905, -0.115), SIMD3(0.014, 0.014, 0.062), 0.008, chrome, 0.004),      // arm
+                    iCylinder(SIMD3(0, 0.885, -0.06), r: 0.055, halfH: 0.012, round: 0.006, chrome, 0.004), // rose
+                    iBox(SIMD3(0, 0.46, -0.168), SIMD3(0.045, 0.045, 0.020), 0.012, chrome, 0.004)]       // mixer valve
+        case .cubicle:
+            // SANITARY WC cubicle: two partitions with a gap over and under (as they always have), a part-open
+            // door, and the pan with its cistern inside.
+            let part = SIMD3<Float>(0.70, 0.74, 0.72), porc = SIMD3<Float>(0.86, 0.87, 0.86)
+            return [iBox(SIMD3(-0.34, 0.52, -0.04), SIMD3(0.026, 0.44, 0.22), 0.008, part, 0.005),        // partition L
+                    iBox(SIMD3( 0.34, 0.52, -0.04), SIMD3(0.026, 0.44, 0.22), 0.008, part, 0.005),        // partition R
+                    iBox(SIMD3(-0.20, 0.52, 0.175), SIMD3(0.135, 0.44, 0.022), 0.008, part * 1.04, 0.005), // door, part open
+                    iBox(SIMD3(0, 0.155, -0.10), SIMD3(0.115, 0.155, 0.105), 0.03, porc, 0.005),          // pan
+                    iBox(SIMD3(0, 0.315, -0.10), SIMD3(0.135, 0.022, 0.125), 0.012, porc, 0.004),         // seat
+                    iBox(SIMD3(0, 0.42, -0.185), SIMD3(0.145, 0.125, 0.055), 0.010, porc, 0.005)]         // cistern
         case .wallPipe:
             return pipeRunShapes(length: 1)                    // length comes from the Prop at pack time
         }

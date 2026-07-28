@@ -100,6 +100,12 @@ enum MapGen {
     private static func isCanteen(_ ri: Int) -> Bool { ri == canteenRoom || (canteenMess >= 0 && ri == canteenMess) }
     /// Two rooms are NEIGHBOURS when they face each other across a wall — their extent overlaps on one axis
     /// and the gap on the other is a wall's thickness. Used to put the mess hall next to the galley.
+    // ── SANITARY BLOCK ── one per floor: pale green institutional tile, white ceiling, concrete deck with
+    // floor drains. Trough basins under mirrors on one wall, open shower stalls on another, WC cubicles on a
+    // third. No fuel drums, no toxic pools. Chosen after the other room types have taken theirs.
+    private static var sanRoom = -1
+    static let sanMinDim = 3
+    private static func isSanitary(_ ri: Int) -> Bool { ri == sanRoom }
     private static func roomsAdjacent(_ a: Room, _ b: Room) -> Bool {
         let xOverlap = a.x < b.x + b.w && b.x < a.x + a.w
         let yOverlap = a.y < b.y + b.h && b.y < a.y + a.h
@@ -111,6 +117,8 @@ enum MapGen {
     }
     /// Read-only view of the chosen ops room, for the ASCII layout dump.
     static var debugOpsRoom: Int { opsRoomIndex }
+    private static var lastRoomCount = 0
+    static var debugRoomCount: Int { lastRoomCount }
     /// Any damaging floor inside the room (the ops-centre pick needs this at attemptGen scope, where
     /// populate's own local `roomHasHazard` isn't in view).
     private static func roomHasHazardCells(_ map: GameMap, _ r: Room) -> Bool {
@@ -121,8 +129,10 @@ enum MapGen {
     /// elevator) nor the exit room (exit elevator/teleporter) — so no elevator ever sits in a
     /// dorm. The Queen may still lair in one. `roomCount-1` is the exit room (see attemptGen).
     /// NEVER on the industrial floors — those are working plant, not living quarters.
+    private static var dormRooms = Set<Int>()
     private static func isDormitory(_ r: Room, _ ri: Int, _ roomCount: Int) -> Bool {
-        !industrialFloor && min(r.w, r.h) >= dormMinDim && ri != 0 && ri != roomCount - 1
+        _ = r; _ = roomCount
+        return !industrialFloor && dormRooms.contains(ri)
     }
 
     static func generate(level: Int, colonyIndex: Int, seed: UInt64) -> GeneratedLevel {
@@ -245,6 +255,19 @@ enum MapGen {
                     let i = map.idx(xx, yy); if map.wall[i] == 0 { map.light[i] = lightV }
                 }
             }
+        }
+
+        // ── DORMITORY SELECTION ── capped, and chosen here so every later pass sees the same answer. Size alone
+        //    used to decide it, which meant a floor could turn three or four of its rooms into sleeping halls and
+        //    leave nothing for the operations centre, canteen, sick bay and washroom to occupy. A floor needs one
+        //    or two dormitories, not every large room it happens to have.
+        lastRoomCount = rooms.count
+        dormRooms.removeAll()
+        do {
+            let eligible = rooms.enumerated()
+                .filter { (ri, r) in ri != 0 && ri != rooms.count - 1 && min(r.w, r.h) >= dormMinDim }
+                .sorted { $0.element.w * $0.element.h > $1.element.w * $1.element.h }     // the biggest halls sleep the crew
+            for (ri, _) in eligible.prefix(rooms.count >= 10 ? 2 : 1) { dormRooms.insert(ri) }
         }
 
         // ── corridors: chain connect (every corridor is a bridge → clean gating) ──
@@ -518,7 +541,7 @@ enum MapGen {
                       ri != canteenRoom, ri != canteenMess, !isDormitory(r, ri, rooms.count) else { continue }
                 cands.append(ri)
             }
-            let want = min(cands.count, rooms.count >= 9 ? 2 : 1)
+            let want = min(cands.count, rooms.count >= 13 ? 2 : 1)
             for _ in 0..<want {
                 guard !cands.isEmpty else { break }
                 let pick = cands.remove(at: rng.i(0, cands.count - 1))
@@ -537,6 +560,38 @@ enum MapGen {
                           map.wall[i] != WallTex.opsBoard.rawValue, map.wall[i] != WallTex.liftWall.rawValue,
                           map.wall[i] != WallTex.doorHazard.rawValue else { continue }
                     map.wall[i] = WallTex.medWall.rawValue
+                } }
+            }
+        }
+
+        // ── SANITARY BLOCK ── the washroom. Picked last of the named rooms, from whatever remains.
+        sanRoom = -1
+        do {
+            var best = (score: 0, ri: -1)
+            for (ri, r) in rooms.enumerated() where ri != 0 && ri != rooms.count - 1 {
+                guard min(r.w, r.h) >= sanMinDim, !roomHasHazardCells(map, r), ri != opsRoomIndex,
+                      ri != canteenRoom, ri != canteenMess, !medRooms.contains(ri),
+                      !isDormitory(r, ri, rooms.count) else { continue }
+                if r.w * r.h > best.score { best = (r.w * r.h, ri) }
+            }
+            if best.ri >= 0 {
+                sanRoom = best.ri
+                let r = rooms[best.ri]
+                for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) {
+                    let i = map.idx(xx, yy)
+                    guard map.wall[i] == 0, map.doors[i] == nil else { continue }
+                    map.ceil[i] = FlatTex.ceilWhite.rawValue
+                    // a wet room drains: grated gullies on a coarse grid, plain screed between them
+                    let drain = (xx - r.x) % 3 == 1 && (yy - r.y) % 3 == 1
+                    map.floor[i] = drain ? FlatTex.grate.rawValue : FlatTex.concrete.rawValue
+                } }
+                for yy in (r.y - 1)...(r.y + r.h) { for xx in (r.x - 1)...(r.x + r.w) where map.inBounds(xx, yy) {
+                    let i = map.idx(xx, yy)
+                    guard map.wall[i] != 0, map.doors[i] == nil,
+                          map.wall[i] != WallTex.opsBoard.rawValue, map.wall[i] != WallTex.liftWall.rawValue,
+                          map.wall[i] != WallTex.doorHazard.rawValue, map.wall[i] != WallTex.medWall.rawValue,
+                          map.wall[i] != WallTex.subwayTile.rawValue else { continue }
+                    map.wall[i] = WallTex.sanTile.rawValue
                 } }
             }
         }
@@ -567,6 +622,16 @@ enum MapGen {
                 guard map.wall[i] == 0 else { continue }
                 map.light[i] = max(map.light[i], 0.90)
                 map.lightColor[i] = SIMD3(1.0, 0.965, 0.90)
+            } }
+        }
+        // The washroom is bright and slightly COOL — institutional strip light, not the mess hall's warmth.
+        if sanRoom >= 0 {
+            let r = rooms[sanRoom]
+            for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) {
+                let i = map.idx(xx, yy)
+                guard map.wall[i] == 0 else { continue }
+                map.light[i] = max(map.light[i], 0.90)
+                map.lightColor[i] = SIMD3(0.93, 0.98, 1.0)
             } }
         }
         for c in [map.exitCell, map.entryCell] where c >= 0 {
@@ -1175,6 +1240,7 @@ enum MapGen {
                     if isOpsCentre(ri) { continue }           // nor in the operations centre — volatile fuel has no place at the consoles
                     if isMedical(ri) { continue }             // nor in a medical centre — it is a sterile room
                     if isCanteen(ri) { continue }             // nor in the canteen — nobody stores fuel where people eat
+                    if isSanitary(ri) { continue }            // nor in the washroom
                     let r = rooms[ri]
                     var p: SIMD2<Float>? = nil
                     if attempt < 28 {                              // prefer free corners
@@ -1379,6 +1445,31 @@ enum MapGen {
             let hazard = roomHasHazard(r)
             // structural support for ANY large hall — dorm, open room, or a large start/exit chamber
             if min(r.w, r.h) >= MapGen.dormMinDim { placeColumns(r, ri) }
+            // ── SANITARY BLOCK ── the washroom, sorted by wall as a real one is: trough basins under their
+            //    mirrors on the longest wall, open shower stalls on the next, WC cubicles on the third. Nothing
+            //    stands in the middle, so the floor (and its drains) stays clear to walk.
+            if isSanitary(ri) && !hazard {
+                let slots = wallSlots(r, ri)
+                guard !slots.isEmpty else { continue }
+                var byWall: [SIMD2<Float>: [Slot]] = [:]
+                for s in slots { byWall[s.inward, default: []].append(s) }
+                let walls = byWall.keys.sorted { (byWall[$0]?.count ?? 0) > (byWall[$1]?.count ?? 0) }
+                // one fitting type per wall, in the order a washroom is laid out
+                let plan: [(FurnitureKind, Int)] = [(.washTrough, 3), (.shower, 3), (.cubicle, 3)]
+                for (idx, entry) in plan.enumerated() {
+                    guard idx < walls.count, let run = byWall[walls[idx]]?.sorted(by: { ($0.x + $0.y) < ($1.x + $1.y) }) else { continue }
+                    var n = 0
+                    for s in run where n < entry.1 {
+                        if placeProp(entry.0, s, gap: 0.95) { n += 1 }
+                    }
+                }
+                // any wall left over takes a couple more basins — a block this size would have them
+                if walls.count > 3, let run = byWall[walls[3]] {
+                    var n = 0
+                    for s in run where n < 2 { if placeProp(.washTrough, s, gap: 0.95) { n += 1 } }
+                }
+                continue
+            }
             // ── CANTEEN / GALLEY ── the mess: a working galley line down the wall with the most room (range under
             //    its hood, scrub sink, stainless prep counters, dry stores), and ranked dining tables through the
             //    middle with an aisle between every row, so the hall stays crossable.
@@ -1629,6 +1720,12 @@ enum MapGen {
                     else if max(abs(dx), abs(dy)) == 1 && map.wall[ni] == 0 && roomOf[ni] != ri { clear = false }  // 1 cell off a room-mouth
                     else if max(abs(dx), abs(dy)) == 1 && map.wall[ni] == WallTex.computer.rawValue { clear = false }  // a pipe never flows ACROSS a terminal bank
                 } }
+                // HARD RULE: a services run never crosses a POWER OUTLET. The sockets are already placed by
+                // this point, so the routing mask refuses their cell and the cells either side of it — a pipe
+                // passing through a wall socket is the kind of detail that breaks the whole illusion.
+                for sk in sockets {
+                    if abs(Int(sk.pos.x) - xx) <= 1 && abs(Int(sk.pos.y) - yy) <= 1 { clear = false }
+                }
                 // never in front of the operations BIG BOARD — services are not plumbed across the plot
                 // displays. Done here, in the shared routing mask, so BOTH renderers respect it.
                 for (ox, oy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] where map.inBounds(xx + ox, yy + oy) {

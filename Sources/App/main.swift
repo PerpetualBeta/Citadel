@@ -566,6 +566,7 @@ if ProcessInfo.processInfo.environment["CITADEL_DORMDEBUG"] != nil {
             case .console: grid[y][x] = "O"
             case .cabinet: grid[y][x] = "n"; case .sink: grid[y][x] = "s"
             case .range: grid[y][x] = "R"; case .canteenTable: grid[y][x] = "t"
+            case .washTrough: grid[y][x] = "w"; case .shower: grid[y][x] = "h"; case .cubicle: grid[y][x] = "u"
             }
         }
         let boardCells = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.opsBoard.rawValue }.count
@@ -575,8 +576,10 @@ if ProcessInfo.processInfo.environment["CITADEL_DORMDEBUG"] != nil {
         let tiles = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.subwayTile.rawValue }.count
         let tables = g.props.filter { $0.kind == .canteenTable }.count
         let ranges = g.props.filter { $0.kind == .range }.count
+        let sanTiles = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.sanTile.rawValue }.count
+        let sanFit = g.props.filter { $0.kind == .washTrough || $0.kind == .shower || $0.kind == .cubicle }.count
         let consoles = g.props.filter { $0.kind == .console }.count
-        print("=== LEVEL \(lvl)  \(m.w)x\(m.h)  props=\(g.props.count) items=\(g.items.count) drums=\(g.drums.count) opsRoom=\(MapGen.debugOpsRoom) board=\(boardCells) consoles=\(consoles) medWalls=\(medCells) beds=\(beds) stainless=\(stainless) tiles=\(tiles) tables=\(tables) range=\(ranges) ===")
+        print("=== LEVEL \(lvl)  \(m.w)x\(m.h)  rooms=\(MapGen.debugRoomCount)  props=\(g.props.count) items=\(g.items.count) drums=\(g.drums.count) opsRoom=\(MapGen.debugOpsRoom) board=\(boardCells) consoles=\(consoles) medWalls=\(medCells) beds=\(beds) stainless=\(stainless) tiles=\(tiles) tables=\(tables) range=\(ranges) sanTiles=\(sanTiles) sanFit=\(sanFit) ===")
         for row in grid { print(String(row)) }
         print("")
     }

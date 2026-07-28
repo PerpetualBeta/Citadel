@@ -81,6 +81,8 @@ final class RasterRenderer {
     #if CITADEL_HARNESS
     var pipeVertCount: Int { pipeVerts }
     var totalVertCount: Int { nVerts }
+    var dynVertCount: Int { nDynVerts }
+    var dynCapacity: Int { dynCap }
     #endif
     // The level cache key must be a WEAK REFERENCE, never an ObjectIdentifier: an identifier outlives the
     // object it names, and a freed World's address is readily reused by the next one — so a stored identifier
@@ -228,7 +230,7 @@ final class RasterRenderer {
         let dynLights = GPUWorldRenderer.gatherDynLights(world)
         lights.append(contentsOf: dynLights)
         // fuel-store bulkhead lights — warm, low-wattage, tight radius (the store has no overhead; these light it)
-        for b in fuelBulkheads(world) {
+        for b in fuelBulkheads(world.map) {
             lights.append(GPURaymarch.GPULight(posR: SIMD4(b.light.x, 0.56, b.light.y, 1 / (2.2 * 2.2)),
                                                colI: SIMD4(1.0, 0.72, 0.40, 1.0)))
         }
@@ -293,6 +295,9 @@ final class RasterRenderer {
         dynScratch.removeAll(keepingCapacity: true)
         buildProps(world, into: &dynScratch)
         nDynVerts = min(dynScratch.count, dynCap)
+        if dynScratch.count > dynCap {                     // silent truncation makes props pop as the camera turns
+            print("RasterRenderer: prop buffer OVERFLOW — \(dynScratch.count) verts, cap \(dynCap); geometry dropped")
+        }
         if nDynVerts > 0 {
             dynScratch.withUnsafeBytes { _ = memcpy(dynBuf.contents(), $0.baseAddress!, nDynVerts * MemoryLayout<PVert>.stride) }
         }
@@ -675,6 +680,7 @@ final class RasterRenderer {
             }
         }
         buildHallSteelwork(map, into: &v)     // roof trusses + slung downlights over the double-height halls
+        buildWallFixtures(map, into: &v)      // wall bulkhead fixtures — static, and far too heavy to rebuild per frame
         let prePipe = v.count
         buildPipework(map, into: &v)          // copper wall runs + valves/gauges — static, so it lives in this mesh
         pipeVerts = v.count - prePipe
@@ -997,6 +1003,7 @@ final class RasterRenderer {
         case .opsBoard:       return M(SIMD3(0.05, 0.055, 0.065), 0.42, 0.20)   // dark glass; the RGB content is emissive (see rr_fragment)
         case .medWall:        return M(SIMD3(0.82, 0.83, 0.82), 0.68, 0.02)     // white painted concrete — bright, matte, sterile
         case .subwayTile:     return M(SIMD3(0.86, 0.87, 0.86), 0.24, 0.04)     // glazed ceramic — bright and a touch shiny
+        case .sanTile:        return M(SIMD3(0.70, 0.78, 0.74), 0.20, 0.04)     // glazed pale green — wet-room shine
         }
     }
     private func flatMat(_ id: Int) -> Mat {
@@ -1587,8 +1594,7 @@ final class RasterRenderer {
     /// The fuel store's two wall-mounted BULKHEAD lights: one on each of the chamber's side walls (the walls
     /// running along its depth), at eye height, facing inward. Returns (mount on the wall, yaw so the dome
     /// faces the room, dome position for the point light) — shared by the mesh pass and the light pass.
-    private func fuelBulkheads(_ world: World) -> [(pos: SIMD2<Float>, yaw: Float, light: SIMD2<Float>)] {
-        let m = world.map
+    private func fuelBulkheads(_ m: GameMap) -> [(pos: SIMD2<Float>, yaw: Float, light: SIMD2<Float>)] {
         guard !m.fuelStore.isEmpty else { return [] }
         var dcx = -1, dcy = -1, outX = 0, outY = 0                       // hazard door + outward (door→chamber)
         outer: for c in m.fuelStore {
@@ -1636,11 +1642,16 @@ final class RasterRenderer {
 
     /// Mount the wall BULKHEAD fixtures — the fuel store's pair, plus (on the plant floors 7–8, which carry no
     /// ceiling grid) the fixtures that light the workings. Their glow is added as point lights in render().
-    private func buildFuelStore(_ world: World, into v: inout [PVert]) {
-        for b in fuelBulkheads(world) where simd_length(b.pos - world.player.pos) < 24 {
+    /// Every wall BULKHEAD fixture, emitted into the STATIC level mesh. These were being rebuilt into the
+    /// per-frame prop buffer, and the imported lamp is ~3.5k triangles: thirty of them on a plant floor
+    /// exceeded the whole 300k-vertex prop budget on their own, so the furniture emitted after them was
+    /// silently truncated — and which pieces survived changed as the camera turned, which is why columns and
+    /// furniture popped in and out within a single room. They never move, so they are static geometry.
+    private func buildWallFixtures(_ map: GameMap, into v: inout [PVert]) {
+        for b in fuelBulkheads(map) {
             emitBulkheadFixture(pos: b.pos, yaw: b.yaw, inward: simd_normalize(b.light - b.pos), into: &v)
         }
-        for b in plantLamps where simd_length(b.pos - world.player.pos) < 26 {
+        for b in plantLamps {
             emitBulkheadFixture(pos: b.pos, yaw: b.yaw, inward: simd_normalize(b.light - b.pos), into: &v)
         }
     }
@@ -1717,7 +1728,6 @@ final class RasterRenderer {
             }
         }
         buildElevatorInterior(world, into: &v)
-        buildFuelStore(world, into: &v)
         // furniture / fixtures / pipe runs / the reel-to-reel (material: rough painted metal)
         for pr in world.props where visible(pr.pos, 20) {
             // BEDS: the imported Institutional Bed MESH replaces the SDF platform bunk (yaw +90° so the
@@ -3151,6 +3161,32 @@ final class RasterRenderer {
             }
         }
 
+        // SANITARY check — stand off a trough basin and look along the wash wall, so the pale tile, the mirrors
+        // and the showers/cubicles on the neighbouring walls all read.
+        for lvl in [3, 4] {
+            let world = World(level: lvl, colonyIndex: 0, seed: 3)
+            let m = world.map
+            world.monsters = []; world.colonists = []
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+            var shot = false
+            for pr in world.props where !shot && (pr.kind == .washTrough || pr.kind == .shower) {
+                for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)] {
+                    let sx = Int(pr.pos.x) + dx * 3, sy = Int(pr.pos.y) + dy * 3
+                    guard op(sx, sy), op(Int(pr.pos.x) + dx, Int(pr.pos.y) + dy), op(Int(pr.pos.x) + dx * 2, Int(pr.pos.y) + dy * 2) else { continue }
+                    world.player.pos = SIMD2(Float(sx) + 0.5, Float(sy) + 0.5)
+                    world.player.dir = atan2(Float(-dy), Float(-dx))
+                    _ = rr.render(world, into: canvas)
+                    Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1,
+                                      to: dir.appendingPathComponent("raster-sanitary-\(lvl).png"))
+                    let tiles = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.sanTile.rawValue }.count
+                    let fits = world.props.filter { $0.kind == .washTrough || $0.kind == .shower || $0.kind == .cubicle }.count
+                    print("RASTERSHOT: wrote raster-sanitary-\(lvl).png (\(tiles) tiled cells, \(fits) fittings)")
+                    shot = true; break
+                }
+            }
+            if !shot { print("RASTERSHOT: sanitary check skipped on level \(lvl)") }
+        }
+
         // CANTEEN check — stand off the range and look down the galley line, so the subway tile, the stainless
         // fittings under the extraction hood and (where they share the room) the dining tables all read.
         for lvl in [3, 4] {
@@ -3333,7 +3369,7 @@ final class RasterRenderer {
                 let bunks = world.props.filter { $0.kind == .bunk }.count
                 let rock = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.stone.rawValue }.count
                 let iron = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.ironPlate.rawValue }.count
-                print("RASTERSHOT: wrote raster-industrial.png (floor 7, run \(best.len) at \(best.x),\(best.y); rock \(rock), iron \(iron), display-bank cells \(banks), bunks \(bunks))")
+                print("RASTERSHOT: wrote raster-industrial.png (floor 7, run \(best.len) at \(best.x),\(best.y); rock \(rock), iron \(iron), display-bank cells \(banks), bunks \(bunks); static \(rr.totalVertCount) verts, per-frame props \(rr.dynVertCount)/\(rr.dynCapacity))")
             } else { print("RASTERSHOT: industrial check skipped (no long run)") }
             // PIPEWORK — frame a placed FITTING (valve or gauge) head-on: stand a couple of cells off the wall
             // it hangs on, looking at it, so the copper run, its flanges and the fitting all read.

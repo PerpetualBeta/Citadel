@@ -137,7 +137,13 @@ final class World {
     var holdRide = false              // renderer: true while the next floor is still generating
     /// The floor number the cabin LED indicator shows: the current floor, flipping to the destination
     /// (one deeper) in the last stretch of the descent — "shows 3, changes to 4 just before we reach 4".
-    var elevatorFloorDisplay: Int { (elevatorPhase == .descending && elevatorT > World.rideTime - 0.45) ? level + 1 : level }
+    /// The car's floor indicator. This is the floor WITHIN the current citadel, so it resets when the marine
+    /// teleports to the next planet — an absolute level count kept climbing (10, 11, …) across buildings.
+    var elevatorFloorDisplay: Int {
+        let here = Progression.floorInBuilding(level)
+        let descending = (elevatorPhase == .descending && elevatorT > World.rideTime - 0.45)
+        return descending ? Progression.floorInBuilding(level + 1) : here
+    }
     private var rideRumbleT: Float = 0 // re-arms the winch rumble on an extended ride
     var rideShake: Float = 0          // 0…1 envelope, read by the renderer's camera
     var impactShake: Float = 0        // 0…1 heavy-landing jolt (the Queen's topple), read by the renderer's camera
