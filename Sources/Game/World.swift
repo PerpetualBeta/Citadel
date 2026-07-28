@@ -2317,11 +2317,22 @@ final class World {
             let stride = steamVents.count / 40 + 1
             steamVents = steamVents.enumerated().filter { $0.offset % stride == 0 }.map { $0.element }
         }
-        // give every vent a VISIBLE source: a floor grate it hisses up out of
-        for v in steamVents {
-            let gx = Int(v.pos.x), gy = Int(v.pos.y), gi = map.idx(gx, gy)
-            if map.inBounds(gx, gy) && map.wall[gi] == 0 && !map.hazard[gi] {
-                map.floor[gi] = FlatTex.grate.rawValue
+        // give every vent a VISIBLE source: a floor grate it hisses up out of. A HAZARD cell keeps its pool
+        // floor (a grate under nukage would read wrong) — so drop that vent's grate onto an adjacent open dry
+        // cell instead, and move the vent with it: steam must never rise out of an unbroken floor.
+        for (k, v) in steamVents.enumerated() {
+            let gx = Int(v.pos.x), gy = Int(v.pos.y)
+            guard map.inBounds(gx, gy) else { continue }
+            let gi = map.idx(gx, gy)
+            if map.wall[gi] == 0 && !map.hazard[gi] { map.floor[gi] = FlatTex.grate.rawValue; continue }
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let nx = gx + dx, ny = gy + dy
+                guard map.inBounds(nx, ny) else { continue }
+                let ni = map.idx(nx, ny)
+                guard map.wall[ni] == 0, !map.hazard[ni], map.doors[ni] == nil else { continue }
+                map.floor[ni] = FlatTex.grate.rawValue
+                steamVents[k].pos = SIMD2(Float(nx) + 0.5, Float(ny) + 0.5)   // hiss up out of the grate we just cut
+                break
             }
         }
     }

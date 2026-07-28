@@ -634,7 +634,8 @@ final class MeshCreature {
         let cx = Int(p.x.rounded(.down)), cy = Int(p.y.rounded(.down))
         for oy in -1...1 { for ox in -1...1 {
             let wx = cx + ox, wy = cy + oy
-            guard map.inBounds(wx, wy), map.wall[map.idx(wx, wy)] != 0, map.doors[map.idx(wx, wy)] == nil else { continue }
+            guard map.inBounds(wx, wy), map.wall[map.idx(wx, wy)] != 0 else { continue }
+            if let d = map.doors[map.idx(wx, wy)], d.open >= GameMap.passThreshold { continue }   // an OPEN door is passable; a CLOSED one blocks (no snout through a shut door)
             if wx == cx && wy == cy {                                   // p is INSIDE this solid cell → eject out the nearest face
                 let dl = p.x - Float(wx), dr = Float(wx + 1) - p.x, db = p.y - Float(wy), dt = Float(wy + 1) - p.y
                 let m = min(min(dl, dr), min(db, dt))
@@ -976,7 +977,7 @@ final class MeshCreature {
             let aimW = SIMD2<Float>(rot.columns.0.x, rot.columns.0.z)                        // world snout axis
             let alive = inst.death < 0.5 && inst.dissolve < 0.5
             var rpos = inst.pos
-            var wall = SIMD4<Float>.zero, on: Float = 0
+            let wall = SIMD4<Float>.zero, on: Float = 0    // no wall-clip: both live drones and corpses now resolve WHOLE out of solids
             if let m = map {
                 if alive {
                     // LIVE drone: settle the WHOLE mesh (capsule tail→snout) clear of walls + furniture, so it
@@ -984,10 +985,10 @@ final class MeshCreature {
                     rpos = Self.resolvePoseOutOfSolids(inst.pos, fwd: aimW, r: clr,
                                                        back: bbMin.x * scale, front: bbMax.x * scale, map: m, props: props)
                 } else {
-                    // corpse / dissolving: leave it on its own decals (fire/ash/blood); keep the old body-clear + clip
-                    rpos = Self.resolveOutOfWalls(inst.pos, clr, m)
-                    let margin: Float = 0.06
-                    (wall, on) = self.wallClipPlane(pos: rpos, aimW: aimW, reach: bbMax.x * scale, margin: margin, map: m)
+                    // corpse / dissolving: settle the WHOLE fallen body clear of walls + furniture too — the same
+                    // capsule resolve as a live drone, NO clip, so a dead drone is never left buried in a wall.
+                    rpos = Self.resolvePoseOutOfSolids(inst.pos, fwd: aimW, r: clr,
+                                                       back: bbMin.x * scale, front: bbMax.x * scale, map: m, props: props)
                 }
             }
             let model = Self.T(rpos.x, 0, rpos.y) * rot

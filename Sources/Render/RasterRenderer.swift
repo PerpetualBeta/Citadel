@@ -69,7 +69,11 @@ final class RasterRenderer {
     private var distTex: MTLTexture?           // rg32Float wall-distance field (.r) — the mesh-creature wall-clip trims limbs at wall faces
     private var mapW = 1, mapH = 1
     private var lampCells: [SIMD2<Float>] = [] // centres of the overhead ceiling lamps (even/even open cells)
-    private var worldID: ObjectIdentifier?
+    // The level cache key must be a WEAK REFERENCE, never an ObjectIdentifier: an identifier outlives the
+    // object it names, and a freed World's address is readily reused by the next one — so a stored identifier
+    // could MATCH a brand-new level and skip prepareLevel, leaving the previous floor's mesh/floor-ids/light
+    // field on screen. A weak ref goes nil when the old world dies, so a new level always rebuilds.
+    private weak var lastWorld: World?
 
     private let dynBuf: MTLBuffer              // per-frame prop mesh (visible furniture/drums/sockets/mines/debris)
     private var dynScratch: [PVert] = []       // reusable CPU staging so the frame loop allocates nothing
@@ -176,8 +180,7 @@ final class RasterRenderer {
     // ── entry point (mirrors GPUWorldRenderer.render(_:into:)) ────────────────
     @discardableResult
     func render(_ world: World, into canvas: Canvas2D) -> Bool {
-        let id = ObjectIdentifier(world)
-        if worldID != id { prepareLevel(world); worldID = id }
+        if lastWorld !== world { prepareLevel(world); lastWorld = world }
         guard let vbuf, nVerts > 0, let fieldTex, let lampMaskTex, let floorIdTex else { return false }
 
         // ── camera from the live player (matches the raymarcher's basis) ──
@@ -344,6 +347,7 @@ final class RasterRenderer {
         // pass 2b — the first-person weapon, drawn INTO the HDR frame (its emissives bloom too). Own cleared
         // depth so it self-occludes but a near wall never eats it; writes a near perp-depth so creatures stay behind.
         if nVMVerts > 0 {
+            cam.amb.z = 1                                          // VIEWMODEL mode → the gun writes a negative (nearest) perp
             let vrp = MTLRenderPassDescriptor()
             vrp.colorAttachments[0].texture = frame;   vrp.colorAttachments[0].loadAction = .load;  vrp.colorAttachments[0].storeAction = .store
             vrp.colorAttachments[1].texture = perpTex; vrp.colorAttachments[1].loadAction = .load;  vrp.colorAttachments[1].storeAction = .store
@@ -375,7 +379,7 @@ final class RasterRenderer {
         var cx = Fx(a: SIMD4(0.7, 0, Float(W), Float(H)))                            // bloom gain (dialled back — less blown-out)
         fullscreen(compositePS, to: colTex) { e in
             e.setFragmentBytes(&cx, length: MemoryLayout<Fx>.stride, index: 0)
-            e.setFragmentTexture(frame, index: 0); e.setFragmentTexture(bloomA, index: 1)
+            e.setFragmentTexture(frame, index: 0); e.setFragmentTexture(bloomA, index: 1); e.setFragmentTexture(perpTex, index: 2)
         }
         cmd.commit(); cmd.waitUntilCompleted()
 
@@ -1050,7 +1054,7 @@ final class RasterRenderer {
         for (a, b, c) in tris { for p in [a, b, c] { mn = simd_min(mn, p); mx = simd_max(mx, p) } }
         let size = mx - mn, ctr = (mn + mx) * 0.5
         let sc = 0.34 / max(size.x, max(size.y, size.z))
-        let steel = M(SIMD3(0.34, 0.36, 0.40), 0.42, 0.72)
+        let steel = M(SIMD3(0.66, 0.48, 0.17), 0.34, 0.92)   // BRASS frame (was steel) — matches the marine bulkhead reference
         func vert(_ p: SIMD3<Float>, _ n: SIMD3<Float>) -> PVert {
             PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
                   ar: steel.a.x, ag: steel.a.y, ab: steel.a.z, rough: steel.r, metal: steel.m,
@@ -1245,7 +1249,7 @@ final class RasterRenderer {
     /// as point lights in render(); here we emit the fixture geometry (the dome self-glows via over-bright).
     private func buildFuelStore(_ world: World, into v: inout [PVert]) {
         let lamp = loadBulkhead()
-        let glow = M(SIMD3(0.95, 0.82, 0.6), 0.4, 0.0, SIMD3(1.35, 0.95, 0.5))     // warm emissive lens — modest (was blown white), so the steel frame reads
+        let glow = M(SIMD3(0.95, 0.78, 0.5), 0.4, 0.0, SIMD3(1.7, 1.05, 0.42))     // warm GOLDEN lens (matches the brass reference), modest so the frame reads
         for b in fuelBulkheads(world) where simd_length(b.pos - world.player.pos) < 24 {
             if let lamp {                                                // imported bulkhead mesh (vertical), mounted at eye height
                 emitBulkheadMesh(lamp, pos: b.pos, yaw: b.yaw, height: 0.56, into: &v)
@@ -1254,6 +1258,11 @@ final class RasterRenderer {
                 let n = SIMD3<Float>(inward.x, 0, inward.y), u = SIMD3<Float>(-inward.y, 0, inward.x), up = SIMD3<Float>(0, 1, 0)
                 let c = SIMD3<Float>(b.pos.x, 0.56, b.pos.y) + n * 0.03
                 emitEllipse(c, u, up, 0.045, 0.11, n, glow, into: &v)
+                // fluted-glass RIBBING (the reference's ribbed lens): a few thin darker verticals over the glow
+                let rib = M(SIMD3(0.5, 0.36, 0.12), 0.5, 0.0, SIMD3(0.5, 0.34, 0.12))
+                for rx in [Float(-0.026), 0, 0.026] {
+                    emitEllipse(c + n * 0.002 + u * rx, u, up, 0.004, 0.095, n, rib, into: &v)
+                }
             } else {                                                     // fallback: the procedural caged lamp
                 emitProp(GPURaymarch.bulkheadShapes(), pos: b.pos, yaw: b.yaw, floored: false, rough: 0.5, metal: 0.7, into: &v)
             }
@@ -1504,8 +1513,11 @@ final class RasterRenderer {
         PV p=vs[vid]; float3 wp=float3(p.px,p.py,p.pz);
         VOut o; o.clip=C.mvp*float4(wp,1); o.wp=wp; o.wn=normalize(float3(p.nx,p.ny,p.nz));
         o.alb=float3(p.ar,p.ag,p.ab); o.rgh=p.rough; o.mtl=p.metal; o.emis=float3(p.er,p.eg,p.eb);
-        // wall texture UV: along-wall (world X or Z by facing) × height, tiled per cell (repeat sampler)
-        o.uv=float2(abs(o.wn.x)>0.5 ? wp.z : wp.x, 1.0 - wp.y); o.tid=p.tid; return o;
+        // wall texture UV: along-wall (world X or Z by facing) × height, tiled per cell (repeat sampler). Flip
+        // the along-wall axis by the wall's NORMAL sign so baked directional art (the ARC seal, door glyphs)
+        // reads the SAME way from the side that's actually open — otherwise it mirrors on opposite facings.
+        float wu = abs(o.wn.x) > 0.5 ? (o.wn.x > 0.0 ? -wp.z : wp.z) : (o.wn.z > 0.0 ? wp.x : -wp.x);
+        o.uv=float2(wu, 1.0 - wp.y); o.tid=p.tid; return o;
     }
     vertex SOut rr_shadow_vertex(uint vid [[vertex_id]], constant PV* vs [[buffer(0)]], constant float4x4& lmvp [[buffer(2)]]){
         PV p=vs[vid]; SOut o; o.clip=lmvp*float4(p.px,p.py,p.pz,1); return o;
@@ -1677,6 +1689,19 @@ final class RasterRenderer {
             uint2 fc = uint2(clamp(int2(floor(in.wp.xz)), int2(0), int2(int(C.params.z)-1, int(C.params.w)-1)));
             int fid = int(floorId.read(fc).r);
             bool liquid = (fid == 3 || fid == 8);                       // nukage / blood — liquid at any depth
+            // FLOOR GRATE (fid 2) — raster floors are flat materials (only walls are textured), so a vent's
+            // grate cell read as plain deck and the steam looked like it rose out of solid concrete. Draw the
+            // grate procedurally: a recessed dark duct behind slotted iron bars, with a bevelled kerb frame.
+            if(fid == 2){
+                float2 g = fract(in.wp.xz);
+                float2 e = min(g, 1.0 - g);                              // distance to the cell edge
+                float kerb = smoothstep(0.10, 0.06, min(e.x, e.y));      // raised frame around the opening
+                float slot = 1.0 - smoothstep(0.16, 0.30, abs(fract(in.wp.x * 9.0) - 0.5));   // bar/gap run
+                float duct = slot * (1.0 - kerb);                        // the dark gaps between the bars
+                alb = mix(alb * (0.55 + 0.35 * kerb), float3(0.020, 0.021, 0.023), duct * 0.88);
+                rough = mix(rough, 0.42, 1.0 - duct);                    // worn iron bars catch a little sheen
+                metal = mix(metal, 0.62, 1.0 - duct);
+            }
             float flood = C.water.x, dtime = C.amb.y;
             float wet = max(flood, liquid ? 1.0 : 0.0);                 // the lowest floor drowns (flood); pools always wet
             if(!liquid && fid == 7 && wet < 0.01){                      // floor-7 rock: water finds its way down → it POOLS
@@ -1801,7 +1826,10 @@ final class RasterRenderer {
         // LINEAR HDR out; alpha = EMISSION MASK so only emitters bloom (never merely bright-lit walls).
         // The whole frame is bloomed, then ACES-graded, gamma-corrected and vignetted ONCE in composite_frag.
         float emL = dot(emisTerm, float3(0.299, 0.587, 0.114));
-        RROut o; o.color=float4(max(col, 0.0), min(emL, 1.0)); o.perp=dot(in.wp - C.eye.xyz, C.camFwd.xyz);
+        // C.amb.z>0.5 = the first-person VIEWMODEL pass: force perp NEGATIVE so it is always nearest — mesh
+        // creatures never composite over the gun (#15), and the composite skips bloom over it (#14, stays opaque).
+        RROut o; o.color=float4(max(col, 0.0), min(emL, 1.0));
+        o.perp = (C.amb.z > 0.5) ? -1.0 : dot(in.wp - C.eye.xyz, C.camFwd.xyz);
         return o;
     }
     """
@@ -1956,10 +1984,12 @@ final class RasterRenderer {
     // FINAL TONEMAP — HDR frame + bloom → the headlamp grade (dim + warm/cool luma tint), ACES filmic
     // tonemap, gamma and vignette, all applied ONCE to the whole composited frame → 8-bit. (X.a.x = bloom gain.)
     fragment float4 composite_frag(FSOut in [[stage_in]], constant Fx& X [[buffer(0)]],
-                                   texture2d<float> hdr [[texture(0)]], texture2d<float> bloom [[texture(1)]]) {
+                                   texture2d<float> hdr [[texture(0)]], texture2d<float> bloom [[texture(1)]],
+                                   texture2d<float> perp [[texture(2)]]) {
         float2 uv = in.clip.xy / X.a.zw;
         constexpr sampler s(filter::linear, address::clamp_to_edge);
-        float3 c = hdr.sample(s, uv).rgb + X.a.x * bloom.sample(s, uv).rgb;    // HDR world/fire + bloom
+        float bloomMask = perp.sample(s, uv).r < 0.0 ? 0.0 : 1.0;             // no bloom bleed over the viewmodel (perp<0) — keeps the gun opaque
+        float3 c = hdr.sample(s, uv).rgb + X.a.x * bloom.sample(s, uv).rgb * bloomMask;    // HDR world/fire + bloom
         c *= 0.9;                                                             // headlamp dim
         float lum = dot(c, float3(0.299, 0.587, 0.114));
         c = mix(c * float3(0.84, 0.96, 1.16), c * float3(1.14, 1.0, 0.80), clamp(lum, 0.0, 1.0));   // cool shadows, warm highs
@@ -2508,6 +2538,12 @@ final class RasterRenderer {
                 world.monsters = []; world.props = []; world.drums = []; world.items = []   // clear so the plume reads against the deck
                 m.floor[m.idx(cx, cy)] = FlatTex.grate.rawValue                        // the vent's visible source
                 let base = SIMD2<Float>(Float(cx) + 0.5, Float(cy) + 0.5)
+                // GRATE first, with NO plume — the dense steam hides its own source, so verify the vent
+                // itself reads as a slotted iron grate cut into the deck (not blank floor) in its own frame.
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy) + 3.6)   // stand back: floor <1 cell ahead falls below the frame edge
+                world.player.dir = -.pi / 2
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-vent.png"))
                 for k in 0..<50 {                                                      // a plume frozen mid-rise (dense so the compositor's output is unmistakable): height climbs, it spreads + thins
                     let t = Float(k) / 49.0, a = Float(k) * 0.7
                     world.particles.append(Particle(pos: base + SIMD2(sinf(a) * (0.10 + t * 0.30), cosf(a * 1.3) * (0.10 + t * 0.30)),
