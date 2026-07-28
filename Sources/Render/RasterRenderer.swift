@@ -78,6 +78,61 @@ final class RasterRenderer {
     private var plantLamps: [(pos: SIMD2<Float>, yaw: Float, light: SIMD2<Float>)] = []
     private var hallLamps: [SIMD3<Float>] = []  // downlights slung under the halls' roof trusses (see buildHallSteelwork)
     private var pipeVerts = 0                  // vertices the static pipework contributes (reported by the harness)
+    // ── FRAME BUDGET PROBE ── always TIMED (a handful of clock reads costs nothing), but only ever WRITTEN when
+    // a frame misses its budget, and then only if `frameLog` is enabled. The point is not a running FPS number:
+    // it is that when the game stutters we get told WHICH stage ate the frame, because guessing at a stutter
+    // from a screenshot is hopeless. Rate-limited so one bad patch can't fill the disk.
+    private var fpStamps: [(String, Double)] = []
+    private var fpLastLog: Double = 0
+    private var fpFrames = 0, fpSlow = 0
+    private var fpWorst: Double = 0
+    private var fpLogEnabled = UserDefaults.standard.bool(forKey: "frameLog")
+    private static let fpBudget = 1.0 / 50.0        // 20 ms — below this and the game is under 50 fps
+    @inline(__always) private func fpMark(_ name: String) {
+        guard fpLogEnabled else { return }
+        fpStamps.append((name, ProcessInfo.processInfo.systemUptime))
+    }
+    /// Append a diagnostic line, off unless `defaults write cc.jorviksoftware.Citadel frameLog -bool YES`.
+    /// Mirrors AudioEngine.alog: ~/Library/Logs/Citadel/frame.log.
+    private func flog(_ msg: String) {
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Citadel", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("frame.log")
+        let line = Data(String(format: "%.3f  %@\n", ProcessInfo.processInfo.systemUptime, msg).utf8)
+        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(line); try? h.close() }
+        else { try? line.write(to: url) }
+    }
+    /// Close the frame: if it overran the budget, report the stage breakdown, worst offender first, with the
+    /// scene counts that usually explain it. Also drops a periodic summary so a steady low frame rate — which
+    /// never trips a single dramatic spike — still shows up.
+    private func fpEnd(_ world: World) {
+        guard fpLogEnabled, fpStamps.count > 1 else { fpStamps.removeAll(keepingCapacity: true); return }
+        let t0 = fpStamps.first!.1, total = fpStamps.last!.1 - t0
+        fpFrames += 1
+        fpWorst = max(fpWorst, total)
+        let now = ProcessInfo.processInfo.systemUptime
+        if total > Self.fpBudget {
+            fpSlow += 1
+            if now - fpLastLog > 0.5 {                       // rate-limit: at most two reports a second
+                fpLastLog = now
+                var stages: [(String, Double)] = []
+                for i in 1..<fpStamps.count { stages.append((fpStamps[i].0, fpStamps[i].1 - fpStamps[i - 1].1)) }
+                let worst = stages.sorted { $0.1 > $1.1 }.prefix(4)
+                    .map { String(format: "%@ %.1fms", $0.0, $0.1 * 1000) }.joined(separator: " · ")
+                flog(String(format: "SLOW %.1fms (%.0f fps) — %@  [lvl %d · props %d verts · static %d · mons %d · parts %d · projs %d · lights %d]",
+                            total * 1000, 1.0 / max(total, 1e-6), worst,
+                            world.level, nDynVerts, nVerts, world.monsters.count,
+                            world.particles.count, world.projectiles.count, Int(lastLightCount)))
+            }
+        }
+        if fpFrames >= 600 {                                 // ~10 s at 60 fps: a periodic health line
+            flog(String(format: "SUMMARY %d frames, %d slow (%.1f%%), worst %.1fms", fpFrames, fpSlow,
+                        Double(fpSlow) / Double(fpFrames) * 100, fpWorst * 1000))
+            fpFrames = 0; fpSlow = 0; fpWorst = 0
+        }
+        fpStamps.removeAll(keepingCapacity: true)
+    }
+    private var lastLightCount: Float = 0
     #if CITADEL_HARNESS
     var pipeVertCount: Int { pipeVerts }
     var totalVertCount: Int { nVerts }
@@ -195,8 +250,12 @@ final class RasterRenderer {
     // ── entry point (mirrors GPUWorldRenderer.render(_:into:)) ────────────────
     @discardableResult
     func render(_ world: World, into canvas: Canvas2D) -> Bool {
+        fpMark("start")
         if lastWorld !== world { prepareLevel(world); lastWorld = world }
-        guard let vbuf, nVerts > 0, let fieldTex, let lampMaskTex, let floorIdTex else { return false }
+        fpMark("prepareLevel")
+        guard let vbuf, nVerts > 0, let fieldTex, let lampMaskTex, let floorIdTex else {
+            fpStamps.removeAll(keepingCapacity: true); return false      // a bailed frame must not leak its marks
+        }
 
         // ── camera from the live player (matches the raymarcher's basis) ──
         let p = world.player
@@ -229,6 +288,7 @@ final class RasterRenderer {
         // a pure function of `world`, so the same builder the raymarch path uses lights the raster world.
         let dynLights = GPUWorldRenderer.gatherDynLights(world)
         lights.append(contentsOf: dynLights)
+        lastLightCount = Float(lights.count)
         // fuel-store bulkhead lights — warm, low-wattage, tight radius (the store has no overhead; these light it)
         for b in fuelBulkheads(world.map) {
             lights.append(GPURaymarch.GPULight(posR: SIMD4(b.light.x, 0.56, b.light.y, 1 / (2.2 * 2.2)),
@@ -294,6 +354,7 @@ final class RasterRenderer {
         // ── per-frame prop mesh: tessellate the visible furniture/drums/sockets/mines/debris
         dynScratch.removeAll(keepingCapacity: true)
         buildProps(world, into: &dynScratch)
+        fpMark("buildProps")
         nDynVerts = min(dynScratch.count, dynCap)
         if dynScratch.count > dynCap {                     // silent truncation makes props pop as the camera turns
             print("RasterRenderer: prop buffer OVERFLOW — \(dynScratch.count) verts, cap \(dynCap); geometry dropped")
@@ -305,6 +366,7 @@ final class RasterRenderer {
         // an always-on-top overlay (pass 2b) so a near wall never eats it.
         vmScratch.removeAll(keepingCapacity: true)
         buildViewmodel(world, eye: eye, dir: p.dir, into: &vmScratch)
+        fpMark("buildViewmodel")
         nVMVerts = min(vmScratch.count, vmCap)
         if nVMVerts > 0 {
             vmScratch.withUnsafeBytes { _ = memcpy(vmBuf.contents(), $0.baseAddress!, nVMVerts * MemoryLayout<PVert>.stride) }
@@ -419,9 +481,12 @@ final class RasterRenderer {
             e.setFragmentBytes(&cx, length: MemoryLayout<Fx>.stride, index: 0)
             e.setFragmentTexture(frame, index: 0); e.setFragmentTexture(bloomA, index: 1); e.setFragmentTexture(perpTex, index: 2)
         }
+        fpMark("encode")
         cmd.commit(); cmd.waitUntilCompleted()
+        fpMark("gpuWait")            // the CPU stalls here until the GPU has finished the whole frame
 
         colTex.getBytes(canvas.framebuffer, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
+        fpMark("readbackColour")     // full-frame GPU→CPU copy
 
         // ── M4 creatures + M5 particles/projectiles: both composite over the lit world against the
         // scene's perp-depth. Read it back ONCE here (shared) if anything needs it; creatures merge
@@ -435,7 +500,9 @@ final class RasterRenderer {
                 perpTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
             }
         }
+        fpMark("readbackDepth")
         compositeCreatures(world, into: canvas, eye: eye, dir: p.dir, dynLights: dynLights)
+        fpMark("creatures")
         if !world.particles.isEmpty {                          // CPU smoke / embers / sparks drift over the flame
             perpScratch.withUnsafeBufferPointer { dp in
                 spriteCompositor.overlayThings(world, into: canvas, depth: dp.baseAddress,
@@ -443,6 +510,8 @@ final class RasterRenderer {
                                                includeDrums: false, includeSockets: false, includeMines: false)   // those are raster prop meshes
             }
         }
+        fpMark("particles")
+        fpEnd(world)
         return true
     }
 
