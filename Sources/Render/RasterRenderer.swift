@@ -76,6 +76,11 @@ final class RasterRenderer {
     /// Wall-mounted bulkhead fixtures that light the PLANT floors (7–8), which carry no ceiling grid.
     /// Computed once per level (a whole-map walk); (mount on the wall, yaw so the lens faces the room, lens pos).
     private var plantLamps: [(pos: SIMD2<Float>, yaw: Float, light: SIMD2<Float>)] = []
+    private var pipeVerts = 0                  // vertices the static pipework contributes (reported by the harness)
+    #if CITADEL_HARNESS
+    var pipeVertCount: Int { pipeVerts }
+    var totalVertCount: Int { nVerts }
+    #endif
     // The level cache key must be a WEAK REFERENCE, never an ObjectIdentifier: an identifier outlives the
     // object it names, and a freed World's address is readily reused by the next one — so a stored identifier
     // could MATCH a brand-new level and skip prepareLevel, leaving the previous floor's mesh/floor-ids/light
@@ -623,12 +628,29 @@ final class RasterRenderer {
                 let i = map.idx(x, y), fx = Float(x), fz = Float(y)
                 lampMaskData[i] = 128   // this cell is OPEN (128) — used by the shader's line-of-sight walk (solid cells stay 0); lamp cells are bumped to 255 below
                 floorIdData[i] = UInt8(truncatingIfNeeded: map.floor[i])   // M6: the fragment reads this to give nukage/rock/blood cells the liquid surface
+                // PER-CELL CEILING HEIGHT: a plant hall stands twice a storey while its corridors stay normal,
+                // so walls rise to THIS cell's ceiling and the ceiling flat is emitted at that height.
+                let ch = map.ceilY[i]
                 blendedSurface(x, y, 0, SIMD3(0, 1, 0)) { map.floor[$0] }
-                blendedSurface(x, y, 1, SIMD3(0, -1, 0)) { map.ceil[$0] }
-                if !openGeo(x - 1, y) { quad(SIMD3(fx, 0, fz), SIMD3(fx, 0, fz + 1), SIMD3(fx, 1, fz + 1), SIMD3(fx, 1, fz), SIMD3(1, 0, 0), wallTexAt(map, x - 1, y), wallIdF(x - 1, y)) }
-                if !openGeo(x + 1, y) { quad(SIMD3(fx + 1, 0, fz + 1), SIMD3(fx + 1, 0, fz), SIMD3(fx + 1, 1, fz), SIMD3(fx + 1, 1, fz + 1), SIMD3(-1, 0, 0), wallTexAt(map, x + 1, y), wallIdF(x + 1, y)) }
-                if !openGeo(x, y - 1) { quad(SIMD3(fx + 1, 0, fz), SIMD3(fx, 0, fz), SIMD3(fx, 1, fz), SIMD3(fx + 1, 1, fz), SIMD3(0, 0, 1), wallTexAt(map, x, y - 1), wallIdF(x, y - 1)) }
-                if !openGeo(x, y + 1) { quad(SIMD3(fx, 0, fz + 1), SIMD3(fx + 1, 0, fz + 1), SIMD3(fx + 1, 1, fz + 1), SIMD3(fx, 1, fz + 1), SIMD3(0, 0, -1), wallTexAt(map, x, y + 1), wallIdF(x, y + 1)) }
+                blendedSurface(x, y, ch, SIMD3(0, -1, 0)) { map.ceil[$0] }
+                if !openGeo(x - 1, y) { quad(SIMD3(fx, 0, fz), SIMD3(fx, 0, fz + 1), SIMD3(fx, ch, fz + 1), SIMD3(fx, ch, fz), SIMD3(1, 0, 0), wallTexAt(map, x - 1, y), wallIdF(x - 1, y)) }
+                if !openGeo(x + 1, y) { quad(SIMD3(fx + 1, 0, fz + 1), SIMD3(fx + 1, 0, fz), SIMD3(fx + 1, ch, fz), SIMD3(fx + 1, ch, fz + 1), SIMD3(-1, 0, 0), wallTexAt(map, x + 1, y), wallIdF(x + 1, y)) }
+                if !openGeo(x, y - 1) { quad(SIMD3(fx + 1, 0, fz), SIMD3(fx, 0, fz), SIMD3(fx, ch, fz), SIMD3(fx + 1, ch, fz), SIMD3(0, 0, 1), wallTexAt(map, x, y - 1), wallIdF(x, y - 1)) }
+                if !openGeo(x, y + 1) { quad(SIMD3(fx, 0, fz + 1), SIMD3(fx + 1, 0, fz + 1), SIMD3(fx + 1, ch, fz + 1), SIMD3(fx, ch, fz + 1), SIMD3(0, 0, -1), wallTexAt(map, x, y + 1), wallIdF(x, y + 1)) }
+                // SOFFIT: where this cell's ceiling is HIGHER than an open neighbour's, close the step with a
+                // vertical band from the neighbour's ceiling up to ours, facing INTO this cell — otherwise the
+                // taller hall would open onto a gap above the corridor's ceiling slab and you'd see the void.
+                for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let nx = x + dx, ny = y + dy
+                    guard openGeo(nx, ny) else { continue }                      // solid neighbours already got a full wall
+                    let nch = map.inBounds(nx, ny) ? map.ceilY[map.idx(nx, ny)] : ch
+                    guard ch - nch > 0.001 else { continue }
+                    let sm = flatMat(map.ceil[i])                                 // the lower slab's own edge
+                    if dx == -1 { quad(SIMD3(fx, nch, fz), SIMD3(fx, nch, fz + 1), SIMD3(fx, ch, fz + 1), SIMD3(fx, ch, fz), SIMD3(1, 0, 0), sm) }
+                    if dx ==  1 { quad(SIMD3(fx + 1, nch, fz + 1), SIMD3(fx + 1, nch, fz), SIMD3(fx + 1, ch, fz), SIMD3(fx + 1, ch, fz + 1), SIMD3(-1, 0, 0), sm) }
+                    if dy == -1 { quad(SIMD3(fx + 1, nch, fz), SIMD3(fx, nch, fz), SIMD3(fx, ch, fz), SIMD3(fx + 1, ch, fz), SIMD3(0, 0, 1), sm) }
+                    if dy ==  1 { quad(SIMD3(fx, nch, fz + 1), SIMD3(fx + 1, nch, fz + 1), SIMD3(fx + 1, ch, fz + 1), SIMD3(fx, ch, fz + 1), SIMD3(0, 0, -1), sm) }
+                }
                 // overhead ceiling lamp (one per open cell on the grid — see the lamp* statics):
                 // a VISIBLE glowing housing so the pools it casts have a source you can see, PLUS
                 // the presence-mask bit AND (via the shared statics) the shader's analytic light —
@@ -636,14 +658,184 @@ final class RasterRenderer {
                 if ceilingLampsOn, x % Self.lampGridStride == Self.lampGridPhase && y % Self.lampGridStride == Self.lampGridPhase {
                     lampCells.append(SIMD2(fx + 0.5, fz + 0.5))
                     lampMaskData[i] = 255
-                    let cx = fx + 0.5, cz = fz + 0.5, hs: Float = 0.26, y0: Float = 0.985
+                    let cx = fx + 0.5, cz = fz + 0.5, hs: Float = 0.26, y0: Float = ch - 0.015   // recessed into THIS cell's ceiling
                     let lm = Mat(a: SIMD3(0.80, 0.85, 0.95), r: 0.4, m: 0.0, e: WorldLight.lampColor * 3.4)   // bright recessed housing
                     quad(SIMD3(cx - hs, y0, cz - hs), SIMD3(cx - hs, y0, cz + hs), SIMD3(cx + hs, y0, cz + hs), SIMD3(cx + hs, y0, cz - hs), SIMD3(0, -1, 0), lm)
                 }
             }
         }
+        let prePipe = v.count
+        buildPipework(map, into: &v)          // copper wall runs + valves/gauges — static, so it lives in this mesh
+        pipeVerts = v.count - prePipe
         nVerts = v.count
         vbuf = v.isEmpty ? nil : device.makeBuffer(bytes: v, length: MemoryLayout<PVert>.stride * v.count)
+    }
+
+    /// A cast TEE: the main passes through a slightly fatter body, and the branch leaves it square. Real plant
+    /// pipework never just abuts — a branch is taken off a tee, so this is what a junction must look like.
+    private func emitTee(at p: SIMD3<Float>, run: SIMD3<Float>, branch: SIMD3<Float>, r: Float, _ body: Mat, into v: inout [PVert]) {
+        emitTube(p - run * 0.052, p + run * 0.052, r: r * 1.34, sides: 9, body, caps: false, into: &v)   // the tee body on the main
+        emitTube(p, p + branch * 0.055, r: r * 1.18, sides: 9, body, caps: false, into: &v)              // the branch socket
+    }
+
+    /// A 90° ELBOW: a fatter short sleeve on each leg where the two directions meet, so the corner reads as a
+    /// cast fitting rather than two pipes mitred into each other.
+    private func emitElbow(at p: SIMD3<Float>, legA: SIMD3<Float>, legB: SIMD3<Float>, r: Float, _ body: Mat, into v: inout [PVert]) {
+        emitTube(p, p + legA * 0.055, r: r * 1.26, sides: 9, body, caps: false, into: &v)
+        emitTube(p, p + legB * 0.055, r: r * 1.26, sides: 9, body, caps: false, into: &v)
+    }
+
+    /// WALL PIPEWORK — the copper runs the raymarcher draws in its SDF (`wallPipes` + `fittingsField`), ported
+    /// to real geometry so the raster gets them too. Dimensions are taken from the kernel so both renderers
+    /// agree: the run sits 0.10 off the wall face at (ceiling − 0.28), radius 0.038, with bolted flange collars
+    /// where it turns square into the wall, plus the CPU-placed fittings from `map.pipeFittings` — a shut-off
+    /// valve (tapered bonnet, rising stem, red-enamel handwheel) or a pressure gauge (stub + dial).
+    /// Emitted into the STATIC mesh: pipework never moves, so it costs nothing per frame.
+    private func buildPipework(_ map: GameMap, into v: inout [PVert]) {
+        let copper = M(SIMD3(0.60, 0.35, 0.25), 0.44, 0.85)      // drawn copper, warm against the iron
+        let flange = M(SIMD3(0.42, 0.26, 0.19), 0.52, 0.80)
+        let steel  = M(SIMD3(0.34, 0.36, 0.40), 0.40, 0.80)
+        let enamel = M(SIMD3(0.40, 0.045, 0.035), 0.34, 0.10)    // red-enamel handwheel
+        let dialF  = M(SIMD3(0.82, 0.80, 0.74), 0.35, 0.05)
+        // Pipework hangs at ONE height for the whole level — the standard storey less the kernel's 0.28 drop.
+        // Keying it to each cell's own ceiling made a run jump a whole storey at a hall/corridor boundary and
+        // let a fitting sit off its own run; a constant also matches the raymarcher (which uses a global ceilH).
+        let pipeR: Float = 0.038, off: Float = 0.10, drop: Float = 0.28
+        let runY: Float = 1.0 - drop
+        func routed(_ x: Int, _ y: Int) -> Bool {
+            guard map.inBounds(x, y) else { return false }
+            let i = map.idx(x, y); return map.wall[i] == 0 && map.pipe[i] > 0.5
+        }
+        // A run is plumbed as a SPAN, not cell by cell. Emitting per-cell produced illogical plant: every tall
+        // cell at the end of a stretch grew its own riser, so two risers could join the SAME pair of mains where
+        // one is all that is needed. Group contiguous cells that share a wall into a span, then plumb the span
+        // once: one continuous main, and exactly one riser feeding any high main.
+        /// The wall a cell's run hugs — its FIRST solid neighbour in a fixed order, so every cell along a wall
+        /// agrees and spans join up. (The kernel gets the same effect from distance-to-wall.)
+        func wallOf(_ x: Int, _ y: Int) -> (Int, Int)? {
+            guard routed(x, y) else { return nil }
+            for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
+                let nx = x + dx, ny = y + dy
+                guard map.inBounds(nx, ny), map.wall[map.idx(nx, ny)] != 0, map.doors[map.idx(nx, ny)] == nil else { continue }
+                return (dx, dy)
+            }
+            return nil
+        }
+        for (wdx, wdy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
+            let horiz = (wdy != 0)                                         // wall to N/S → the run travels along X
+            let outer = horiz ? map.h : map.w                              // lines across the wall's normal
+            let inner = horiz ? map.w : map.h                              // cells along the run
+            for o in 0..<outer {
+                var k = 0
+                while k < inner {
+                    func cell(_ t: Int) -> (Int, Int) { horiz ? (t, o) : (o, t) }
+                    let (sx, sy) = cell(k)
+                    guard let wd = wallOf(sx, sy), wd == (wdx, wdy) else { k += 1; continue }
+                    var end = k                                            // extend while the same wall continues
+                    while end + 1 < inner {
+                        let (nx, ny) = cell(end + 1)
+                        guard let nwd = wallOf(nx, ny), nwd == (wdx, wdy) else { break }
+                        end += 1
+                    }
+                    defer { k = end + 1 }
+                    let inward = SIMD2<Float>(-Float(wdx), -Float(wdy))    // wall → room
+                    let axis = SIMD2<Float>(horiz ? 1 : 0, horiz ? 0 : 1)  // along the wall, increasing
+                    let intoWall = SIMD3<Float>(-inward.x, 0, -inward.y)
+                    // the wall face, pushed into the room; the span runs the full length of its cells
+                    let fixedPos: SIMD2<Float> = horiz
+                        ? SIMD2(0, wdy > 0 ? Float(o + 1) : Float(o))
+                        : SIMD2(wdx > 0 ? Float(o + 1) : Float(o), 0)
+                    func at(_ t: Float, _ lateral: Float) -> SIMD2<Float> {
+                        let along = axis * t
+                        return SIMD2(horiz ? along.x : fixedPos.x, horiz ? fixedPos.y : along.y) + inward * (off + lateral)
+                    }
+                    let t0 = Float(k), t1 = Float(end + 1)                 // outer edges of the first/last cell
+                    /// One continuous service along the span, mitred square into the wall at both ends.
+                    /// `sides` stays lean and caps are dropped where an end is buried in a wall or behind a
+                    /// flange — pipework dominates the level mesh, so an invisible cap is pure cost.
+                    func service(_ py: Float, _ r: Float, _ mat: Mat, _ lateral: Float, _ sides: Int) {
+                        let a2 = at(t0, lateral), b2 = at(t1, lateral)
+                        let a = SIMD3<Float>(a2.x, py, a2.y), b = SIMD3<Float>(b2.x, py, b2.y)
+                        emitTube(a, b, r: r, sides: sides, mat, caps: false, into: &v)
+                        for (pt, dir) in [(a, SIMD3<Float>(-axis.x, 0, -axis.y)), (b, SIMD3<Float>(axis.x, 0, axis.y))] {
+                            let face = pt + intoWall * (off + lateral + 0.04)
+                            emitTube(pt, face, r: r, sides: sides, mat, caps: false, into: &v)     // spur square into the wall
+                            emitElbow(at: pt, legA: dir * -1, legB: intoWall, r: r, flange, into: &v)
+                            emitTube(face - intoWall * 0.012, face + intoWall * 0.012, r: r * 1.6, sides: 8, flange, into: &v)
+                        }
+                    }
+                    service(runY, pipeR, copper, 0, 10)                     // the copper main
+                    service(runY - 0.105, pipeR * 0.66, steel, 0.012, 8)    // a thinner steel line beneath it
+                    // HIGH MAIN: carried under a double-height hall's own ceiling, fed by ONE riser off the low
+                    // main via a real tee, and terminating into the wall through an elbow at its far end.
+                    var t = k
+                    while t <= end {
+                        let (cx, cy) = cell(t)
+                        guard map.ceilY[map.idx(cx, cy)] > 1.5 else { t += 1; continue }
+                        var hi = t
+                        while hi + 1 <= end {
+                            let (nx2, ny2) = cell(hi + 1)
+                            guard map.ceilY[map.idx(nx2, ny2)] > 1.5 else { break }
+                            hi += 1
+                        }
+                        let highY = map.ceilY[map.idx(cx, cy)] - drop
+                        let hr = pipeR * 0.92, lateral: Float = 0.02
+                        let riserT = Float(t) + 0.35                        // the single feed, just inside the hall
+                        let hEnd = Float(hi + 1) - 0.06
+                        if hEnd - riserT > 0.15 {
+                            let r2 = at(riserT, lateral), e2 = at(hEnd, lateral)
+                            let footY = runY, top = SIMD3<Float>(r2.x, highY, r2.y), foot = SIMD3<Float>(r2.x, footY, r2.y)
+                            emitTube(foot, top, r: hr, sides: 9, copper, caps: false, into: &v)                       // the riser
+                            emitTube(top, SIMD3(e2.x, highY, e2.y), r: hr, sides: 9, copper, caps: false, into: &v)    // the high main
+                            let up = SIMD3<Float>(0, 1, 0), along = SIMD3<Float>(axis.x, 0, axis.y)
+                            emitTee(at: SIMD3(r2.x, footY, r2.y), run: along, branch: up, r: pipeR, flange, into: &v)  // branch off the low main
+                            emitElbow(at: top, legA: -up, legB: along, r: hr, flange, into: &v)                        // riser turns into the high main
+                            let fEnd = SIMD3<Float>(e2.x, highY, e2.y)
+                            emitTube(fEnd, fEnd + intoWall * (off + lateral + 0.04), r: hr, sides: 9, copper, caps: false, into: &v)
+                            emitElbow(at: fEnd, legA: -along, legB: intoWall, r: hr, flange, into: &v)                 // and back into the wall
+                        }
+                        t = hi + 1
+                    }
+                }
+            }
+        }
+        // ── FITTINGS (map.pipeFittings: x, z, outward-normal angle, kind 0 valve · 1 gauge) ──
+        for f in map.pipeFittings {
+            let cx = Int(f.x), cz = Int(f.y)
+            guard map.inBounds(cx, cz) else { continue }
+            let py = runY
+            let n2 = SIMD2<Float>(cosf(f.z), sinf(f.z))                    // wall outward normal (into the room)
+            let base = SIMD3<Float>(f.x, py, f.y)
+            let outw = SIMD3<Float>(n2.x, 0, n2.y)
+            if f.w < 0.5 {                                                 // ── SHUT-OFF VALVE ──
+                emitTube(base + outw * 0.10, base + outw * 0.152, r: 0.032, sides: 10, copper, into: &v)   // tapered bonnet
+                emitTube(base + outw * 0.150, base + outw * 0.196, r: 0.011, sides: 8, steel, into: &v)    // rising stem
+                let hubC = base + outw * 0.19, rimR: Float = 0.052
+                let t = SIMD3<Float>(-n2.y, 0, n2.x), up = SIMD3<Float>(0, 1, 0)
+                let seg = 14                                                                              // handwheel RIM as a ring of chords
+                var prev = hubC + t * rimR
+                for k in 1...seg {
+                    let ang = Float(k) / Float(seg) * 2 * Float.pi
+                    let cur = hubC + t * (cosf(ang) * rimR) + up * (sinf(ang) * rimR)
+                    emitTube(prev, cur, r: 0.0095, sides: 6, enamel, caps: false, into: &v)
+                    prev = cur
+                }
+                for k in 0..<4 {                                                                          // four spokes
+                    let ang = Float(k) / 4 * 2 * Float.pi
+                    emitTube(hubC, hubC + t * (cosf(ang) * rimR) + up * (sinf(ang) * rimR), r: 0.007, sides: 6, enamel, into: &v)
+                }
+                emitTube(hubC - outw * 0.014, hubC + outw * 0.014, r: 0.014, sides: 8, steel, into: &v)    // stem nut
+            } else {                                                       // ── PRESSURE GAUGE ──
+                let stubTop = base + SIMD3<Float>(0, 0.09, 0)
+                emitTube(base + outw * 0.10, stubTop + outw * 0.10, r: 0.013, sides: 8, copper, into: &v)  // stub up off the run
+                let dialC = base + SIMD3<Float>(0, 0.105, 0) + outw * 0.10
+                emitTube(dialC - outw * 0.016, dialC + outw * 0.016, r: 0.038, sides: 14, steel, into: &v) // dial body
+                let t = SIMD3<Float>(-n2.y, 0, n2.x), up = SIMD3<Float>(0, 1, 0)
+                emitEllipse(dialC + outw * 0.018, t, up, 0.031, 0.031, outw, dialF, into: &v)              // pale dial face
+                emitTube(dialC + outw * 0.019, dialC + outw * 0.019 + t * 0.012 + up * 0.020, r: 0.0035, sides: 5,
+                         M(SIMD3(0.08, 0.07, 0.06), 0.5, 0.1), into: &v)                                  // needle
+            }
+        }
     }
 
     /// Site the PLANT floors' bulkhead fixtures (7–8 only; the upper floors keep their ceiling grid). Walk a
@@ -988,6 +1180,32 @@ final class RasterRenderer {
         v += [vert(a), vert(b), vert(cc), vert(a), vert(cc), vert(dd)]
     }
 
+    /// A capped cylinder between two world points. The GShape cylinders the prop path uses are Y-axis or
+    /// Z-axis only, but a pipe run lies along an ARBITRARY axis, so tessellate it directly here.
+    private func emitTube(_ a: SIMD3<Float>, _ b: SIMD3<Float>, r: Float, sides: Int = 10, _ m: Mat, caps: Bool = true, into v: inout [PVert]) {
+        let ax = b - a; let len = simd_length(ax)
+        guard len > 1e-5, r > 1e-5 else { return }
+        let d = ax / len
+        let up = abs(d.y) < 0.9 ? SIMD3<Float>(0, 1, 0) : SIMD3<Float>(1, 0, 0)
+        let t = simd_normalize(simd_cross(up, d)), s = simd_cross(d, t)
+        func vert(_ p: SIMD3<Float>, _ n: SIMD3<Float>) -> PVert {
+            PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
+                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z, tid: -1)
+        }
+        var prevN = t, prevA = a + t * r, prevB = b + t * r
+        for i in 1...sides {
+            let ang = Float(i) / Float(sides) * 2 * Float.pi
+            let n = t * cosf(ang) + s * sinf(ang)
+            let ca = a + n * r, cb = b + n * r
+            v += [vert(prevA, prevN), vert(ca, n), vert(cb, n), vert(prevA, prevN), vert(cb, n), vert(prevB, prevN)]
+            if caps {
+                v += [vert(a, -d), vert(prevA, -d), vert(ca, -d)]      // near cap
+                v += [vert(b, d), vert(cb, d), vert(prevB, d)]         // far cap
+            }
+            prevN = n; prevA = ca; prevB = cb
+        }
+    }
+
     /// A flat filled ELLIPSE (triangle-fan), radii `ru`×`rv` in the (u, up) plane, centred at `c`, facing `n`.
     private func emitEllipse(_ c: SIMD3<Float>, _ u: SIMD3<Float>, _ up: SIMD3<Float>, _ ru: Float, _ rv: Float, _ n: SIMD3<Float>, _ m: Mat, into v: inout [PVert]) {
         func vert(_ p: SIMD3<Float>) -> PVert {
@@ -1050,11 +1268,13 @@ final class RasterRenderer {
     /// authored point to the floor when `floored` (yOff = loY; wall-pipes/sockets keep
     /// their authored height). `rough`/`metal` are the prop class's PBR base.
     private func emitProp(_ shapes: [GPURaymarch.GShape], pos: SIMD2<Float>, yaw: Float,
-                          floored: Bool, rough: Float, metal: Float, into v: inout [PVert]) {
+                          floored: Bool, rough: Float, metal: Float, yScale: Float = 1, into v: inout [PVert]) {
         var yOff: Float = 0
         if floored { var lo: Float = 1e9; for s in shapes { lo = min(lo, rrShapeYExtent(s).0) }; yOff = lo }
         let cy = cosf(yaw), sy = sinf(yaw)
-        let xf: (SIMD3<Float>) -> SIMD3<Float> = { l in SIMD3(pos.x + l.x * cy - l.z * sy, l.y - yOff, pos.y + l.x * sy + l.z * cy) }
+        // yScale stretches a floor-to-ceiling prop (the structural column, authored y 0…1) to its cell's own
+        // ceiling — in a double-height machine hall an unscaled column would stop halfway up as a floating stub.
+        let xf: (SIMD3<Float>) -> SIMD3<Float> = { l in SIMD3(pos.x + l.x * cy - l.z * sy, (l.y - yOff) * yScale, pos.y + l.x * sy + l.z * cy) }
         let xn: (SIMD3<Float>) -> SIMD3<Float> = { n in SIMD3(n.x * cy - n.z * sy, n.y, n.x * sy + n.z * cy) }
         for s in shapes { tessShape(s, rough: rough, metal: metal, xf, xn, into: &v) }
     }
@@ -1424,7 +1644,13 @@ final class RasterRenderer {
             }
             if sl.isEmpty { continue }                                                 // papers → floor decal, no SDF
             if pr.againstWall && pr.kind != .wallPipe { rrFlushToWall(&sl) }
-            emitProp(sl, pos: pr.pos, yaw: pr.yaw, floored: floored, rough: 0.82, metal: 0.12, into: &v)
+            // a structural column runs floor-to-ceiling, so stretch it to ITS cell's ceiling (double-height halls)
+            var ys: Float = 1
+            if pr.kind == .column {
+                let cxi = Int(pr.pos.x), cyi = Int(pr.pos.y)
+                if dmap.inBounds(cxi, cyi) { ys = dmap.ceilY[dmap.idx(cxi, cyi)] }
+            }
+            emitProp(sl, pos: pr.pos, yaw: pr.yaw, floored: floored, rough: 0.82, metal: 0.12, yScale: ys, into: &v)
         }
         // fuel drums (red/blue by the same stable cell hash the packer uses) — MATTE painted steel, weathered
         // with rust/grime in the shader (tid=−5, matching the raymarcher), plus flat FLAMMABLE label decals
@@ -2780,6 +3006,59 @@ final class RasterRenderer {
                 let iron = (0..<(m.w * m.h)).filter { m.wall[$0] == WallTex.ironPlate.rawValue }.count
                 print("RASTERSHOT: wrote raster-industrial.png (floor 7, run \(best.len) at \(best.x),\(best.y); rock \(rock), iron \(iron), display-bank cells \(banks), bunks \(bunks))")
             } else { print("RASTERSHOT: industrial check skipped (no long run)") }
+            // PIPEWORK — frame a placed FITTING (valve or gauge) head-on: stand a couple of cells off the wall
+            // it hangs on, looking at it, so the copper run, its flanges and the fitting all read.
+            for f in m.pipeFittings.prefix(24) {
+                let fx = Int(f.x), fz = Int(f.y)
+                let n2 = SIMD2<Float>(cosf(f.z), sinf(f.z))               // wall outward normal (into the room)
+                let sx = f.x + n2.x * 2.1, sz = f.y + n2.y * 2.1
+                guard op(Int(sx), Int(sz)), op(Int(f.x + n2.x), Int(f.y + n2.y)) else { continue }
+                world.player.pos = SIMD2(sx, sz)
+                world.player.dir = atan2(-n2.y, -n2.x)                    // face back at the wall
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-pipework.png"))
+                let routedCells = (0..<(m.w * m.h)).filter { m.wall[$0] == 0 && m.pipe[$0] > 0.5 }.count
+                print("RASTERSHOT: wrote raster-pipework.png (\(f.w < 0.5 ? "valve" : "gauge") at \(fx),\(fz); \(m.pipeFittings.count) fittings, \(routedCells) routed cells, \(rr.pipeVertCount) pipe verts of \(rr.totalVertCount) total)")
+                break
+            }
+            // TEE + RISER close-up — find the START of a tall stretch along a wall (the renderer feeds the high
+            // main there with a single riser off a tee) and stand off it, so the junction bodies read.
+            var teeShot = false
+            for yy in 1..<(m.h - 1) where !teeShot {
+                for xx in 1..<(m.w - 1) where !teeShot {
+                    let i = m.idx(xx, yy)
+                    guard m.wall[i] == 0, m.pipe[i] > 0.5, m.ceilY[i] > 1.5 else { continue }
+                    guard m.inBounds(xx, yy - 1), m.wall[m.idx(xx, yy - 1)] != 0, m.doors[m.idx(xx, yy - 1)] == nil else { continue }
+                    let prevI = m.idx(xx - 1, yy)                                      // wall to the N → run travels along X
+                    guard !(m.wall[prevI] == 0 && m.pipe[prevI] > 0.5 && m.ceilY[prevI] > 1.5) else { continue }  // a stretch START
+                    guard op(xx, yy + 1), op(xx, yy + 2) else { continue }
+                    world.player.pos = SIMD2(Float(xx) + 0.85, Float(yy) + 2.3)
+                    world.player.dir = -.pi / 2                                        // face the wall the run hugs
+                    _ = rr.render(world, into: canvas)
+                    Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-tee.png"))
+                    print("RASTERSHOT: wrote raster-tee.png (riser + tee at the tall stretch starting \(xx),\(yy))")
+                    teeShot = true
+                }
+            }
+            // DOUBLE-HEIGHT HALL — stand in a normal-height cell looking into a tall one, so the storey change
+            // and the soffit that closes the step both read in one frame.
+            var shot = false
+            for yy in 1..<(m.h - 1) where !shot {
+                for xx in 1..<(m.w - 1) where !shot && op(xx, yy) && m.ceilY[m.idx(xx, yy)] < 1.5 {
+                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                        let tx = xx + dx, ty = yy + dy
+                        guard op(tx, ty), m.ceilY[m.idx(tx, ty)] > 1.5 else { continue }        // a tall cell next door
+                        guard op(tx + dx * 3, ty + dy * 3) else { continue }                    // and depth beyond it to see
+                        world.player.pos = SIMD2(Float(xx) + 0.5, Float(yy) + 0.5)
+                        world.player.dir = atan2(Float(dy), Float(dx))
+                        _ = rr.render(world, into: canvas)
+                        Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-tallhall.png"))
+                        let tall = (0..<(m.w * m.h)).filter { m.ceilY[$0] > 1.5 }.count
+                        print("RASTERSHOT: wrote raster-tallhall.png (from \(xx),\(yy) into the hall at \(tx),\(ty); \(tall) tall cells)")
+                        shot = true; break
+                    }
+                }
+            }
             // BULKHEAD on the plant wall — mirror buildPlantLamps' rule (open cell on the 5/1 grid backing onto
             // solid wall) and stand off it, so the fixture that lights these floors is verified in place.
             outer: for y in 1..<(m.h - 1) where y % 4 == 1 {

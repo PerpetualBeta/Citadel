@@ -228,6 +228,20 @@ enum MapGen {
         // (walls stay as their solid id; we vary which WallTex by region for variety)
         retexWalls(map, rooms: rooms, rng: &rng, theme: th)
 
+        // ── DOUBLE-HEIGHT MACHINE HALLS ── on the plant floors the ROOMS are plant halls: they stand twice a
+        //    storey so the machinery has headroom, while the corridors feeding them stay a normal height. Only
+        //    room interiors are raised (a doorway keeps its own height so a door still fills its frame), and the
+        //    renderer closes the step with a soffit where a tall cell meets a short neighbour.
+        if industrialFloor {
+            for r in rooms {
+                for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) {
+                    let i = map.idx(xx, yy)
+                    guard map.wall[i] == 0, map.doors[i] == nil else { continue }
+                    map.ceilY[i] = GameMap.tallCeiling
+                } }
+            }
+        }
+
         // ── player start ──
         let start = rooms[0]
         map.playerStart = SIMD2<Float>(Float(start.cx) + 0.5, Float(start.cy) + 0.5)
@@ -1286,7 +1300,8 @@ enum MapGen {
                 propBlock.insert(map.idx(px + ox, py + oy))
             }
         }
-        for (ri, r) in rooms.enumerated() where rng.chance(0.6) {
+        // The plant floors are a working services deck — route EVERY room, not six in ten.
+        for (ri, r) in rooms.enumerated() where industrialFloor || rng.chance(0.6) {
             for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) {
                 let i = map.idx(xx, yy)
                 if map.wall[i] != 0 || map.doors[i] != nil || map.hazard[i] { continue }   // open floor only
@@ -1387,16 +1402,23 @@ enum MapGen {
             gather((r.y..<(r.y + r.h)).map { (r.x + r.w - 1, $0) }, wallOff: (1, 0),
                    anchor: { SIMD2(Float($0 + 1), Float($1) + 0.5) }, normal: SIMD2(-1, 0))
             guard !sideRuns.isEmpty else { continue }
-            if rng.chance(0.55) {                                               // this circuit's shut-off
+            // Shut-offs and instruments. Upstairs a circuit carries at most one of each; on the PLANT floors the
+            // runs are studded with them — this is where the colony's services were actually operated.
+            let wantValves = industrialFloor ? rng.i(1, 3) : (rng.chance(0.55) ? 1 : 0)
+            let wantGauges = industrialFloor ? rng.i(1, 2) : (rng.chance(0.45) ? 1 : 0)
+            for _ in 0..<wantValves {
+                guard !sideRuns.isEmpty else { break }
                 let side = rng.i(0, sideRuns.count - 1)
                 let (a, n) = sideRuns[side][rng.i(0, sideRuns[side].count - 1)]
                 fits.append(SIMD4(a.x, a.y, atan2(n.y, n.x), 0))
-                sideRuns.remove(at: side)
+                sideRuns.remove(at: side)                                       // one shut-off per side
             }
-            if !sideRuns.isEmpty && rng.chance(0.45) {                          // its one instrument
+            for _ in 0..<wantGauges {
+                guard !sideRuns.isEmpty else { break }
                 let side = rng.i(0, sideRuns.count - 1)
                 let (a, n) = sideRuns[side][rng.i(0, sideRuns[side].count - 1)]
                 fits.append(SIMD4(a.x, a.y, atan2(n.y, n.x), 1))
+                sideRuns.remove(at: side)
             }
         }
         map.pipeFittings = fits

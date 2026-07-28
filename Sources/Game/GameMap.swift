@@ -35,6 +35,11 @@ final class GameMap {
     var doors: [Int: DoorState] = [:]
     var visited: [Bool]         // for the automap / reveal
     var pipe: [Float]           // baked pipe-routing mask: 1 = a wall pipe runs along this open cell, 0 = none (dives into the wall toward 0)
+    /// Per-cell ceiling height in world units. 1 is the standard storey; the plant floors' ROOMS stand at
+    /// `tallCeiling` so a machine hall towers over the corridors feeding it. Corridors and doorways stay at 1,
+    /// and the renderer closes the step between a tall cell and a short neighbour with a soffit.
+    var ceilY: [Float]
+    static let tallCeiling: Float = 2.0
     var fuelStore: Set<Int> = []   // interior cells of the fuel-storage chamber: its drums are an INTENTIONAL stack (exempt from reachability relocation)
     var pipeFittings: [SIMD4<Float>] = []   // CPU-placed pipe fittings: (x, z, outward-normal angle, kind 0 valve · 1 gauge)
 
@@ -57,6 +62,7 @@ final class GameMap {
         hazard = [Bool](repeating: false, count: n)
         visited = [Bool](repeating: false, count: n)
         pipe = [Float](repeating: 0, count: n)
+        ceilY = [Float](repeating: 1, count: n)
     }
 
     @inline(__always) func idx(_ x: Int, _ y: Int) -> Int { y * w + x }
