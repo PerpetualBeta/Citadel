@@ -68,6 +68,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Game/Rng.swift \
                     Sources/Render/GPURaymarch.swift \
                     Sources/Render/RasterRenderer.swift \
+                    Sources/Render/RasterShaders.swift \
                     Sources/Render/Canvas2D.swift \
                     Sources/Render/Pixel.swift \
                     Sources/Render/Textures.swift \
