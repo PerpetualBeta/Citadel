@@ -350,4 +350,62 @@ extension RasterRenderer {
             emitEllipse(c + n * 0.002 + u * rx, u, up, 0.004, 0.095, n, rib, into: &v)
         }
     }
+
+    // ══ the surface material palette ═══════════════════════════════════════════════
+    //  Three tables mapping a map cell's texture id to its PBR material. They live beside
+    //  `propMat` because they are the same kind of thing and were the same kind of thing all
+    //  along — pure id → Mat lookups with no renderer state — and because both the STATIC
+    //  level mesh and the PER-FRAME door mesh read them. Split across two files they would
+    //  have to be reachable from both anyway; together, the whole palette is one place.
+
+    static func wallTexAt(_ map: GameMap, _ x: Int, _ y: Int) -> Mat {
+        guard map.inBounds(x, y) else { return wallMat(.steelPanel) }
+        return wallMat(WallTex(rawValue: map.wall[map.idx(x, y)]) ?? .steelPanel)
+    }
+
+    static func wallMat(_ t: WallTex) -> Mat {
+        switch t {
+        case .none:           return Self.M(SIMD3(0.45, 0.45, 0.50), 0.60, 0.50)
+        case .ironPlate:      return Self.M(SIMD3(0.40, 0.35, 0.31), 0.66, 0.55)
+        case .brushedSteel:   return Self.M(SIMD3(0.56, 0.59, 0.66), 0.44, 0.75)
+        case .steelPanel:     return Self.M(SIMD3(0.38, 0.40, 0.46), 0.52, 0.62)
+        case .litPanel:       return Self.M(SIMD3(0.40, 0.44, 0.52), 0.45, 0.40, SIMD3(0.12, 0.26, 0.23))   // soft strip-light glow
+        case .ribbedSteel:    return Self.M(SIMD3(0.42, 0.44, 0.50), 0.50, 0.66)
+        case .pipework:       return Self.M(SIMD3(0.44, 0.46, 0.52), 0.34, 0.78)
+        case .glass:          return Self.M(SIMD3(0.14, 0.22, 0.28), 0.14, 0.25)
+        case .stone:          return Self.M(SIMD3(0.40, 0.36, 0.31), 0.90, 0.02)
+        case .stoneSteel:     return Self.M(SIMD3(0.36, 0.34, 0.31), 0.80, 0.22)
+        case .computer:       return Self.M(SIMD3(0.22, 0.26, 0.32), 0.50, 0.35, SIMD3(0.32, 0.24, 0.10))   // amber CRT
+        case .hazard:         return Self.M(SIMD3(0.52, 0.44, 0.12), 0.60, 0.35)
+        case .doorPanel:      return Self.M(SIMD3(0.44, 0.46, 0.50), 0.50, 0.60)
+        case .doorRed:        return Self.M(SIMD3(0.48, 0.16, 0.14), 0.55, 0.40, SIMD3(0.24, 0.03, 0.02))
+        case .doorBlue:       return Self.M(SIMD3(0.16, 0.24, 0.48), 0.55, 0.40, SIMD3(0.03, 0.06, 0.24))
+        case .doorYellow:     return Self.M(SIMD3(0.52, 0.46, 0.12), 0.55, 0.40, SIMD3(0.22, 0.18, 0.03))
+        case .exitSwitch:     return Self.M(SIMD3(0.20, 0.44, 0.24), 0.50, 0.30, SIMD3(0.10, 0.36, 0.16))   // green exit glow
+        case .doorHazard:     return Self.M(SIMD3(0.50, 0.44, 0.12), 0.60, 0.35)
+        case .elevatorSealed: return Self.M(SIMD3(0.40, 0.42, 0.47), 0.50, 0.60)
+        case .liftWall:       return Self.M(SIMD3(0.42, 0.44, 0.49), 0.50, 0.62)
+        case .concrete:       return Self.M(SIMD3(0.52, 0.51, 0.48), 0.92, 0.02)   // matte poured concrete — no metal, no glow
+        case .opsBoard:       return Self.M(SIMD3(0.05, 0.055, 0.065), 0.42, 0.20)   // dark glass; the RGB content is emissive (see rr_fragment)
+        case .medWall:        return Self.M(SIMD3(0.82, 0.83, 0.82), 0.68, 0.02)     // white painted concrete — bright, matte, sterile
+        case .subwayTile:     return Self.M(SIMD3(0.86, 0.87, 0.86), 0.24, 0.04)     // glazed ceramic — bright and a touch shiny
+        case .sanTile:        return Self.M(SIMD3(0.70, 0.78, 0.74), 0.20, 0.04)     // glazed pale green — wet-room shine
+        }
+    }
+
+    static func flatMat(_ id: Int) -> Mat {
+        switch FlatTex(rawValue: id) ?? .concrete {
+        case .concrete:    return Self.M(SIMD3(0.34, 0.33, 0.31), 0.85, 0.02)
+        case .metalFloor:  return Self.M(SIMD3(0.31, 0.31, 0.33), 0.55, 0.32)   // near-neutral, less metal so it doesn't crush to a dark blue patch vs concrete
+        case .grate:       return Self.M(SIMD3(0.23, 0.23, 0.24), 0.55, 0.45)   // dark IRON grate — clearly darker than concrete but not a blue void (also lifts tier-3/4 base floor)
+        case .nukage:      return Self.M(SIMD3(0.22, 0.34, 0.12), 0.30, 0.00, SIMD3(0.15, 0.36, 0.09))      // toxic glow
+        case .ceilTech:    return Self.M(SIMD3(0.17, 0.19, 0.23), 0.70, 0.32)
+        case .ceilDark:    return Self.M(SIMD3(0.10, 0.11, 0.13), 0.72, 0.22)
+        case .ceilStone:   return Self.M(SIMD3(0.30, 0.28, 0.25), 0.85, 0.02)
+        case .ceilWhite:   return Self.M(SIMD3(0.80, 0.81, 0.80), 0.60, 0.02, SIMD3(0.10, 0.10, 0.098))   // painted panels + a faint light run
+        case .rock:        return Self.M(SIMD3(0.32, 0.29, 0.25), 0.90, 0.00)
+        case .blood:       return Self.M(SIMD3(0.18, 0.05, 0.05), 0.40, 0.00)
+        case .teleportPad: return Self.M(SIMD3(0.20, 0.30, 0.50), 0.30, 0.20, SIMD3(0.16, 0.30, 0.62))      // teleporter glow
+        }
+    }
 }

@@ -70,6 +70,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Render/RasterRenderer.swift \
                     Sources/Render/RasterShaders.swift \
                     Sources/Render/MeshEmit.swift \
+                    Sources/Render/LevelMeshBuilder.swift \
                     Sources/Render/Canvas2D.swift \
                     Sources/Render/Pixel.swift \
                     Sources/Render/Textures.swift \
