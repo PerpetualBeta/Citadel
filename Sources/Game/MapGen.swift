@@ -486,7 +486,13 @@ enum MapGen {
 
         // ── CANTEEN (floors 1–6) ── the colony's mess. Chosen from what's left after the ops centre, the
         //    dormitories and the sick bays have taken theirs, so the room types never fight over a room.
+        // Both cleared BEFORE the gate: these are static, so a value left set by the last level
+        // generated leaks into the next one. `canteenMess` was being cleared INSIDE the gate, so an
+        // industrial floor inherited floor 6's mess-hall room index and furnished that room with
+        // ranked dining tables — a canteen with no galley, on a floor that is supposed to have no
+        // trimmings at all. (Caught by extending CITADEL_DORMDEBUG to 7–8: tables=12 on level 8.)
         canteenRoom = -1
+        canteenMess = -1
         if !industrialFloor {
             var best = (score: 0, ri: -1)
             for (ri, r) in rooms.enumerated() where ri != 0 && ri != rooms.count - 1 {
@@ -495,7 +501,6 @@ enum MapGen {
                 let score = r.w * r.h                                  // the roomiest candidate — a mess hall wants space
                 if score > best.score { best = (score, ri) }
             }
-            canteenMess = -1
             if best.ri >= 0 {
                 canteenRoom = best.ri
                 // A modest room cannot hold a working galley line AND ranked tables, so if there is a free room

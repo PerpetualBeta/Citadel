@@ -557,7 +557,7 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_CREATUREPROBE"] {
 // bunk B, locker L, column I, desk d, chair c, tape T, papers p, pipe =) to eyeball the
 // dormitory layout algorithm (row alternation, centre rows, columns, clear aisles). No GUI.
 if ProcessInfo.processInfo.environment["CITADEL_DORMDEBUG"] != nil {
-    for lvl in [1, 2, 3, 4] {
+    for lvl in [1, 2, 3, 4, 7, 8] {
         let g = MapGen.generate(level: lvl, colonyIndex: 0, seed: UInt64(lvl &* 2654435761 &+ 12345))
         let m = g.map
         var grid = [[Character]](repeating: [Character](repeating: " ", count: m.w), count: m.h)
