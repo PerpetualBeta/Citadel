@@ -820,7 +820,7 @@ final class RasterRenderer {
             }
         }
         // fallen colonists first (deck layer), batched per variant
-        for v in Set(vis.colonists.map { $0.variant }) {
+        for v in Set(vis.colonists.map { $0.variant }).sorted() {   // sorted: Set order is per-process random, so the group draw order would vary run to run
             guard let mesh = colonistMesh(v) else { continue }
             let insts = vis.colonists.filter { $0.variant == v }.map {
                 MeshCreature.ColonistInst(pos: $0.pos, yaw: $0.yaw, seed: $0.seed, burn: $0.burn, ashed: $0.ashed,
@@ -2161,7 +2161,12 @@ final class RasterRenderer {
         // cell) rendered as empty gaps though they still operated. Emit the sliding centre-split leaves
         // here, per-frame (they animate): two half-panels that retract from the cell centre into the jambs.
         let dmap = world.map
-        for (i, dstate) in dmap.doors {
+        // Sorted: iterating the dictionary emits the door geometry in a per-process random order.
+        // Depth resolves it visually, but it makes the vertex buffer differ between identical runs —
+        // which defeats any byte comparison, and would make WHICH doors survive a buffer overflow
+        // arbitrary rather than repeatable.
+        for i in dmap.doors.keys.sorted() {
+            let dstate = dmap.doors[i]!
             let cx = i % dmap.w, cy = i / dmap.w
             if !visible(SIMD2(Float(cx) + 0.5, Float(cy) + 0.5), 26) { continue }
             let part = min(1, dstate.open / GameMap.passThreshold)         // 0 closed … 1 fully parted
@@ -3692,7 +3697,13 @@ final class RasterRenderer {
             let world = World(level: 1, colonyIndex: 0, seed: 3)
             let m = world.map
             func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
-            for (i, _) in m.doors {
+            // SORTED, not dictionary order. Swift randomises hash seeding per process, so iterating
+            // m.doors directly framed a DIFFERENT door on every run — the shot could never be compared
+            // against a baseline, and eyeballing it compared different subjects. Worse, this block
+            // leaves its chosen door part-open on the shared map, so the arbitrary choice leaked into
+            // later frames too (shotcheck caught raster-door, raster-tee and raster-industrial all
+            // moving between identical runs).
+            for i in m.doors.keys.sorted() {
                 let cx = i % m.w, cy = i / m.w
                 let slideX = (m.inBounds(cx - 1, cy) && m.wall[m.idx(cx - 1, cy)] != 0)
                           && (m.inBounds(cx + 1, cy) && m.wall[m.idx(cx + 1, cy)] != 0)
@@ -4112,7 +4123,7 @@ final class RasterRenderer {
                 let m = world.map
                 guard !m.fuelStore.isEmpty else { continue }
                 var doorI = -1
-                for (i, _) in m.doors where m.wall[i] == WallTex.doorHazard.rawValue { doorI = i; break }
+                for i in m.doors.keys.sorted() where m.wall[i] == WallTex.doorHazard.rawValue { doorI = i; break }   // sorted: dictionary order is per-process random
                 guard doorI >= 0 else { continue }
                 let dcx = doorI % m.w, dcy = doorI / m.w
                 var outX = 0, outY = 0                                             // door → chamber direction
