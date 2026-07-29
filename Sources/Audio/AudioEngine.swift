@@ -44,6 +44,8 @@ final class AudioEngine {
         case musicTitle, bedDrone, bedPulse, bedTension, bedSwarm
         case elevatorMove, elevatorDoor, elevatorShut
         case faultHum, faultBuzz, faultCrackle   // electrical-fault: proximity hum LOOP, pre-spark buzz, spark crackle
+        case machineHum            // PLANT (7-8): the compressors' proximity hum LOOP. SYNTHESISED unless a
+                                   // machine_hum sample is present — see makeMachineHum()
         case signalDeep          // THE SIGNAL — the intercepted transmission, played from the reel-to-reel deck (one-shot)
         case signalFar           // THE SIGNAL, distant — the sourceless bleed heard from the deep floors (loops, ambient bus)
 
@@ -77,6 +79,7 @@ final class AudioEngine {
             case .elevatorDoor: return "elevator_door"
             case .elevatorShut: return "elevator_shut"
             case .faultHum: return "fault_hum"
+            case .machineHum: return "machine_hum"
             case .faultBuzz: return "fault_buzz"
             case .faultCrackle: return "fault_crackle"
             case .signalDeep: return "signal_deep"
@@ -95,7 +98,7 @@ final class AudioEngine {
         // ambient-bus ONE-SHOTS, so loop is spelled out rather than bus-derived
         var loop: Bool {
             switch self {
-            case .musicTitle, .bedDrone, .bedPulse, .bedTension, .bedSwarm, .faultHum, .signalFar: return true
+            case .musicTitle, .bedDrone, .bedPulse, .bedTension, .bedSwarm, .faultHum, .signalFar, .machineHum: return true
             default: return false
             }
         }
@@ -112,6 +115,7 @@ final class AudioEngine {
             case .drip: return 0.55
             case .fault: return 0.7
             case .faultHum: return 0.34       // quietened relative to the ambient bed
+            case .machineHum: return 0.30     // a working compressor, not a jet: sits under the ambient bed
             case .faultBuzz: return 0.24      // pre-spark buzz — kept low; only fires when close
             case .faultCrackle: return 0.32   // the spark itself
             case .signalDeep: return 0.9      // the reel-to-reel playback — front and clear
@@ -400,6 +404,79 @@ final class AudioEngine {
             }
             if !bufs.isEmpty { bank[s] = bufs }
         }
+        // The plant machinery hum has no sample: it is SYNTHESISED into the bank here, so every
+        // existing mechanism — startLoop, setLoopVol, the mute harness, bus routing — drives it
+        // with no new code path. Dropping a real Audio/machine_hum.* in later overrides it
+        // automatically, because loadBank above has already had first refusal.
+        if bank[.machineHum] == nil, let hum = makeMachineHum() { bank[.machineHum] = [hum] }
+    }
+
+    #if CITADEL_HARNESS
+    /// Harness only: the synthesised machinery loop, so CITADEL_AUDIOPROBE can assert its spectrum
+    /// and its loop seam. This sound cannot be auditioned in office mode, so it is verified by
+    /// measurement instead of by ear.
+    var machineHumBuffer: AVAudioPCMBuffer? { bank[.machineHum]?.first }
+    #endif
+
+    /// A seamless 2-second compressor loop, generated.
+    ///
+    /// Synthesised rather than sampled for three reasons: a motor-driven compressor is about the most
+    /// tractable thing to build from oscillators; it needs no new asset and raises no licence question
+    /// (see CREDITS.md on why the sampled audio is a deliberate, documented exception); and it is
+    /// deterministic, so the audio probe can assert its spectrum instead of somebody having to listen.
+    ///
+    /// Built to LOOP CLEANLY, which drives every frequency choice. The buffer is exactly 2 s, and each
+    /// tone completes a whole number of cycles in it (50 Hz → 100 cycles, and its harmonics likewise;
+    /// the mechanical chug at 12 Hz → 24), so the waveform meets itself at the seam. Noise cannot be
+    /// made periodic that way, so the tail is cross-faded into the head instead.
+    private func makeMachineHum() -> AVAudioPCMBuffer? {
+        let sr = Float(canonical.sampleRate)
+        let frames = Int(2 * sr)                                  // 2 s exactly → integer cycles below
+        guard let buf = AVAudioPCMBuffer(pcmFormat: canonical, frameCapacity: AVAudioFrameCount(frames)) else { return nil }
+        buf.frameLength = AVAudioFrameCount(frames)
+        guard let L = buf.floatChannelData?[0], let R = buf.floatChannelData?[1] else { return nil }
+
+        // Generate frames + an OVERHANG. The overhang is what the signal would have done just past the
+        // loop point, and folding it back onto the start is what actually makes the wrap continuous —
+        // see the fold below.
+        let xf = min(frames / 8, Int(0.05 * sr))                   // 50 ms
+        var tmp = [Float](repeating: 0, count: frames + xf)
+        var seed: UInt64 = 0xD1B5_4A32_D192_ED03                  // fixed: the same hum every run
+        var lp: Float = 0                                          // one-pole low-pass state for the whir
+        let twoPi = 2 * Float.pi
+        for i in 0..<(frames + xf) {
+            let t = Float(i) / sr
+            // MOTOR — a mains-driven induction motor sings at the supply frequency and its harmonics.
+            // The phase offsets stop the partials aligning into a buzzy impulse at the period start.
+            var v = 0.55 * sin(twoPi * 50 * t)
+            v += 0.30 * sin(twoPi * 100 * t + 0.7)
+            v += 0.16 * sin(twoPi * 150 * t + 1.9)
+            v += 0.09 * sin(twoPi * 200 * t + 2.6)
+            // CHUG — the reciprocating stroke, as slow amplitude modulation. This is what separates a
+            // compressor from a fan: the load rises and falls instead of droning flat.
+            let chug = 0.80 + 0.20 * sin(twoPi * 12 * t)
+            // WHIR — bearing and air noise, low-passed so it reads as machinery in a room rather than
+            // hiss. Deterministic xorshift, so the buffer is byte-identical every launch.
+            seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17
+            let n = Float(seed & 0xFF_FFFF) / Float(0xFF_FFFF) * 2 - 1
+            lp += (n - lp) * 0.06                                  // ≈ 400 Hz corner at 44.1 kHz
+            tmp[i] = (v * chug + lp * 0.55) * 0.42
+        }
+        // FOLD the overhang onto the head. The tones already meet exactly (integer cycles), but noise
+        // cannot, so without this the whir clicks once every two seconds — the sort of fault that is
+        // maddening to chase months later.
+        //
+        // Fold the OVERHANG onto the START, not the tail onto the head. The first attempt did the
+        // latter and did nothing: it drove the last sample toward tmp[xf−1], 50 ms INTO the head, when
+        // the sample actually played next is tmp[0]. Blending this way makes tmp[0] equal the signal's
+        // own natural continuation past the end, so the wrap is continuous by construction — the probe
+        // measures a sample step of ~0 rather than the 0.087 that version left behind.
+        for k in 0..<xf {
+            let w = Float(k) / Float(xf)                            // 0 at the seam → 1 clear of it
+            tmp[k] = tmp[k] * w + tmp[frames + k] * (1 - w)
+        }
+        for i in 0..<frames { L[i] = tmp[i]; R[i] = tmp[i] }
+        return buf
     }
 
     private func findAndLoad(_ name: String) -> AVAudioPCMBuffer? {
@@ -715,6 +792,11 @@ final class AudioEngine {
     /// 0…1 each frame from the nearest fault's distance (silent past ~2.6 m).
     func faultHum(_ vol: Float) { setLoopVol(.faultHum, max(0, min(1, vol)) * Sound.faultHum.gain) }
 
+    // ── plant machinery (World drives the volume by proximity) ──────────────────
+    /// Continuous proximity hum from the compressors on floors 7-8. World passes `vol` 0…1 each
+    /// frame from the nearest machine's distance, so it swells as you cross a machine hall.
+    func machineHum(_ vol: Float) { setLoopVol(.machineHum, max(0, min(1, vol)) * Sound.machineHum.gain) }
+
     /// The buzz just before a spark shower — distance-attenuated one-shot.
     func faultBuzz(_ vol: Float) { playFaultOneShot(.faultBuzz, vol) }
     /// The crackle as the sparks emit — distance-attenuated one-shot.
@@ -780,6 +862,7 @@ final class AudioEngine {
                 for s in [Sound.bedDrone, .bedPulse, .bedTension, .bedSwarm] { _ = startLoop(s, volume: 0) }
             }
             _ = startLoop(.faultHum, volume: 0)     // electrical-fault proximity hum; World drives its volume each frame
+            _ = startLoop(.machineHum, volume: 0)   // plant machinery proximity hum; World drives its volume each frame
             // THE FAR SIGNAL — in the depths, the intercepted transmission bleeds
             // through with no source you can walk to. Fades up as you descend (the
             // caller scales the gain by depth); silent above the deep floors.

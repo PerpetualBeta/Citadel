@@ -390,6 +390,36 @@ enum SmokeTest {
             check(fw.decals.contains { $0.w > 0 && $0.w <= 1 }, "burned-out corpse stamps a scorch decal")
             check(fw.decals.contains { $0.w > 2 }, "burned-out corpse stamps smoldering ash")
         }
+        // ── PLANT MACHINERY HUM ── the compressors' proximity bed on floors 7–8. Asserted rather than
+        // listened to: it has to be SILENT where there is no machinery, and it has to SWELL as you
+        // close on a machine, which is the whole point of a positional bed over an ambient one.
+        do {
+            let quiet = World(level: 1, colonyIndex: 0, seed: 4242)
+            for _ in 0..<40 { quiet.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+            check(quiet.machineSiteCountForTest == 0 && quiet.machineHumLevelForTest == 0,
+                  "no machinery hum on the upper floors (level 1)")
+
+            let plant = World(level: 7, colonyIndex: 0, seed: 4242)
+            for _ in 0..<40 { plant.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+            check(plant.machineSiteCountForTest > 0, "plant floor has machinery to hear (\(plant.machineSiteCountForTest) sites)")
+            if let m = plant.props.first(where: { $0.kind == .machineCompressor }) {
+                // settle FAR from every machine, then settle right beside one — the level must rise.
+                func settle(at p: SIMD2<Float>) -> Float {
+                    plant.player.pos = p
+                    for _ in 0..<180 { plant.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+                    return plant.machineHumLevelForTest
+                }
+                var far = m.pos, best: Float = 0
+                for c in plant.props where !plant.map.blocksMovement(Int(c.pos.x), Int(c.pos.y)) {
+                    let d = plant.props.filter { $0.kind == .machineCompressor }.map { vlen($0.pos - c.pos) }.min() ?? 0
+                    if d > best { best = d; far = c.pos }
+                }
+                let away = settle(at: far), near = settle(at: m.pos)
+                check(near > away, "machinery hum swells with approach (\(String(format: "%.2f → %.2f", away, near)))")
+                check(away > 0, "a plant floor is never wholly silent (floor bed \(String(format: "%.2f", away)))")
+            }
+        }
+
         // a drone KILLED BY FIRE ignites where it drops — no second pass needed
         let iw = World(level: 1, colonyIndex: 0, seed: 137)
         if let fi = iw.monsters.firstIndex(where: { $0.alive && $0.kind == .alien }) {

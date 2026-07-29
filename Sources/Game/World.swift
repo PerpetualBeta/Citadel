@@ -188,6 +188,16 @@ final class World {
     private let faultCommitLevel: Float = 0.45   // only VOICE a shower this audible (close + in sight), so buzz→crackle always completes — never a truncated clip
     private var faultHumLevel: Float = 0         // smoothed hum level — eased toward target so it swells/fades, never snaps on
     private let faultHumSmooth: Float = 0.30     // hum fade time-constant (s)
+    // ── plant machinery audio (floors 7–8) ──
+    // Deliberately unlike the electrical faults, which are pinpoint sparks audible only within 2–3 m.
+    // A running compressor fills a hall: you should hear it from the doorway and have it grow as you
+    // cross to it. Hence the long range, and NO line-of-sight gate — heavy machinery carries through
+    // structure, and gating it made the hum flick on and off as pillars and machines passed the eye.
+    private var machineSites: [SIMD2<Float>] = []   // compressor positions on this floor (collected once)
+    private let machineHumRange: Float = 9.0        // audible right across a machine hall
+    private let machineHumFloor: Float = 0.18       // a plant floor is never silent, even between halls
+    private var machineHumLevel: Float = 0
+    private let machineHumSmooth: Float = 0.55      // slower than the faults': machinery swells, it doesn't snap
     // ── the Queen ──
     private var queenBreedCD: Float = 60         // seconds to her next spawn
     private var queenHintCD: Float = 0           // throttle for the "plasma only" hint
@@ -2575,6 +2585,35 @@ final class World {
     /// odd curl of smoke off a dead panel. Audio: a close proximity HUM (louder the
     /// nearer you stand, silent past ~2.6 m), and per shower a BUZZ just before, then
     /// the sparks + a CRACKLE as they emit.
+    /// The plant floors' machine noise: a bed that never quite stops, swelling as you approach a
+    /// compressor. Nothing is audible on floors 1–6, where there is no machinery to hear.
+    ///
+    /// `machineSites` is gathered lazily from the props rather than every frame — the machinery is
+    /// static level geometry, so the list cannot change while a floor is loaded.
+    #if CITADEL_HARNESS
+    /// Harness: the smoothed machinery hum level, so the smoke test can assert the proximity curve
+    /// instead of somebody having to stand next to a compressor and listen.
+    var machineHumLevelForTest: Float { machineHumLevel }
+    var machineSiteCountForTest: Int { machineSites.count }
+    #endif
+
+    private func driveMachineHum(dt: Float, audio: AudioEngine) {
+        if machineSites.isEmpty {
+            machineSites = props.filter { $0.kind == .machineCompressor || $0.kind == .machineFilter
+                                       || $0.kind == .machineColumn }.map { $0.pos }
+            if machineSites.isEmpty { audio.machineHum(0); return }      // not a plant floor
+        }
+        var target = machineHumFloor          // the deck plant is always running somewhere below you
+        for m in machineSites {
+            let d = vlen(m - player.pos)
+            if d > machineHumRange { continue }
+            let t = 1 - d / machineHumRange
+            target = max(target, t * t * (3 - 2 * t))                    // smoothstep — quietest at the edge
+        }
+        machineHumLevel += (target - machineHumLevel) * min(1, dt / machineHumSmooth)
+        audio.machineHum(machineHumLevel)
+    }
+
     private func emitSparks(dt: Float, audio: AudioEngine) {
         // ── every frame: proximity hum from the nearest VISIBLE fault. LOS-gated
         // (a fault behind a wall stays quiet), on a smoothstep distance curve, and
@@ -2590,6 +2629,7 @@ final class World {
         }
         faultHumLevel += (target - faultHumLevel) * min(1, dt / faultHumSmooth)
         audio.faultHum(faultHumLevel)
+        driveMachineHum(dt: dt, audio: audio)
         // ── every frame: resolve charging showers → emit sparks + crackle ──
         var k = 0
         while k < sparkCharge.count {

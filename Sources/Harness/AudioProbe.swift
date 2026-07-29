@@ -16,6 +16,47 @@ enum AudioProbe {
         }
 
         print("AudioProbe — offline render, real graph, real bank")
+
+        // ── the SYNTHESISED machinery loop ──
+        // This one cannot be auditioned in office mode, so it is asserted rather than listened to.
+        // Three things have to hold: it carries signal at a sane level, it MEETS ITSELF at the loop
+        // seam (a discontinuity there clicks once every two seconds — miserable to chase later), and
+        // its energy sits on the motor partials it was built from rather than smeared into hiss.
+        if let hum = audio.machineHumBuffer, let d = hum.floatChannelData?[0] {
+            let n = Int(hum.frameLength), sr = Float(hum.format.sampleRate)
+            func rms(_ from: Int, _ count: Int) -> Float {
+                var a: Float = 0
+                for i in from..<min(n, from + count) { a += d[i] * d[i] }
+                return (a / Float(max(1, count))).squareRoot()
+            }
+            /// Magnitude at `f` by direct correlation — a whole DFT is overkill for four bins.
+            func mag(_ f: Float) -> Float {
+                var re: Float = 0, im: Float = 0
+                for i in 0..<n {
+                    let p = 2 * Float.pi * f * Float(i) / sr
+                    re += d[i] * cos(p); im += d[i] * sin(p)
+                }
+                return (re * re + im * im).squareRoot() / Float(n) * 2
+            }
+            print(String(format: "  machine hum: %.2f s, %d frames @ %.0f Hz", Float(n) / sr, n, sr))
+            report("machine hum, whole buffer", rms(0, n))
+            // Seam: compare the 50 ms either side of the wrap. A clean loop has matched energy across
+            // it and no step between the last sample and the first.
+            let w = Int(0.05 * sr)
+            let head = rms(0, w), tail = rms(n - w, w)
+            let step = abs(d[n - 1] - d[0])
+            print(String(format: "  seam: head rms %.4f · tail rms %.4f (ratio %.2f) · sample step %.5f  → %@",
+                         head, tail, tail / max(head, 1e-6), step,
+                         (abs(tail / max(head, 1e-6) - 1) < 0.35 && step < 0.02) ? "SEAMLESS" : "REVIEW"))
+            // Spectrum: the motor partials must dominate the gaps between them.
+            let m50 = mag(50), m100 = mag(100), m150 = mag(150), m200 = mag(200)
+            let off = (mag(73) + mag(127) + mag(311)) / 3                     // off-harmonic reference
+            print(String(format: "  partials: 50Hz %.4f · 100Hz %.4f · 150Hz %.4f · 200Hz %.4f · off-harmonic %.4f (×%.1f)  → %@",
+                         m50, m100, m150, m200, off, m50 / max(off, 1e-6),
+                         (m50 > m100 && m100 > m150 && m50 > off * 4) ? "MOTOR" : "REVIEW"))
+        } else {
+            print("  machine hum: ABSENT — synthesis failed or a sample overrode it")
+        }
         report("silence (baseline)", audio.renderOfflineRMS(seconds: 0.5))
 
         // 1. the synth path: a teleport-style noise bed voice
