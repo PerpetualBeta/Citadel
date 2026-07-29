@@ -54,7 +54,15 @@ final class RasterRenderer {
     private let colTex: MTLTexture
     private let zTex: MTLTexture
     private let perpTex: MTLTexture             // r32Float: per-pixel perp-depth (dot(wp-eye, camFwd)) so mesh creatures composite with correct occlusion
-    private var perpScratch: [Float]            // CPU read-back of perpTex (W·H), fed to the MeshCreature merge
+    private var perpScratch: [Float]            // CPU read-back of perpTex (W·H) — read ONCE per frame, for the particle compositor
+    private let colSnap: MTLTexture             // the tonemapped frame BEFORE any creature drew (the creature fire-wash samples it)
+    private let perpSnap: MTLTexture            // perpTex BEFORE any creature drew (the creature depth test samples it)
+    /// Fall back to the pre-2026-07-28 creature merge: offscreen pass → flush → read colour+perp
+    /// back → merge a million pixels on the CPU, per creature group. Kept because it is the ONLY
+    /// way to prove the GPU path faithful (render both, diff the pixels — see CreatureMergeProbe),
+    /// and because it is a working escape hatch if the direct path ever misbehaves on some GPU.
+    /// `defaults write cc.jorviksoftware.Citadel creatureReadback -bool YES`.
+    private let creatureReadback = UserDefaults.standard.bool(forKey: "creatureReadback")
     private let shadowArr: MTLTexture           // one depth slice per shadowed lamp (cast from the lamp's STATIC position)
     private let W = RenderConfig.width, H = RenderConfig.viewHeight, SHADOW = 1024
     private let SHADOW_LAMPS = 3                // nearest N overhead lamps get a real cast shadow
@@ -87,7 +95,11 @@ final class RasterRenderer {
     private var fpFrames = 0, fpSlow = 0
     private var fpWorst: Double = 0
     private var fpLogEnabled = UserDefaults.standard.bool(forKey: "frameLog")
-    private static let fpBudget = 1.0 / 50.0        // 20 ms — below this and the game is under 50 fps
+    /// One 60 Hz refresh interval, plus a whisker so the clock reads themselves can't trip it. A frame
+    /// that overruns this has already missed a vsync and been held for the next one — which IS the
+    /// micro-stutter we're hunting, so that is where the threshold belongs. (The first cut of this
+    /// probe used 20 ms; every frame between 16.7 and 20 dropped a vsync and went unreported.)
+    private static let fpBudget = 1.0 / 60.0 + 0.0003     // 17.0 ms
     @inline(__always) private func fpMark(_ name: String) {
         guard fpLogEnabled else { return }
         fpStamps.append((name, ProcessInfo.processInfo.systemUptime))
@@ -208,6 +220,13 @@ final class RasterRenderer {
         self.zTex = tex(.depth32Float, W, H, .private, [.renderTarget])
         self.perpTex = tex(.r32Float, W, H, .shared, [.renderTarget, .shaderRead])    // .shaderRead: the fire pass reads it as tmax
         self.perpScratch = [Float](repeating: 1e9, count: W * H)
+        // Pre-creature snapshots of the two buffers the creature passes WRITE. A render target
+        // can't be sampled by the pass writing it, so the tonemap lands in colSnap and perpTex is
+        // copied to perpSnap; the creature fragment reads those to test the world's depth and to
+        // judge how much fire sits in the pixel. Two on-GPU copies replace what used to be four
+        // megabytes of GPU→CPU transfer and a million-pixel CPU merge per creature group.
+        self.colSnap  = tex(.rgba8Unorm, W, H, .private, [.renderTarget, .shaderRead])
+        self.perpSnap = tex(.r32Float, W, H, .private, [.renderTarget, .shaderRead])
         // HDR pipeline — half-float targets + full-screen bloom/tonemap pipelines
         self.hdrTex  = tex(.rgba16Float, W, H, .private, [.renderTarget, .shaderRead])
         self.fireHDR = tex(.rgba16Float, W, H, .private, [.renderTarget, .shaderRead])
@@ -372,6 +391,10 @@ final class RasterRenderer {
             vmScratch.withUnsafeBytes { _ = memcpy(vmBuf.contents(), $0.baseAddress!, nVMVerts * MemoryLayout<PVert>.stride) }
         }
 
+        // Which creatures will actually be drawn — decided BEFORE the command buffer opens, because
+        // it determines where the tonemap lands (see the composite pass below).
+        let vis = visibleCreatures(world, dir: p.dir)
+
         guard let cmd = queue.makeCommandBuffer() else { return false }
 
         // pass 1 — one shadow-depth slice per shadowed lamp, cast from its static position
@@ -477,33 +500,60 @@ final class RasterRenderer {
         var bv = Fx(a: SIMD4(0, 1.0 / Float(H), Float(W), Float(H)))
         fullscreen(blurPS, to: bloomA) { e in e.setFragmentBytes(&bv, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(bloomB, index: 0) }
         var cx = Fx(a: SIMD4(0.7, 0, Float(W), Float(H)))                            // bloom gain (dialled back — less blown-out)
-        fullscreen(compositePS, to: colTex) { e in
+        // With creatures merging on the GPU the tonemap lands in colSnap, because the creature passes
+        // both WRITE colTex and READ the pre-creature frame (a render target can't be sampled by the
+        // pass writing it). Nothing to draw — or the legacy read-back path — → straight to colTex.
+        let directCreatures = !vis.isEmpty && !creatureReadback
+        fullscreen(compositePS, to: directCreatures ? colSnap : colTex) { e in
             e.setFragmentBytes(&cx, length: MemoryLayout<Fx>.stride, index: 0)
             e.setFragmentTexture(frame, index: 0); e.setFragmentTexture(bloomA, index: 1); e.setFragmentTexture(perpTex, index: 2)
         }
         fpMark("encode")
+        // ── M4 creatures — rasterised STRAIGHT into the tonemapped frame, in THIS command buffer.
+        // They used to render offscreen, flush the queue, copy colour + perp back to the CPU and merge
+        // a million pixels by hand — per creature GROUP, so the cost stepped up and down with what was
+        // in view and rotating on the spot juddered. Now: two on-GPU snapshot copies, then the passes
+        // join the frame. fmain does the world-occlusion test and the fire wash itself, and every group
+        // shares one depth buffer, so creature-vs-creature ordering is exact rather than merge-order.
+        if directCreatures {
+            if let blit = cmd.makeBlitCommandEncoder() {
+                blit.copy(from: colSnap, to: colTex)       // carry the lit frame forward; creatures overwrite where they win
+                blit.copy(from: perpTex, to: perpSnap)      // the depth they test against
+                blit.endEncoding()
+            }
+            encodeCreatures(world, vis, into: .direct(cmd), eye: eye, dir: p.dir, dynLights: dynLights)
+        }
+        fpMark("creatures")          // CPU cost of posing + encoding them; their GPU cost lands in gpuWait
         cmd.commit(); cmd.waitUntilCompleted()
         fpMark("gpuWait")            // the CPU stalls here until the GPU has finished the whole frame
 
         colTex.getBytes(canvas.framebuffer, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
         fpMark("readbackColour")     // full-frame GPU→CPU copy
 
-        // ── M4 creatures + M5 particles/projectiles: both composite over the lit world against the
-        // scene's perp-depth. Read it back ONCE here (shared) if anything needs it; creatures merge
-        // first (writing their depth back), then the CPU sprite compositor draws particles + projectile
-        // billboards on top, occluded by both the world AND the creatures. ──
-        // (fire is already composited into colTex by the GPU pass above, before the readback)
-        let needDepth = !world.monsters.isEmpty || !world.colonists.isEmpty
-                     || !world.particles.isEmpty || !world.projectiles.isEmpty
-        if needDepth {
+        // perpTex → CPU. Needed by the particle compositor, and by the legacy creature merge. Creatures
+        // that merged on the GPU have already written their perp-depth into perpTex, so this ONE copy
+        // carries world + creatures; frames with nothing drifting and nothing to merge skip it entirely.
+        func readPerp() {
             perpScratch.withUnsafeMutableBytes {
                 perpTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
             }
         }
-        fpMark("readbackDepth")
-        compositeCreatures(world, into: canvas, eye: eye, dir: p.dir, dynLights: dynLights)
-        fpMark("creatures")
-        if !world.particles.isEmpty {                          // CPU smoke / embers / sparks drift over the flame
+        // Each mark below fires only when its work actually ran, so a stage that appears in the log
+        // always cost what the log says — a mark straddling a skipped block would hide the next
+        // stage's cost inside it.
+        var perpRead = false
+        if !vis.isEmpty && !directCreatures {              // legacy: read back, then merge on the CPU
+            readPerp(); perpRead = true
+            perpScratch.withUnsafeMutableBufferPointer { dp in
+                encodeCreatures(world, vis, into: .readback(canvas, dp.baseAddress!),
+                                eye: eye, dir: p.dir, dynLights: dynLights)
+            }
+            fpMark("creaturesCPU")
+        }
+        // ── M5 particles/projectiles ── the ONE remaining CPU compositor: smoke / embers / sparks drift
+        // over the flame, occluded by the world AND the creatures.
+        if !world.particles.isEmpty {
+            if !perpRead { readPerp(); fpMark("readbackDepth") }
             perpScratch.withUnsafeBufferPointer { dp in
                 spriteCompositor.overlayThings(world, into: canvas, depth: dp.baseAddress,
                                                includeProjectiles: false,      // projectiles are emissive orb+streak meshes (buildProps)
@@ -515,13 +565,17 @@ final class RasterRenderer {
         return true
     }
 
-    /// Draw the mesh creatures (fallen colonists, then the queen, then the drone pack) over the
-    /// framebuffer, each depth-tested against the scene's perp-depth (read back from perpTex) and
-    /// writing its own depth so later layers occlude correctly — mirrors GPUWorldRenderer's order.
-    /// Lit by the creature shader's own sector+camera fill (dynamic lights + wall-clip are deferred:
-    /// mapW/H = 0 disables the clip, an empty light list still lights them). Corpses render too.
-    private func compositeCreatures(_ world: World, into canvas: Canvas2D, eye: SIMD3<Float>, dir: Float,
-                                    dynLights: [GPURaymarch.GPULight]) {
+    /// The creatures that will be drawn this frame. Pure selection, no GPU work — the frame needs
+    /// the answer before it opens a command buffer, because an empty set means the tonemap can go
+    /// straight to colTex and skip both snapshot copies.
+    private struct VisibleCreatures {
+        var queens: [Monster] = []
+        var drones: [Monster] = []
+        var colonists: [Colonist] = []
+        var isEmpty: Bool { queens.isEmpty && drones.isEmpty && colonists.isEmpty }
+    }
+
+    private func visibleCreatures(_ world: World, dir: Float) -> VisibleCreatures {
         let p = world.player
         let fwd = SIMD2<Float>(cosf(dir), sinf(dir))
         // visible + capped creature set (nearest 10, Queen floated to front, behind-camera dropped)
@@ -537,66 +591,84 @@ final class RasterRenderer {
             if qa != qb { return qa }
             return a.1 < b.1
         }
-        let vis = cand.prefix(10).map { $0.0 }
-        let queens = vis.filter { $0.kind == .queen }
-        let drones = vis.filter { $0.kind == .alien && !$0.gibbed }
-        let colonists = FeatureFlags.fallenColonists ? world.colonists.filter { c in
+        let near = cand.prefix(10).map { $0.0 }
+        var v = VisibleCreatures()
+        v.queens = near.filter { $0.kind == .queen }
+        v.drones = near.filter { $0.kind == .alien && !$0.gibbed }
+        v.colonists = FeatureFlags.fallenColonists ? world.colonists.filter { c in
             guard c.variant >= 0 else { return false }
             let rel = c.pos - p.pos, ahead = rel.x * fwd.x + rel.y * fwd.y
             return ahead > -1.5 && (rel.x * rel.x + rel.y * rel.y) < 24 * 24
         } : []
+        return v
+    }
 
-        guard !queens.isEmpty || !drones.isEmpty || !colonists.isEmpty else { return }
+    /// Encode the mesh creatures (fallen colonists, then the queen, then the drone pack) into the
+    /// caller's command buffer, rasterising straight into the tonemapped frame. Every group shares
+    /// one depth buffer — cleared by whichever draws first — so creature-vs-creature occlusion is
+    /// resolved per-pixel by the z-test instead of by the order the groups were merged in. The
+    /// world-occlusion test and the fire wash happen in fmain against colSnap/perpSnap.
+    /// Lit by the creature shader's own sector+camera fill plus the transient COMBAT lights only
+    /// (nearest 12) — their baked `sector` already stands in for the room fixtures, so feeding
+    /// those too would double-light them. Corpses render as well as the living.
+    private enum CreatureMerge {
+        case direct(MTLCommandBuffer)                              // join the frame's command buffer
+        case readback(Canvas2D, UnsafeMutablePointer<Float>)        // legacy CPU merge (see creatureReadback)
+    }
 
-        // perpScratch already holds the scene perp-depth (read back in render()); the mesh merge
-        // tests + writes against it so later creatures/particles occlude correctly.
-        // M5: creatures take the transient COMBAT lights only (nearest 12) — their baked `sector`
-        // already stands in for the room fixtures, so feeding those too would double-light them.
+    private func encodeCreatures(_ world: World, _ vis: VisibleCreatures, into merge: CreatureMerge,
+                                 eye: SIMD3<Float>, dir: Float, dynLights: [GPURaymarch.GPULight]) {
+        let p = world.player
         let creatureLights = Array(dynLights.prefix(12))
-        perpScratch.withUnsafeMutableBufferPointer { dp in
-            let depth = dp.baseAddress!
-            // fallen colonists first (deck layer), batched per variant
-            if !colonists.isEmpty {
-                for v in Set(colonists.map { $0.variant }) {
-                    guard let mesh = colonistMesh(v) else { continue }
-                    let insts = colonists.filter { $0.variant == v }.map {
-                        MeshCreature.ColonistInst(pos: $0.pos, yaw: $0.yaw, seed: $0.seed, burn: $0.burn, ashed: $0.ashed,
-                                                  sector: WorldLight.lightAt(world.map, $0.pos.x, $0.pos.y))
-                    }
-                    mesh.compositeColonists(into: canvas, depth: depth, eye: eye, camDir: dir, instances: insts,
-                                            lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
-                }
+        var first = true                       // the first DIRECT pass clears the shared depth buffer
+        func frame() -> MeshCreature.Sink {
+            switch merge {
+            case .readback(let canvas, let depth): return .readback(canvas: canvas, depth: depth)
+            case .direct(let cmd):
+                defer { first = false }
+                return .direct(MeshCreature.Frame(cmd: cmd, colour: colTex, perp: perpTex, zbuf: zTex,
+                                                  colourSnapshot: colSnap, perpSnapshot: perpSnap, first: first))
             }
-            // the mesh Queen(s)
-            if let mc = meshQueen, !queens.isEmpty {
-                for q in queens {
-                    let death: Float
-                    if q.state == .dead { death = 1 }
-                    else if q.state == .dying { let f = min(1, (q.stateTime / World.queenDeathTime) / World.queenImpactT); death = f * f }
-                    else { death = 0 }
-                    mc.composite(into: canvas, depth: depth, eye: eye, dir: dir, pos: q.pos, faceTarget: p.pos,
-                                 sector: WorldLight.lightAt(world.map, q.pos.x, q.pos.y), time: world.elapsed, map: world.map,
-                                 death: death, burn: q.burn, ashed: q.ashed, lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
-                }
+        }
+        // fallen colonists first (deck layer), batched per variant
+        for v in Set(vis.colonists.map { $0.variant }) {
+            guard let mesh = colonistMesh(v) else { continue }
+            let insts = vis.colonists.filter { $0.variant == v }.map {
+                MeshCreature.ColonistInst(pos: $0.pos, yaw: $0.yaw, seed: $0.seed, burn: $0.burn, ashed: $0.ashed,
+                                          sector: WorldLight.lightAt(world.map, $0.pos.x, $0.pos.y))
             }
-            // the drone pack, one batched pass
-            if let md = meshDrone, !drones.isEmpty {
-                let insts: [MeshCreature.DroneInst] = drones.map { m in
-                    let death: Float
-                    if m.state == .dead { death = 1 }
-                    else if m.state == .dying { death = min(1, m.stateTime / World.droneDeathTime) }
-                    else { death = 0 }
-                    let move: Float
-                    switch m.state { case .chase: move = 1; case .pain: move = 0.5; case .attack: move = 0.35; default: move = 0 }
-                    let dissolve: Float = m.dissolving ? min(1, m.dissolveT / 1.8) : 0
-                    return MeshCreature.DroneInst(pos: m.pos, dir: m.dir, gait: m.animTime * 5.0, move: move, rear: m.rearAmt,
-                                                  dissolve: dissolve, seed: m.deathSeed, death: death, burn: m.burn, ashed: m.ashed,
-                                                  sector: WorldLight.lightAt(world.map, m.pos.x, m.pos.y))
-                }
-                md.compositeDrones(into: canvas, depth: depth, eye: eye, camDir: dir, instances: insts,
-                                   lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH), map: world.map,
-                                   props: world.propColliders)
+            mesh.compositeColonists(into: frame(), eye: eye, camDir: dir, instances: insts,
+                                    lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
+        }
+        // the mesh Queen(s)
+        if let mc = meshQueen {
+            for q in vis.queens {
+                let death: Float
+                if q.state == .dead { death = 1 }
+                else if q.state == .dying { let f = min(1, (q.stateTime / World.queenDeathTime) / World.queenImpactT); death = f * f }
+                else { death = 0 }
+                mc.composite(into: frame(), eye: eye, dir: dir, pos: q.pos, faceTarget: p.pos,
+                             sector: WorldLight.lightAt(world.map, q.pos.x, q.pos.y), time: world.elapsed, map: world.map,
+                             death: death, burn: q.burn, ashed: q.ashed, lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
             }
+        }
+        // the drone pack, one batched pass
+        if let md = meshDrone, !vis.drones.isEmpty {
+            let insts: [MeshCreature.DroneInst] = vis.drones.map { m in
+                let death: Float
+                if m.state == .dead { death = 1 }
+                else if m.state == .dying { death = min(1, m.stateTime / World.droneDeathTime) }
+                else { death = 0 }
+                let move: Float
+                switch m.state { case .chase: move = 1; case .pain: move = 0.5; case .attack: move = 0.35; default: move = 0 }
+                let dissolve: Float = m.dissolving ? min(1, m.dissolveT / 1.8) : 0
+                return MeshCreature.DroneInst(pos: m.pos, dir: m.dir, gait: m.animTime * 5.0, move: move, rear: m.rearAmt,
+                                              dissolve: dissolve, seed: m.deathSeed, death: death, burn: m.burn, ashed: m.ashed,
+                                              sector: WorldLight.lightAt(world.map, m.pos.x, m.pos.y))
+            }
+            md.compositeDrones(into: frame(), eye: eye, camDir: dir, instances: insts,
+                               lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH), map: world.map,
+                               props: world.propColliders)
         }
     }
 

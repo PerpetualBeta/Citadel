@@ -288,8 +288,18 @@ final class MeshCreature {
     fragment FOut fmain(VOut in [[stage_in]],
                         texture2d<float> albedo [[texture(0)]],
                         texture2d<float> wallField [[texture(1)]],
+                        texture2d<float> scenePerp [[texture(2)]],
+                        texture2d<float> sceneCol [[texture(3)]],
                         constant MLight* lights [[buffer(2)]],
                         constant Cam& C [[buffer(1)]]) {
+        // DIRECT mode (wallX.w = 1) — the creature is rasterising STRAIGHT into the caller's lit
+        // frame instead of onto its own offscreen sheet, so the two things the CPU merge used to
+        // do per pixel happen here instead: occlusion against the world's perp-depth (below), and
+        // the fire wash (at the bottom). Both read the frame as it stood BEFORE any creature drew.
+        // Testing depth FIRST also spares us lighting a pixel that a wall is going to hide.
+        uint2 px = uint2(in.clip.xy);
+        bool direct = C.wallX.w > 0.5;
+        if (direct && in.fdepth >= scenePerp.read(px).r) discard_fragment();
         // WALL CLIP — a CLEAN planar cull against the EXACT wall face the snout drives into (C.wall =
         // world plane (n.xyz, D); sd = dot(n,wpos) − D is >0 on the open side, <0 inside the wall). Cull
         // the flesh behind the face so the head is cut FLAT at the wall surface — it reads as the wall
@@ -375,6 +385,19 @@ final class MeshCreature {
         float fog = 1.0 - exp(-max(0.0, in.fdepth) * 0.045);
         float3 haze = (amb + sector) * 0.5 + 0.03;
         col = mix(col, haze, clamp(fog, 0.0, 1.0) * 0.7);
+        // DIRECT mode: a blaze in FRONT of the body should overwhelm it as it overwhelms the world
+        // behind it — but only the frame we already tonemapped knows how much fire is in this pixel,
+        // so read it. The test must be FIRE-SPECIFIC or an ordinary lit surface behind the body
+        // washes it out: real flame is SATURATED orange (high red, LOW blue), while a merely warm
+        // wall keeps plenty of blue and so must wash NOTHING. Clamp first — the CPU merge this
+        // replaces mixed 8-bit values, i.e. after the write had already clipped the highlights.
+        if (direct) {
+            float3 bg = sceneCol.read(px).rgb;
+            float orange = clamp(((bg.r - bg.b) - 0.40) / 0.30, 0.0, 1.0);   // 0 below Δ0.40 → 1 at Δ0.70
+            float bright = clamp((max(bg.r, bg.g) - 0.5) / 0.4, 0.0, 1.0);   // flame is bright, not a dark red tint
+            float fireness = orange * bright;
+            if (fireness > 0.02) col = mix(clamp(col, 0.0, 1.0), bg, min(1.0, fireness));
+        }
         FOut o; o.color = float4(col, 1.0); o.depth = in.fdepth; return o;
     }
     """
@@ -759,10 +782,108 @@ final class MeshCreature {
         return (SIMD4(nw3.x, nw3.y, nw3.z, dWorld), 1)
     }
 
+    // ── where a creature pass lands ───────────────────────────────────────────
+    // Two ways to get a mesh creature into the frame, and the difference is all cost:
+    //
+    //  .readback — render onto this MeshCreature's own offscreen sheet, flush the command
+    //    buffer, copy colour AND perp-depth back to the CPU (two full 1280×800 transfers),
+    //    then merge a million pixels by hand. Per creature GROUP. The raymarcher still
+    //    works this way because its world arrives on the CPU regardless.
+    //
+    //  .direct — join the caller's in-flight command buffer and rasterise into its lit
+    //    frame. No flush, no transfer, no CPU loop, and the depth test happens in fmain
+    //    against a snapshot of the scene perp. Every creature group in a frame shares one
+    //    depth buffer, so creature-vs-creature ordering falls out of the z-test exactly
+    //    rather than out of the order the groups happened to be merged in.
+    enum Sink {
+        case readback(canvas: Canvas2D, depth: UnsafeMutablePointer<Float>)
+        case direct(Frame)
+        var isDirect: Bool { if case .direct = self { return true }; return false }
+    }
+
+    /// The caller's frame, for `.direct`. Creatures write `colour` + `perp`; they READ the
+    /// snapshots, which must hold those two buffers as they stood before any creature drew
+    /// (a render target can't be sampled by the pass writing it).
+    struct Frame {
+        var cmd: MTLCommandBuffer
+        var colour: MTLTexture           // rgba8Unorm — the tonemapped frame
+        var perp: MTLTexture             // r32Float — scene perp-depth; overwritten where a creature wins
+        var zbuf: MTLTexture             // depth32Float — shared by every creature pass this frame
+        var colourSnapshot: MTLTexture   // `colour` before creatures — the fire wash reads it
+        var perpSnapshot: MTLTexture     // `perp` before creatures — the occlusion reference
+        var first: Bool                  // first creature pass of the frame → clear zbuf, else load it
+    }
+
+    /// Set up one creature pass against `sink` and hand the encoder to `draws` to push the
+    /// per-instance uniforms + submeshes. This was copied out three times (queen, drone pack,
+    /// colonists) with only the Cam construction differing, which is why the flame-coverage
+    /// tweak once had to be applied to each by hand.
+    private func encode(_ sink: Sink, wallField: MTLTexture?, lights: [GPURaymarch.GPULight],
+                        _ draws: (MTLRenderCommandEncoder) -> Void) {
+        let rp = MTLRenderPassDescriptor()
+        let cmd: MTLCommandBuffer
+        switch sink {
+        case .readback:
+            guard let c = queue.makeCommandBuffer() else { return }
+            cmd = c
+            rp.colorAttachments[0].texture = colTex
+            rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .store
+            rp.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+            rp.colorAttachments[1].texture = depTex
+            rp.colorAttachments[1].loadAction = .clear; rp.colorAttachments[1].storeAction = .store
+            rp.colorAttachments[1].clearColor = MTLClearColor(red: 1e9, green: 0, blue: 0, alpha: 0)
+            rp.depthAttachment.texture = zTex
+            rp.depthAttachment.loadAction = .clear; rp.depthAttachment.storeAction = .dontCare
+        case .direct(let f):
+            cmd = f.cmd
+            rp.colorAttachments[0].texture = f.colour
+            rp.colorAttachments[0].loadAction = .load; rp.colorAttachments[0].storeAction = .store
+            rp.colorAttachments[1].texture = f.perp
+            rp.colorAttachments[1].loadAction = .load; rp.colorAttachments[1].storeAction = .store
+            rp.depthAttachment.texture = f.zbuf
+            rp.depthAttachment.loadAction = f.first ? .clear : .load
+            rp.depthAttachment.storeAction = .store          // the next creature group loads it
+        }
+        rp.depthAttachment.clearDepth = 1.0
+
+        guard let enc = cmd.makeRenderCommandEncoder(descriptor: rp) else { return }
+        enc.setRenderPipelineState(pipe)
+        enc.setDepthStencilState(dss)
+        enc.setCullMode(.none)
+        enc.setFragmentTexture(albedo, index: 0)
+        enc.setFragmentTexture(wallField, index: 1)
+        if case .direct(let f) = sink {
+            enc.setFragmentTexture(f.perpSnapshot, index: 2)
+            enc.setFragmentTexture(f.colourSnapshot, index: 3)
+        } else {
+            enc.setFragmentTexture(nil, index: 2); enc.setFragmentTexture(nil, index: 3)   // never read (wallX.w = 0)
+        }
+        var lts = lights.isEmpty ? [GPURaymarch.GPULight(posR: .zero, colI: .zero)] : lights
+        enc.setFragmentBytes(&lts, length: MemoryLayout<GPURaymarch.GPULight>.stride * lts.count, index: 2)
+        for (i, vb) in mtk.vertexBuffers.enumerated() { enc.setVertexBuffer(vb.buffer, offset: vb.offset, index: i) }
+        draws(enc)
+        enc.endEncoding()
+
+        if case .readback(let canvas, let depth) = sink {
+            cmd.commit(); cmd.waitUntilCompleted()
+            mergeMeshOverFramebuffer(into: canvas, depth: depth)
+        }
+        // .direct: nothing to do — the caller commits once for the whole frame.
+    }
+
+    /// Push this mesh's submeshes through `enc` (the uniforms are already bound).
+    private func drawSubmeshes(_ enc: MTLRenderCommandEncoder) {
+        for sm in mtk.submeshes {
+            enc.drawIndexedPrimitives(type: sm.primitiveType, indexCount: sm.indexCount,
+                                      indexType: sm.indexType, indexBuffer: sm.indexBuffer.buffer,
+                                      indexBufferOffset: sm.indexBuffer.offset)
+        }
+    }
+
     /// Draw the creature at `pos` (world x,z; base on the floor). Body faces into the
     /// room (fixed); the head tracks `faceTarget`. `time` drives breathing/sway;
     /// `death` (0…1) slumps/topples/extinguishes her. Live-tunable via defaults.
-    func composite(into canvas: Canvas2D, depth: UnsafeMutablePointer<Float>,
+    func composite(into sink: Sink,
                    eye: SIMD3<Float>, dir: Float, pos: SIMD2<Float>,
                    faceTarget: SIMD2<Float>, sector: SIMD3<Float>, time: Float,
                    map: GameMap, death: Float, burn: Float, ashed: Float,
@@ -817,39 +938,13 @@ final class MeshCreature {
                       anim: SIMD4(headYaw, headPitch, breathe, sway),
                       misc: SIMD4(localHeight, 0.03 * aliveF, 0.02 * aliveF, time * 8.0 * animSpeed),   // .w = rapid howl-thrash phase
                       tune: SIMD4(lightGain, deathC, max(0, min(1, burn)), max(0, min(2, ashed))),
-                      wall: wall, wallX: SIMD4(on, 0, 0, 0))
+                      wall: wall, wallX: SIMD4(on, 0, 0, sink.isDirect ? 1 : 0))
 
-        let rp = MTLRenderPassDescriptor()
-        rp.colorAttachments[0].texture = colTex
-        rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .store
-        rp.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
-        rp.colorAttachments[1].texture = depTex
-        rp.colorAttachments[1].loadAction = .clear; rp.colorAttachments[1].storeAction = .store
-        rp.colorAttachments[1].clearColor = MTLClearColor(red: 1e9, green: 0, blue: 0, alpha: 0)
-        rp.depthAttachment.texture = zTex
-        rp.depthAttachment.loadAction = .clear; rp.depthAttachment.storeAction = .dontCare
-        rp.depthAttachment.clearDepth = 1.0
-
-        guard let cmd = queue.makeCommandBuffer(), let enc = cmd.makeRenderCommandEncoder(descriptor: rp) else { return }
-        enc.setRenderPipelineState(pipe)
-        enc.setDepthStencilState(dss)
-        enc.setCullMode(.none)
-        enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
-        enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
-        enc.setFragmentTexture(albedo, index: 0)
-        enc.setFragmentTexture(wallField, index: 1)
-        var lts = lights.isEmpty ? [GPURaymarch.GPULight(posR: .zero, colI: .zero)] : lights
-        enc.setFragmentBytes(&lts, length: MemoryLayout<GPURaymarch.GPULight>.stride * lts.count, index: 2)
-        for (i, vb) in mtk.vertexBuffers.enumerated() { enc.setVertexBuffer(vb.buffer, offset: vb.offset, index: i) }
-        for sm in mtk.submeshes {
-            enc.drawIndexedPrimitives(type: sm.primitiveType, indexCount: sm.indexCount,
-                                      indexType: sm.indexType, indexBuffer: sm.indexBuffer.buffer,
-                                      indexBufferOffset: sm.indexBuffer.offset)
+        encode(sink, wallField: wallField, lights: lights) { enc in
+            enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+            enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+            drawSubmeshes(enc)
         }
-        enc.endEncoding()
-        cmd.commit(); cmd.waitUntilCompleted()
-
-        mergeMeshOverFramebuffer(into: canvas, depth: depth)
     }
 
     // ── dossier portrait ──────────────────────────────────────────────────────
@@ -969,11 +1064,11 @@ final class MeshCreature {
         var sector: SIMD3<Float>
     }
 
-    /// Draw a whole PACK of drones in ONE offscreen pass + ONE readback + ONE
-    /// composite (drones spawn in numbers — per-instance readback would be brutal).
-    /// The shared depth buffer resolves inter-drone occlusion; each drone writes its
-    /// perp-depth so the composite occludes correctly against the world + particles.
-    func compositeDrones(into canvas: Canvas2D, depth: UnsafeMutablePointer<Float>,
+    /// Draw a whole PACK of drones in ONE pass (drones spawn in numbers — a pass each
+    /// would be brutal, and under `.readback` a read-back each would be worse). The
+    /// shared depth buffer resolves inter-drone occlusion; each drone writes its
+    /// perp-depth so the merge occludes correctly against the world + particles.
+    func compositeDrones(into sink: Sink,
                          eye: SIMD3<Float>, camDir: Float, instances: [DroneInst],
                          lights: [GPURaymarch.GPULight] = [],
                          wallField: MTLTexture?, mapW: Float, mapH: Float, map: GameMap? = nil,
@@ -990,70 +1085,45 @@ final class MeshCreature {
         let P = Self.proj(plane: RenderConfig.cameraPlane, horizon: Float(RenderConfig.horizon),
                           W: Float(W), H: Float(H), near: 0.05, far: 64)
 
-        let rp = MTLRenderPassDescriptor()
-        rp.colorAttachments[0].texture = colTex
-        rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .store
-        rp.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
-        rp.colorAttachments[1].texture = depTex
-        rp.colorAttachments[1].loadAction = .clear; rp.colorAttachments[1].storeAction = .store
-        rp.colorAttachments[1].clearColor = MTLClearColor(red: 1e9, green: 0, blue: 0, alpha: 0)
-        rp.depthAttachment.texture = zTex
-        rp.depthAttachment.loadAction = .clear; rp.depthAttachment.storeAction = .dontCare
-        rp.depthAttachment.clearDepth = 1.0
-
-        guard let cmd = queue.makeCommandBuffer(), let enc = cmd.makeRenderCommandEncoder(descriptor: rp) else { return }
-        enc.setRenderPipelineState(pipe)
-        enc.setDepthStencilState(dss)
-        enc.setCullMode(.none)
-        enc.setFragmentTexture(albedo, index: 0)
-        enc.setFragmentTexture(wallField, index: 1)
-        var lts = lights.isEmpty ? [GPURaymarch.GPULight(posR: .zero, colI: .zero)] : lights
-        enc.setFragmentBytes(&lts, length: MemoryLayout<GPURaymarch.GPULight>.stride * lts.count, index: 2)
         let nLights = Float(lights.count)
-        for (i, vb) in mtk.vertexBuffers.enumerated() { enc.setVertexBuffer(vb.buffer, offset: vb.offset, index: i) }
-        for inst in instances {
-            let rot = Self.Ry(front0 - inst.dir) * Self.S(scale) * Self.Rx(-Float.pi / 2)   // orientation only (translation-free)
-            let aimW = SIMD2<Float>(rot.columns.0.x, rot.columns.0.z)                        // world snout axis
-            let alive = inst.death < 0.5 && inst.dissolve < 0.5
-            var rpos = inst.pos
-            let wall = SIMD4<Float>.zero, on: Float = 0    // no wall-clip: both live drones and corpses now resolve WHOLE out of solids
-            if let m = map {
-                if alive {
-                    // LIVE drone: settle the WHOLE mesh (capsule tail→snout) clear of walls + furniture, so it
-                    // noses up to an obstruction whole — NO clip (flesh must never just vanish at a wall).
-                    rpos = Self.resolvePoseOutOfSolids(inst.pos, fwd: aimW, r: clr,
-                                                       back: bbMin.x * scale, front: bbMax.x * scale, map: m, props: props)
-                } else {
-                    // corpse / dissolving: settle the WHOLE fallen body clear of walls + furniture too — the same
-                    // capsule resolve as a live drone, NO clip, so a dead drone is never left buried in a wall.
-                    // A corpse gets a FATTER capsule: the death collapse sprawls it, so the live drone's slim
-                    // snout taper leaves real flesh outside the capsule — and a corpse never moves again, so a
-                    // body that settles inside a wall stays there for the rest of the level.
-                    rpos = Self.resolvePoseOutOfSolids(inst.pos, fwd: aimW, r: clr,
-                                                       back: bbMin.x * scale, front: bbMax.x * scale, map: m, props: props,
-                                                       taperMin: 0.8, doorsBlock: false)
+        let directFlag: Float = sink.isDirect ? 1 : 0
+        encode(sink, wallField: wallField, lights: lights) { enc in
+            for inst in instances {
+                let rot = Self.Ry(front0 - inst.dir) * Self.S(scale) * Self.Rx(-Float.pi / 2)   // orientation only (translation-free)
+                let aimW = SIMD2<Float>(rot.columns.0.x, rot.columns.0.z)                        // world snout axis
+                let alive = inst.death < 0.5 && inst.dissolve < 0.5
+                var rpos = inst.pos
+                let wall = SIMD4<Float>.zero, on: Float = 0    // no wall-clip: both live drones and corpses now resolve WHOLE out of solids
+                if let m = map {
+                    if alive {
+                        // LIVE drone: settle the WHOLE mesh (capsule tail→snout) clear of walls + furniture, so it
+                        // noses up to an obstruction whole — NO clip (flesh must never just vanish at a wall).
+                        rpos = Self.resolvePoseOutOfSolids(inst.pos, fwd: aimW, r: clr,
+                                                           back: bbMin.x * scale, front: bbMax.x * scale, map: m, props: props)
+                    } else {
+                        // corpse / dissolving: settle the WHOLE fallen body clear of walls + furniture too — the same
+                        // capsule resolve as a live drone, NO clip, so a dead drone is never left buried in a wall.
+                        // A corpse gets a FATTER capsule: the death collapse sprawls it, so the live drone's slim
+                        // snout taper leaves real flesh outside the capsule — and a corpse never moves again, so a
+                        // body that settles inside a wall stays there for the rest of the level.
+                        rpos = Self.resolvePoseOutOfSolids(inst.pos, fwd: aimW, r: clr,
+                                                           back: bbMin.x * scale, front: bbMax.x * scale, map: m, props: props,
+                                                           taperMin: 0.8, doorsBlock: false)
+                    }
                 }
-            }
-            let model = Self.T(rpos.x, 0, rpos.y) * rot
-            let mvp = P * V * model
-            var cam = Cam(model: model, mvp: mvp,
-                          eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(inst.sector, nLights),
-                          anim: SIMD4(inst.gait, inst.move, inst.rear, inst.dissolve),
-                          misc: SIMD4(localHeight, inst.seed, 0, 0),
-                          tune: SIMD4(lightGain, max(0, min(1, inst.death)), max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))),
-                          wall: wall, wallX: SIMD4(on, 0, 0, 0))
-            enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
-            enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
-            for sm in mtk.submeshes {
-                enc.drawIndexedPrimitives(type: sm.primitiveType, indexCount: sm.indexCount,
-                                          indexType: sm.indexType, indexBuffer: sm.indexBuffer.buffer,
-                                          indexBufferOffset: sm.indexBuffer.offset)
+                let model = Self.T(rpos.x, 0, rpos.y) * rot
+                let mvp = P * V * model
+                var cam = Cam(model: model, mvp: mvp,
+                              eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(inst.sector, nLights),
+                              anim: SIMD4(inst.gait, inst.move, inst.rear, inst.dissolve),
+                              misc: SIMD4(localHeight, inst.seed, 0, 0),
+                              tune: SIMD4(lightGain, max(0, min(1, inst.death)), max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))),
+                              wall: wall, wallX: SIMD4(on, 0, 0, directFlag))
+                enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+                enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+                drawSubmeshes(enc)
             }
         }
-        enc.endEncoding()
-        cmd.commit(); cmd.waitUntilCompleted()
-
-        mergeMeshOverFramebuffer(into: canvas, depth: depth)
     }
 
     struct ColonistInst {
@@ -1065,12 +1135,12 @@ final class MeshCreature {
         var sector: SIMD3<Float>
     }
 
-    /// Draw all the fallen colonists in view in ONE offscreen pass + ONE readback +
-    /// ONE composite (same batched machinery as the drones). Each corpse writes its
+    /// Draw all the fallen colonists in view in ONE pass (same batched machinery as
+    /// the drones — one Cam per body, one shared pass). Each corpse writes its
     /// perp-depth so the shared depth buffer resolves body-vs-body and body-vs-world
     /// occlusion. misc.z = 1 flags a corpse to fmain (kills the queen's ova-emissive
     /// and lends a lit pallor rather than the creature death-darken).
-    func compositeColonists(into canvas: Canvas2D, depth: UnsafeMutablePointer<Float>,
+    func compositeColonists(into sink: Sink,
                             eye: SIMD3<Float>, camDir: Float, instances: [ColonistInst],
                             lights: [GPURaymarch.GPULight] = [],
                             wallField: MTLTexture?, mapW: Float, mapH: Float) {
@@ -1085,48 +1155,23 @@ final class MeshCreature {
         let P = Self.proj(plane: RenderConfig.cameraPlane, horizon: Float(RenderConfig.horizon),
                           W: Float(W), H: Float(H), near: 0.05, far: 64)
 
-        let rp = MTLRenderPassDescriptor()
-        rp.colorAttachments[0].texture = colTex
-        rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .store
-        rp.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
-        rp.colorAttachments[1].texture = depTex
-        rp.colorAttachments[1].loadAction = .clear; rp.colorAttachments[1].storeAction = .store
-        rp.colorAttachments[1].clearColor = MTLClearColor(red: 1e9, green: 0, blue: 0, alpha: 0)
-        rp.depthAttachment.texture = zTex
-        rp.depthAttachment.loadAction = .clear; rp.depthAttachment.storeAction = .dontCare
-        rp.depthAttachment.clearDepth = 1.0
-
-        guard let cmd = queue.makeCommandBuffer(), let enc = cmd.makeRenderCommandEncoder(descriptor: rp) else { return }
-        enc.setRenderPipelineState(pipe)
-        enc.setDepthStencilState(dss)
-        enc.setCullMode(.none)
-        enc.setFragmentTexture(albedo, index: 0)
-        enc.setFragmentTexture(wallField, index: 1)
-        var lts = lights.isEmpty ? [GPURaymarch.GPULight(posR: .zero, colI: .zero)] : lights
-        enc.setFragmentBytes(&lts, length: MemoryLayout<GPURaymarch.GPULight>.stride * lts.count, index: 2)
         let nLights = Float(lights.count)
-        for (i, vb) in mtk.vertexBuffers.enumerated() { enc.setVertexBuffer(vb.buffer, offset: vb.offset, index: i) }
-        for inst in instances {
-            let model = Self.T(inst.pos.x, 0, inst.pos.y) * Self.Ry(front0 - inst.yaw) * Self.S(scale) * Self.Rx(-Float.pi / 2)
-            let mvp = P * V * model
-            var cam = Cam(model: model, mvp: mvp,
-                          eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(inst.sector, nLights),
-                          anim: .zero,
-                          misc: SIMD4(localHeight, inst.seed, 1.0, 0),   // .z = corpse flag (see fmain)
-                          tune: SIMD4(lightGain, 0, max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))),
-                          wall: .zero, wallX: .zero)
-            enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
-            enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
-            for sm in mtk.submeshes {
-                enc.drawIndexedPrimitives(type: sm.primitiveType, indexCount: sm.indexCount,
-                                          indexType: sm.indexType, indexBuffer: sm.indexBuffer.buffer,
-                                          indexBufferOffset: sm.indexBuffer.offset)
+        let directFlag: Float = sink.isDirect ? 1 : 0
+        encode(sink, wallField: wallField, lights: lights) { enc in
+            for inst in instances {
+                let model = Self.T(inst.pos.x, 0, inst.pos.y) * Self.Ry(front0 - inst.yaw) * Self.S(scale) * Self.Rx(-Float.pi / 2)
+                let mvp = P * V * model
+                var cam = Cam(model: model, mvp: mvp,
+                              eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(inst.sector, nLights),
+                              anim: .zero,
+                              misc: SIMD4(localHeight, inst.seed, 1.0, 0),   // .z = corpse flag (see fmain)
+                              tune: SIMD4(lightGain, 0, max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))),
+                              wall: .zero, wallX: SIMD4(0, 0, 0, directFlag))
+                enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+                enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
+                drawSubmeshes(enc)
             }
         }
-        enc.endEncoding()
-        cmd.commit(); cmd.waitUntilCompleted()
-
-        mergeMeshOverFramebuffer(into: canvas, depth: depth)
     }
 
     /// Read back the mesh offscreen (colour + perp-depth) and merge it over the

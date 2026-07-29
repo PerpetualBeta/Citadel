@@ -98,7 +98,8 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Harness/QueenMock.swift \
                     Sources/Harness/QueenMeshTest.swift \
                     Sources/Harness/RigProbe.swift \
-                    Sources/Harness/ProofRoom.swift
+                    Sources/Harness/ProofRoom.swift \
+                    Sources/Harness/CreatureMergeProbe.swift
 
 PACKAGE_TYPE     := zip
 ALSO_SHIP_PKG    := true

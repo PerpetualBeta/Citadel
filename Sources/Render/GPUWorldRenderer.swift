@@ -664,7 +664,8 @@ final class GPUWorldRenderer {
                 for v in Set(visColonists.map { $0.variant }) {
                     guard let mesh = colonistMesh(v) else { continue }
                     let insts = visColonists.filter { $0.variant == v }.map(inst)
-                    mesh.compositeColonists(into: canvas, depth: dp.baseAddress!, eye: eye, camDir: p.dir, instances: insts,
+                    mesh.compositeColonists(into: .readback(canvas: canvas, depth: dp.baseAddress!),
+                                            eye: eye, camDir: p.dir, instances: insts,
                                             lights: meshLights, wallField: dtTex, mapW: Float(gpuMapW), mapH: Float(gpuMapH))
                 }
             }
@@ -683,7 +684,7 @@ final class GPUWorldRenderer {
                         let f = min(1, (q.stateTime / World.queenDeathTime) / World.queenImpactT)
                         death = f * f
                     } else { death = 0 }
-                    mc.composite(into: canvas, depth: dp.baseAddress!, eye: eye, dir: p.dir,
+                    mc.composite(into: .readback(canvas: canvas, depth: dp.baseAddress!), eye: eye, dir: p.dir,
                                  pos: q.pos, faceTarget: p.pos, sector: sector, time: world.elapsed,
                                  map: world.map, death: death, burn: q.burn, ashed: q.ashed,
                                  lights: meshLights,
@@ -719,7 +720,8 @@ final class GPUWorldRenderer {
                     sector: WorldLight.lightAt(world.map, m.pos.x, m.pos.y))
             }
             gpuDepth.withUnsafeMutableBufferPointer { dp in
-                md.compositeDrones(into: canvas, depth: dp.baseAddress!, eye: eye, camDir: p.dir, instances: insts,
+                md.compositeDrones(into: .readback(canvas: canvas, depth: dp.baseAddress!),
+                                   eye: eye, camDir: p.dir, instances: insts,
                                    lights: meshLights,
                                    wallField: dtTex, mapW: Float(gpuMapW), mapH: Float(gpuMapH), map: world.map,
                                    props: world.propColliders)

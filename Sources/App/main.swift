@@ -30,7 +30,8 @@ for key in ["CITADEL_SMOKE", "CITADEL_FITSHOT", "CITADEL_LOADPROBE", "CITADEL_TI
             "CITADEL_SHOTS", "CITADEL_MATERIALS",
             "CITADEL_AUTOMAP", "CITADEL_ROOMS", "CITADEL_DISPLAYVID",
             "CITADEL_TITLESHOT", "CITADEL_CLUSTERSHOT", "CITADEL_QUEENMOCK", "CITADEL_QUEENMESH",
-            "CITADEL_MESHVERIFY", "CITADEL_DRONEMESH", "CITADEL_COLONISTMESH", "CITADEL_CORPSES", "CITADEL_DECKCHECK", "CITADEL_TERMSHOT", "CITADEL_PROOFROOM", "CITADEL_RASTERSHOT"]
+            "CITADEL_MESHVERIFY", "CITADEL_DRONEMESH", "CITADEL_COLONISTMESH", "CITADEL_CORPSES", "CITADEL_DECKCHECK", "CITADEL_TERMSHOT", "CITADEL_PROOFROOM", "CITADEL_RASTERSHOT",
+            "CITADEL_CREATUREPROBE"]
     where ProcessInfo.processInfo.environment[key] != nil {
     setenv("CITADEL_MUTE", "1", 1)
     break
@@ -541,6 +542,14 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_PROOFROOM"] {
 
 if let v = ProcessInfo.processInfo.environment["CITADEL_RASTERSHOT"] {
     RasterRenderer.shot(outDir: v.isEmpty || v == "1" ? nil : v)
+    exit(0)
+}
+
+// CITADEL_CREATUREPROBE[=dir] → render the same creature scenes through BOTH merge paths
+// (GPU-direct vs the legacy CPU read-back) and diff the pixels. Proves the merge rewrite
+// faithful and prints the speed-up.
+if let v = ProcessInfo.processInfo.environment["CITADEL_CREATUREPROBE"] {
+    CreatureMergeProbe.run(outDir: v.isEmpty || v == "1" ? nil : v)
     exit(0)
 }
 
