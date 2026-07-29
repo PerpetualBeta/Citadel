@@ -1270,6 +1270,56 @@ final class World {
         damageMonster(i, amt, audio: audio, kind: kind)
     }
 
+    /// A drone torn apart: chunks arcing out, blood sheeting, offal strewn on the deck — and
+    /// NO corpse, so nothing to collide with, nothing to jam a door, nothing to cremate.
+    ///
+    /// `heavy` is the ROCKET's blast, exactly as it has always been authored. Plasma makes the
+    /// same wound at a fraction of the spectacle, and that is a BUDGET decision before it is an
+    /// aesthetic one. The heavy burst costs 286 particles against a cap of 700 and 22 decals
+    /// against a `decalCap` of 72 — affordable because rockets are scarce and it happens two or
+    /// three times a floor. Plasma is the workhorse: thirty kills a floor at heavy cost would
+    /// recycle the whole decal buffer nine times over, so every kill but the last two or three
+    /// would have its gore evicted — including the plain blood pool each one lays down. Scaled
+    /// down it spends 3 decal slots, so most of a fight stays readable on the deck.
+    ///
+    /// It also keeps a rocket FEELING like a rocket. If a plasma bolt produced identical carnage
+    /// the scarce weapon would lose the thing that makes it worth saving.
+    private func gibDrone(_ m: inout Monster, heavy: Bool) {
+        m.gibbed = true                 // culled from the draw list — no posture, no corpse
+        m.burn = 1                      // nothing left to burn; the way is already clear
+        // Counts scale hard, velocities gently: a plasma wound is TIGHTER, not merely smaller.
+        // A bolt punches through where a warhead throws the body outward, so the debris field
+        // should shrink faster than the amount of debris.
+        let count: Float = heavy ? 1 : 0.34
+        let hurl: Float = heavy ? 1 : 0.62
+        func n(_ full: Int) -> Int { max(3, Int((Float(full) * count).rounded())) }
+        spawnParticles(at: m.pos, n: n(150), color: packRGBA(160, 18, 16), spread: 7.5 * hurl, life: 0.85)
+        spawnParticles(at: m.pos, n: n(70), color: packRGBA(96, 12, 12), spread: 5.0 * hurl, life: 1.2)
+        spawnParticles(at: m.pos, n: n(44), color: packRGBA(200, 40, 30), spread: 8.5 * hurl, life: 0.6)   // a brighter arterial spray
+        for _ in 0..<n(22) {                           // heavier chunks arcing out
+            let a = rng.f(0, 6.2832), sp = rng.f(1.5, 5.5) * hurl
+            particles.append(Particle(pos: m.pos, vel: SIMD2(cos(a) * sp, sin(a) * sp),
+                                      life: rng.f(0.5, 1.0), maxLife: 1.0, color: packRGBA(120, 16, 14),
+                                      size: rng.f(3.5, 7.5), height: rng.f(0.2, 0.6), rise: rng.f(-0.9, -0.3),
+                                      maxAlpha: 1))
+        }
+        // DECALS are the constrained resource (72 total, ambient ones protected), so they get
+        // explicit counts rather than the particle scale — the difference between 22 and 3 a
+        // kill is what decides whether a fought-over room still shows the fight.
+        for _ in 0..<(heavy ? 12 : 2) {
+            let a = rng.f(0, 6.2832), r = rng.f(0.4, 2.4) * hurl
+            addDecal(m.pos + SIMD2(cos(a) * r, sin(a) * r), radius: rng.f(0.3, 0.75), w: -0.7)
+        }
+        // entrails as OFFAL DECALS (w < -2): chunky strewn-meat masks on
+        // the deck — flat, so they read right at any scale (solids for
+        // gore rendered as glossy furniture)
+        addDecal(m.pos, radius: rng.f(0.7, 1.1) * (heavy ? 1 : 0.72), w: -2.85)
+        for _ in 0..<(heavy ? 9 : 0) {
+            let a = rng.f(0, 6.2832), r = rng.f(0.35, 1.7)
+            addDecal(m.pos + SIMD2(cos(a) * r, sin(a) * r), radius: rng.f(0.3, 0.6), w: -rng.f(2.5, 2.9))
+        }
+    }
+
     private func damageMonster(_ i: Int, _ amt: Int, audio: AudioEngine, kind: DamageKind = .generic) {
         var m = monsters[i]
         if !m.alive { return }
@@ -1308,43 +1358,37 @@ final class World {
             //  recorded beast scream, long enough to ride the rear-and-convulse —
             //  played by audio.monsterDeath below like any other kill)
             audio.monsterDeath(m.kind)
+            // ── DISPOSAL: what is left of the body ─────────────────────────────────
+            // With CleanDroneDeaths on, a drone LEAVES NOTHING. Whatever killed it disposes
+            // of it where it stood, so the crumple-to-corpse posture — and with it the
+            // corpse's collider, its door-jamming, and the fuel spent cremating it — belongs
+            // to the QUEEN alone. She is one kill a floor and her topple is a set piece worth
+            // the trouble; a drone is thirty, and the moment of collapse is where nearly all
+            // of the creatures' visual trouble came from (limbs swinging through walls).
+            //   rocket → the full blast · plasma → the same wound, a third of the show
+            //   flamer → chars where it stands · acid → the pool takes it
+            let cleanDrone = FeatureFlags.cleanDroneDeaths && m.kind == .alien
             if kind == .explosive && m.kind == .alien {
-                // OBLITERATED — the blast tears the drone apart: the death pose is
-                // the gib burst (chunks flying), blood sheets out, entrails splatter
-                // the room as persistent organic debris + satellite splats — and
-                // there is no corpse left to burn; the way is already clear.
-                m.gibbed = true
-                m.burn = 1
-                spawnParticles(at: m.pos, n: 150, color: packRGBA(160, 18, 16), spread: 7.5, life: 0.85)
-                spawnParticles(at: m.pos, n: 70, color: packRGBA(96, 12, 12), spread: 5.0, life: 1.2)
-                spawnParticles(at: m.pos, n: 44, color: packRGBA(200, 40, 30), spread: 8.5, life: 0.6)   // a brighter arterial spray
-                for _ in 0..<22 {                              // heavier chunks arcing out
-                    let a = rng.f(0, 6.2832), sp = rng.f(1.5, 5.5)
-                    particles.append(Particle(pos: m.pos, vel: SIMD2(cos(a) * sp, sin(a) * sp),
-                                              life: rng.f(0.5, 1.0), maxLife: 1.0, color: packRGBA(120, 16, 14),
-                                              size: rng.f(3.5, 7.5), height: rng.f(0.2, 0.6), rise: rng.f(-0.9, -0.3),
-                                              maxAlpha: 1))
-                }
-                for _ in 0..<12 {
-                    let a = rng.f(0, 6.2832), r = rng.f(0.4, 2.4)
-                    addDecal(m.pos + SIMD2(cos(a) * r, sin(a) * r), radius: rng.f(0.3, 0.75), w: -0.7)
-                }
-                // entrails as OFFAL DECALS (w < -2): chunky strewn-meat masks on
-                // the deck — flat, so they read right at any scale (solids for
-                // gore rendered as glossy furniture)
-                addDecal(m.pos, radius: rng.f(0.7, 1.1), w: -2.85)
-                for _ in 0..<9 {
-                    let a = rng.f(0, 6.2832), r = rng.f(0.35, 1.7)
-                    addDecal(m.pos + SIMD2(cos(a) * r, sin(a) * r), radius: rng.f(0.3, 0.6), w: -rng.f(2.5, 2.9))
-                }
+                gibDrone(&m, heavy: true)
             } else if !m.gibbed && map.hazard[map.idx(Int(m.pos.x), Int(m.pos.y))] {
                 // it died IN the acid: the pool takes the body — it sinks and
-                // dissolves (no floating corpse, nothing to burn)
+                // dissolves (no floating corpse, nothing to burn). Ahead of the plasma
+                // case deliberately: both leave no corpse, so the sink is kept for the
+                // one that already looks right.
                 m.dissolving = true
+            } else if cleanDrone && kind == .plasma {
+                gibDrone(&m, heavy: false)
             } else if kind == .fire {
                 // torched alive: the drone drops and IGNITES where it stands — it
                 // burns straight down to char without a second flamethrower pass
                 m.burn = max(m.burn, 0.06)
+            } else if cleanDrone {
+                // .generic — UNREACHABLE with the shipping arsenal: all three weapons are
+                // hitscan:false, so the only source is the acid handled above. It is here so
+                // the guarantee is STRUCTURAL rather than a fact about today's weapon table.
+                // Add a weapon tomorrow and a drone still cannot come back as a crumpling
+                // corpse through a path nobody thought to check.
+                gibDrone(&m, heavy: false)
             }
             if m.kind == .queen { m.revive = queenReviveWindow }   // the BURN message lands with her impact
         } else {

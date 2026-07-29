@@ -437,6 +437,94 @@ extension RasterRenderer {
             } }
         }
 
+        // GIB TIERS — the two ways a drone is disposed of, one frame each. CleanDroneDeaths bursts a
+        // drone on a PLASMA kill as well as a rocket one, at a third of the spectacle, because the
+        // rocket blast spends 22 of `decalCap`'s 72 slots: affordable two or three times a floor, not
+        // thirty. Before these frames shotcheck was BLIND to the whole change — the only existing frame
+        // with a dead drone in it (raster-fire-pyre) is a FIRE death, which still leaves a corpse.
+        //
+        // THREE frames: one kill of each tier, plus a PACK.
+        //
+        // The singles are the sensitive baseline. A frame pinned at the particle cap and the decal cap
+        // at once cannot detect a regression — nothing can move it, because nothing has room to move —
+        // and at saturation the two tiers render identically, so a single kill at conversational range
+        // is what shows the difference in count, spread and footprint.
+        //
+        // The PACK frame is the worst case, and it is a REAL one. `explode()` damages every monster
+        // inside the blast in the same call, a rocket's splash is 2.0 cells, and drones pack to a
+        // 0.8-cell gap — so one rocket into a group kills six at the same instant. (The smoke test
+        // already asserts this for mines: trigger drone AND rim packmate die.) I first wrote that
+        // frame off as a scenario play would not produce, which was simply wrong, and it was the
+        // frame telling me something true: six simultaneous kills stamp 60 offal decals into a
+        // 72-slot buffer, so the deck goes uniformly red and most of the gore is evicted on arrival.
+        // That is PRE-EXISTING behaviour, not something the plasma tier introduced — but it is why
+        // the plasma tier is scaled down, because clean deaths make the flood reachable far more often.
+        //
+        // (The budget numbers are asserted in the smoke test, where measuring belongs.)
+        //
+        // Audio is safe to construct here: CITADEL_RASTERSHOT is in main.swift's forced-mute list, so
+        // the engine never opens an output device.
+        do {
+            let audio = AudioEngine()
+            for (name, dmg) in [("plasma", DamageKind.plasma), ("rocket", DamageKind.explosive)] {
+                let world = World(level: 1, colonyIndex: 0, seed: 3)
+                let m = world.map
+                func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+                world.colonists = []; world.props = []; world.drums = []
+                let drone = world.monsters.first(where: { $0.kind == .alien })
+                search: for cy in 8..<(m.h - 4) { for cx in 4..<(m.w - 4) where cx % 4 == 2 && cy % 4 == 2 && op(cx, cy) {
+                    guard op(cx, cy - 1), op(cx, cy - 2), op(cx, cy - 3), op(cx, cy - 4) else { continue }
+                    world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy) + 0.5)
+                    world.player.dir = -.pi / 2                                  // look down −Z
+                    guard var d = drone else { break search }
+                    d.pos = SIMD2(Float(cx) + 0.5, Float(cy - 3) + 0.5)          // 3 cells ahead, centred
+                    d.state = .chase; d.awake = true; d.burn = 0; d.gibbed = false
+                    world.monsters = [d]
+                    world.damageMonsterForTest(0, 999, audio: audio, kind: dmg)
+                    // 5 frames: the chunks are still airborne and the decals are already down, so one
+                    // frame carries both the spectacle and the footprint it leaves.
+                    for _ in 0..<5 { world.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+                    _ = rr.render(world, into: canvas)
+                    Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1,
+                                      to: dir.appendingPathComponent("raster-gib-\(name).png"))
+                    print("RASTERSHOT: wrote raster-gib-\(name).png (burst \(world.monsters[0].gibbed), \(world.decals.filter { $0.w < -2 }.count) offal decals, \(world.particles.count) particles aloft)")
+                    break search
+                } }
+            }
+            // ── ONE ROCKET, SIX DRONES ── the simultaneous multi-kill, through the real splash path
+            // rather than by hand: a live rocket detonated in the middle of a pack, so `explode()`
+            // decides who dies exactly as it does in play.
+            let world = World(level: 1, colonyIndex: 0, seed: 3)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+            world.colonists = []; world.props = []; world.drums = []
+            let drone = world.monsters.first(where: { $0.kind == .alien })
+            search: for cy in 8..<(m.h - 4) { for cx in 4..<(m.w - 4) where cx % 4 == 2 && cy % 4 == 2 && op(cx, cy) {
+                guard op(cx, cy - 1), op(cx, cy - 2), op(cx, cy - 3), op(cx, cy - 4) else { continue }
+                world.player.pos = SIMD2(Float(cx) + 0.5, Float(cy) + 0.5)
+                world.player.dir = -.pi / 2
+                guard var d = drone else { break search }
+                world.monsters = []
+                // packed at the AI's own separation floor (0.8 cells) inside the 2.0-cell splash
+                let hub = SIMD2<Float>(Float(cx) + 0.5, Float(cy - 3) + 0.5)
+                for k in 0..<6 {
+                    let a = Float(k) * 1.047                                 // six around the hub
+                    d.pos = hub + SIMD2(cosf(a), sinf(a)) * (k == 0 ? 0 : 0.8)
+                    guard op(Int(d.pos.x), Int(d.pos.y)) else { continue }
+                    d.state = .chase; d.awake = true; d.burn = 0; d.gibbed = false
+                    world.monsters.append(d)
+                }
+                let packed = world.monsters.count
+                world.projectiles.append(Projectile(pos: hub, vel: .zero, kind: .rocket, damage: 999, fromPlayer: true, life: 0.01))
+                for _ in 0..<6 { world.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1,
+                                  to: dir.appendingPathComponent("raster-gib-pack.png"))
+                print("RASTERSHOT: wrote raster-gib-pack.png (\(packed) packed, \(world.monsters.filter { $0.gibbed }.count) burst by ONE rocket, \(world.decals.filter { $0.w < -2 }.count) of 60 offal decals survived the 72-slot cap)")
+                break search
+            } }
+        }
+
         // DISPLAY WALL check: paint a 3-wide amber CRT bank on a wall ahead and render it at THREE times —
         // verify the live animated monitors (scrolling log / oscilloscope / spectrum / dashboard) genuinely
         // MOVE frame-to-frame, glow and bloom, plus the surrounding walls now carry their baked art.

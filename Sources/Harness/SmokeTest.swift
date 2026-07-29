@@ -368,6 +368,12 @@ enum SmokeTest {
         // index 0, which is the QUEEN — and queenDeathTime is 2.8 s, so the 40-frame wait below could
         // never see her reach `.dead`. The whole passage is written around a drone corpse (0.45 s to
         // fall, then burnable), so name the caste rather than trust the array order.
+        // CleanDroneDeaths forced OFF for this passage. It is on by default and a plasma kill then
+        // gibs the drone, which would leave nothing to cremate and make every corpse check below
+        // vacuously true — the same trap the plasma choice below was written to avoid. Both
+        // mechanisms ship while the flag exists, so both are tested; the key is restored after.
+        let hadClean = UserDefaults.standard.object(forKey: "CleanDroneDeaths")
+        UserDefaults.standard.set(false, forKey: "CleanDroneDeaths")
         if let mi = fw.monsters.firstIndex(where: { $0.alive && $0.kind == .alien }) {
             let cpos = fw.monsters[mi].pos
             // Plasma, deliberately — DamageKind.explosive GIBS a drone and leaves nothing to burn,
@@ -389,6 +395,79 @@ enum SmokeTest {
             check(fw.monsters.contains { $0.state == .dead && $0.burn >= 1 }, "corpse burns to charred remains")
             check(fw.decals.contains { $0.w > 0 && $0.w <= 1 }, "burned-out corpse stamps a scorch decal")
             check(fw.decals.contains { $0.w > 2 }, "burned-out corpse stamps smoldering ash")
+            check(fw.monsters.contains { $0.state == .dead || $0.state == .dying }, "flag OFF: the drone still collapses to a corpse")
+        }
+        if let h = hadClean { UserDefaults.standard.set(h, forKey: "CleanDroneDeaths") }
+        else { UserDefaults.standard.removeObject(forKey: "CleanDroneDeaths") }
+
+        // ── CLEAN DRONE DEATHS ── the drone that leaves nothing. Asserted BOTH WAYS: the block above
+        // proves the collapse still happens with the flag off, this one proves plasma disposes of the
+        // body with it on. One direction alone would not distinguish "the flag works" from "the flag
+        // is ignored and drones never crumpled anyway".
+        do {
+            UserDefaults.standard.removeObject(forKey: "CleanDroneDeaths")      // default = ON
+            check(FeatureFlags.cleanDroneDeaths, "CleanDroneDeaths defaults ON")
+            /// Kill the first drone with `weapon` and report what was left of it.
+            func killDrone(_ weapon: ProjectileKind) -> (gibbed: Bool, burn: Float, corpses: Int, offal: Int)? {
+                let w = World(level: 1, colonyIndex: 0, seed: 99)
+                guard let mi = w.monsters.firstIndex(where: { $0.alive && $0.kind == .alien }) else { return nil }
+                w.projectiles.append(Projectile(pos: w.monsters[mi].pos, vel: .zero, kind: weapon,
+                                                damage: 999, fromPlayer: true, life: 0.01))
+                for _ in 0..<40 { w.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+                return (w.monsters[mi].gibbed, w.monsters[mi].burn,
+                        w.monsters.filter { $0.state == .dead && !$0.gibbed }.count,
+                        w.decals.filter { $0.w < -2 }.count)
+            }
+            if let plasma = killDrone(.plasma), let rocket = killDrone(.rocket) {
+                check(plasma.gibbed, "flag ON: a plasma kill bursts the drone (no posture change)")
+                // burn ≥ 0.85 is the EXACT condition the corpse collider (World.free) and the
+                // door-occupancy set both test, so this one number is why a burst drone can never
+                // block a corridor or jam a door on you.
+                check(plasma.burn >= 1, "flag ON: nothing left to cremate — burn \(String(format: "%.2f", plasma.burn))")
+                check(plasma.corpses == 0, "flag ON: a plasma kill leaves no corpse anywhere (\(plasma.corpses))")
+                check(rocket.gibbed, "a rocket kill still bursts the drone")
+                // THE BUDGET CLAIM, asserted rather than trusted. decalCap is 72 and the rocket
+                // blast spends 22 of them; plasma is the workhorse at ~30 kills a floor, so if it
+                // ever spent the same the buffer would recycle nine times over and every kill but
+                // the last two would have its gore evicted. Offal (w < −2) is the discriminator:
+                // the blast strews 10, the bolt leaves 1.
+                check(plasma.offal < rocket.offal,
+                      "a plasma burst is decal-cheap beside the blast (offal \(plasma.offal) vs \(rocket.offal))")
+            }
+            // THE PLASMA BURST DOES NOT SPLASH. Each drone takes three direct hits and bursts ALONE —
+            // the gore is cosmetic, not a detonation. Asserted because the tempting implementation is
+            // to reuse `explode()` for the effect, which would silently turn a packed group into a
+            // chain reaction: a large balance change arriving as a rendering convenience. A rocket
+            // into the same pack SHOULD take the group, and does (splash 2.0 cells), so the two are
+            // measured against each other here rather than in isolation.
+            let pw = World(level: 1, colonyIndex: 0, seed: 3)
+            if let base = pw.monsters.first(where: { $0.kind == .alien }) {
+                var d = base
+                let hub = pw.monsters[0].pos
+                pw.monsters = []
+                for k in 0..<6 {                                  // packed at the AI's own separation floor
+                    let a = Float(k) * 1.047
+                    d.pos = hub + SIMD2(cosf(a), sinf(a)) * (k == 0 ? 0 : 0.8)
+                    guard !pw.map.blocksMovement(Int(d.pos.x), Int(d.pos.y)) else { continue }
+                    d.state = .chase; d.awake = true; d.burn = 0; d.gibbed = false
+                    pw.monsters.append(d)
+                }
+                if pw.monsters.count >= 4 {
+                    let packed = pw.monsters.count
+                    pw.damageMonsterForTest(0, 999, audio: audio, kind: .plasma)
+                    let burst = pw.monsters.filter { $0.gibbed }.count
+                    check(burst == 1, "a plasma kill bursts ONE drone in a pack of \(packed), not the pack (\(burst))")
+                    check(pw.monsters.filter { $0.alive }.count == packed - 1,
+                          "the other \(packed - 1) drones in the pack are untouched")
+                    // the contrast: one rocket in the same pack SHOULD take the group
+                    let rw = World(level: 1, colonyIndex: 0, seed: 3)
+                    rw.monsters = pw.monsters.map { var m = $0; m.gibbed = false; m.burn = 0; m.health = base.health; m.state = .chase; return m }
+                    rw.projectiles.append(Projectile(pos: hub, vel: .zero, kind: .rocket, damage: 999, fromPlayer: true, life: 0.01))
+                    rw.update(dt: 1.0 / 60, input: InputState(), audio: audio)
+                    check(rw.monsters.filter { $0.gibbed }.count > 1,
+                          "one rocket in the same pack takes the group (\(rw.monsters.filter { $0.gibbed }.count) of \(packed))")
+                }
+            }
         }
         // ── PLANT MACHINERY HUM ── the compressors' proximity bed on floors 7–8. Asserted rather than
         // listened to: it has to be SILENT where there is no machinery, and it has to SWELL as you

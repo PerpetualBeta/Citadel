@@ -28,16 +28,20 @@ enum FeatureFlags {
     static var revealMap: Bool  { d.bool(forKey: "RevealMap") }   // automap fully revealed
     static var fastMonsters: Bool { d.bool(forKey: "FastMonsters") } // -nightmare- speed
 
-    /// Rasterised world renderer (dev, in progress) — real triangle meshes + PBR +
-    /// a shadow-mapped key light, built ALONGSIDE the SDF raymarcher. Off by default;
-    /// flip to A/B against the raymarcher live:
-    ///   defaults write cc.jorviksoftware.Citadel RasterRenderer -bool true
-    static var rasterRenderer: Bool { d.bool(forKey: "RasterRenderer") }
-
     /// The marine's headlamp in the rasterised renderer. Default ON; disable to judge
     /// the world lit purely by its OWN fixtures (lamps + emissive + baked propagation):
     ///   defaults write cc.jorviksoftware.Citadel Headlamp -bool false
     static var headlamp: Bool { d.object(forKey: "Headlamp") == nil ? true : d.bool(forKey: "Headlamp") }
+
+    /// CLEAN DRONE DEATHS — a drone never crumples. Plasma bursts it apart the way a
+    /// rocket does (smaller, tighter), and with no corpse left there is nothing to walk
+    /// around, nothing to jam a door, and no fuel spent cremating it. The collapse
+    /// posture becomes the Queen's alone — she is one kill a floor and worth the
+    /// trouble, where a drone is thirty and the crumple was the source of most of the
+    /// visual trouble creatures gave us. Default ON; set false to A/B against the
+    /// collapsing corpse:
+    ///   defaults write cc.jorviksoftware.Citadel CleanDroneDeaths -bool false
+    static var cleanDroneDeaths: Bool { d.object(forKey: "CleanDroneDeaths") == nil ? true : d.bool(forKey: "CleanDroneDeaths") }
 
     /// Volumetric GPU fire — the flamethrower jet and corpse pyres rendered as
     /// procedural, domain-warped flame tongues in the raymarch kernel (plus their
