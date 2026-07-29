@@ -87,6 +87,12 @@ final class RasterRenderer {
     private var hallLamps: [SIMD3<Float>] = []  // downlights slung under the halls' roof trusses (see buildHallSteelwork)
     private var pipeVerts = 0                  // vertices the static pipework contributes (reported by the harness)
     private var machineVerts = 0               // vertices the static plant machinery contributes (reported by the harness)
+    #if CITADEL_HARNESS
+    var debugLightCap = -1                     // ≥0 → clamp the per-frame light list (CITADEL_GPUPROBE)
+    static func machineKind(_ k: FurnitureKind) -> Bool { machineSpec(k) != nil }
+    var staticVertCount: Int { nVerts }
+    var machineVertCount: Int { machineVerts }
+    #endif
     // ── FRAME BUDGET PROBE ── always TIMED (a handful of clock reads costs nothing), but only ever WRITTEN when
     // a frame misses its budget, and then only if `frameLog` is enabled. The point is not a running FPS number:
     // it is that when the game stutters we get told WHICH stage ate the frame, because guessing at a stutter
@@ -381,6 +387,12 @@ final class RasterRenderer {
             }
         }
         if lights.count > 64 { lights = Array(lights.prefix(64)) }
+        #if CITADEL_HARNESS
+        // Harness only: clamp the light list so a probe can vary the fragment shader's light loop
+        // INDEPENDENTLY of everything else. The frame log could never separate light count from
+        // combat — they rise together, so the correlation there was suggestive and nothing more.
+        if debugLightCap >= 0 { lights = Array(lights.prefix(debugLightCap)) }
+        #endif
         if lights.isEmpty { lights = [Light(posR: SIMD4(0, -99, 0, 1), colI: SIMD4(0, 0, 0, 0))] }   // dummy so setFragmentBytes has length>0 (dr2>=1 skips it)
         // Shadows: the nearest overhead lamp CELLS select which lamps CAST (the selection may follow
         // the player, but pool BRIGHTNESS no longer does — the shadow only darkens up-facing surfaces,
