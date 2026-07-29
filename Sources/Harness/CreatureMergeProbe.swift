@@ -58,20 +58,20 @@ enum CreatureMergeProbe {
             // diffs to zero exactly as a faithful merge does. So render the same frame with the
             // creatures taken out and diff THAT: the pixel count is how much of the frame they
             // actually occupy, and a zero here invalidates the result above rather than passing it.
-            let bare = make(); bare.monsters.removeAll()
+            let bare = make(); bare.monsters.removeAll(); bare.particles.removeAll()
             let cbare = Canvas2D()
             _ = gpuRR.render(bare, into: cbare)
             let cover = diff(ca, cbare)
+            let eGPU = energy(ca, over: cbare), eCPU = energy(cb, over: cbare)
 
             let d = diff(ca, cb)
             worstDiff = max(worstDiff, d.maxDelta)
             material += d.where_.count                       // Δ>1: a real disagreement, worth explaining
             rounding += d.pixels - d.where_.count            // Δ1: 8-bit quantisation, invisible
-            let fires = GPURaymarch.gatherFireEmitters(wa).count
-            print(String(format: "%-15@  gpu %5.2fms  cpu %5.2fms  ×%.1f   creatures cover %6d px (%.2f%%), %d fire emitters   →  diff %d px, max Δ%d, mean Δ%.3f",
+            print(String(format: "%-16@ gpu %5.2fms cpu %5.2fms ×%.1f  cover %6d px (%5.2f%%)  →  diff %6d px, mean Δ%5.2f, max Δ%3d  energy %.3f",
                          name as NSString, tGPU, tCPU, tCPU / max(tGPU, 1e-6),
                          cover.pixels, Double(cover.pixels) / Double(RenderConfig.width * RenderConfig.viewHeight) * 100,
-                         fires, d.pixels, d.maxDelta, d.meanDelta))
+                         d.pixels, d.meanDelta, d.maxDelta, eCPU == 0 ? 0 : eGPU / eCPU))
             if cover.pixels == 0 { print("   ⚠︎ NOTHING DREW — this scene proves nothing; fix the placement.") }
             // Any mismatch bigger than 8-bit rounding gets named, with the background pixel that fed
             // the fire wash — the one part of the merge that reads what is already in the frame, and so
@@ -113,10 +113,22 @@ enum CreatureMergeProbe {
         [("drone pack",     { build(drones: 6, burn: false, queen: false) }),
          ("queen alone",    { build(drones: 0, burn: false, queen: true) }),
          ("queen + drones", { build(drones: 4, burn: false, queen: true) }),
-         ("pyre + drone",   { build(drones: 2, burn: true,  queen: false) })]
+         ("pyre + drone",   { build(drones: 2, burn: true,  queen: false) }),
+         // The particle stack does NOT diff to zero — the GPU pass evaluates the falloff analytically
+         // where the CPU splat read a 257-entry LUT, and drops the row/column dither that hid the CPU's
+         // stride optimisation. So judge it on ENERGY: total luminance laid down, which is what says the
+         // blend maths is right even when the two spread it over slightly different pixels.
+         //
+         // LIGHT vs HEAVY is the controlled pair, and the reason both are here. The CPU splat shrank
+         // EVERY radius once a frame's estimated blend load ran over budget (`particleScale`) — pure
+         // load-shedding for a Swift pixel loop, but it means a busy frame's CPU output is a DEGRADED
+         // reference, not the authored look. Light stays under that threshold, so energy must land at
+         // ~1.0 and proves the maths. Heavy crosses it, so the GPU reads brighter by design.
+         ("particles light", { build(drones: 0, burn: false, queen: false, particleLoad: 1) }),
+         ("particles heavy", { build(drones: 0, burn: false, queen: false, particleLoad: 2) })]
     }
 
-    private static func build(drones: Int, burn: Bool, queen: Bool) -> World {
+    private static func build(drones: Int, burn: Bool, queen: Bool, particleLoad: Int = 0) -> World {
         let w = World(level: 3, colonyIndex: 0, seed: 4242)
         // The player starts in the arrival lift with the doors shut, so anything placed relative to
         // that pose is behind a steel wall. Stand her at the head of the longest clear run on the
@@ -153,6 +165,31 @@ enum CreatureMergeProbe {
             w.monsters.append(q)
         }
         w.particles.removeAll()                             // isolate the creature merge from the sprite compositor
+        if particleLoad > 0 {
+            // All three species. LIGHT places them far and small so the CPU's estimated blend load stays
+            // under its budget; HEAVY is a pyre at arm's length, which is what crosses it.
+            let heavy = particleLoad > 1
+            let near: Float = heavy ? 2.0 : 5.0             // distance drives the projected radius
+            let fSize: Float = heavy ? 8 : 4, sSize: Float = 3, mSize: Float = heavy ? 10 : 4
+            let nF = heavy ? 30 : 10, nS = heavy ? 20 : 6, nM = heavy ? 25 : 8
+            for i in 0..<nF {                               // flame: additive, age-ramped (colour 0)
+                let q = openSpot(near + Float(i % 5) * 0.5, Float(i / 5) * 0.4 - 1.0)
+                w.particles.append(Particle(pos: q, vel: .zero, life: Float(30 - i % 24), maxLife: 30, color: 0,
+                                            size: fSize, height: 0.30 + Float(i % 4) * 0.06, rise: 0, maxAlpha: 0.9, fire: true))
+            }
+            for i in 0..<nS {                               // spark: sharp glint + upward streak
+                let q = openSpot(near - 0.2 + Float(i % 4) * 0.6, Float(i / 4) * 0.5 - 1.0)
+                w.particles.append(Particle(pos: q, vel: .zero, life: Float(20 - i % 16), maxLife: 20,
+                                            color: packRGBA(255, 214, 140), size: sSize,
+                                            height: 0.35 + Float(i % 5) * 0.05, rise: 0, maxAlpha: 1.0, fire: true))
+            }
+            for i in 0..<nM {                               // smoke: soft, alpha-blended, faint
+                let q = openSpot(near + 0.4 + Float(i % 5) * 0.55, Float(i / 5) * 0.45 - 1.1)
+                w.particles.append(Particle(pos: q, vel: .zero, life: Float(40 - i % 30), maxLife: 40,
+                                            color: packRGBA(96, 92, 88), size: mSize,
+                                            height: 0.42 + Float(i % 4) * 0.07, rise: 0, maxAlpha: 0.55, fire: false))
+            }
+        }
         return w
     }
 
@@ -179,6 +216,21 @@ enum CreatureMergeProbe {
     }
 
     private struct Diff { var pixels = 0; var maxDelta = 0; var meanDelta = 0.0; var map: [UInt32] = []; var where_: [Int] = [] }
+
+    /// Total luminance `img` lays down over `base`. For layers that blend rather than replace — the
+    /// particle stack — this is the meaningful comparison: a ratio near 1.0 says the two paths deposit
+    /// the same light, even where they distribute it across slightly different pixels.
+    private static func energy(_ img: Canvas2D, over base: Canvas2D) -> Double {
+        var sum = 0.0
+        for i in 0..<(RenderConfig.width * RenderConfig.viewHeight) {
+            let a = img.framebuffer[i], b = base.framebuffer[i]
+            func lum(_ c: UInt32) -> Double {
+                0.299 * Double(c & 0xFF) + 0.587 * Double((c >> 8) & 0xFF) + 0.114 * Double((c >> 16) & 0xFF)
+            }
+            sum += lum(a) - lum(b)
+        }
+        return sum
+    }
 
     /// Name the first few mismatching pixels: where they are, what each path produced, and what the
     /// frame held there BEFORE any creature drew. Three numbers beat a squint at a screenshot.

@@ -170,6 +170,23 @@ final class RasterRenderer {
     private let fireHDR: MTLTexture            // rgba16Float: world + fire composited in HDR
     private let bloomA, bloomB: MTLTexture     // rgba16Float ping-pong for the bright-pass blur
     private let firePS, brightPS, blurPS, compositePS: MTLRenderPipelineState
+    // ── particle billboards (smoke · embers · steam · sparks · flame) ──
+    /// One quad per particle, built on the CPU so the projection is the SAME arithmetic the CPU
+    /// compositor used (a re-derivation through the scene MVP would have drifted), then rasterised
+    /// and blended by the GPU instead of splatting up to a quarter-viewport of pixels per particle
+    /// through a Swift loop. `misc` carries the centre pixel + perp so the vertex stage can cull the
+    /// whole sprite against the scene depth exactly as the CPU's single centre-sample test did.
+    private struct SprVert {
+        var clip: SIMD2<Float>       // NDC
+        var local: SIMD2<Float>      // soft sprites: −1…1 across the quad · sparks: PIXELS from the glint
+        var rgba: SIMD4<Float>       // linear-ish colour + centre alpha
+        var misc: SIMD4<Float>       // x,y = centre pixel (clamped) · z = perp depth · w = mode
+    }
+    private static let sprCap = 6 * 4096          // 6 verts per particle; World never holds this many
+    private let particlePS: MTLRenderPipelineState
+    private let sprBuf: MTLBuffer
+    private var sprScratch: [SprVert] = []
+    private var nSprVerts = 0
     private struct FireU { var invVP: simd_float4x4; var eye, camFwd, misc: SIMD4<Float> }
     private struct Fx { var a: SIMD4<Float> }
     private let wallArrTex: MTLTexture?        // the baked wall-texture array (the SAME art the raymarcher samples) → textured walls
@@ -247,6 +264,32 @@ final class RasterRenderer {
             print("RasterRenderer: fire pipeline failed"); return nil
         }
         self.firePS = fps; self.brightPS = bps; self.blurPS = blps; self.compositePS = cps
+        // ── PARTICLE BILLBOARDS ──
+        // ONE pipeline serves both blend modes the smoke/ember/spark stack needs, because the shader
+        // emits PREMULTIPLIED colour: src·1 + dst·(1−srcAlpha). Output alpha = coverage → ordinary
+        // alpha blending (smoke, steam); output alpha = 0 → pure addition (flame, sparks). Two
+        // pipelines would have forced the additive and alpha sprites into separate draws, and the
+        // back-to-front order that alpha blending depends on would have been lost.
+        guard let plib = try? device.makeLibrary(source: RasterRenderer.particleSrc, options: nil) else {
+            print("RasterRenderer: particle shader compile failed"); return nil
+        }
+        let ppd = MTLRenderPipelineDescriptor()
+        ppd.vertexFunction = plib.makeFunction(name: "spr_vertex")
+        ppd.fragmentFunction = plib.makeFunction(name: "spr_frag")
+        ppd.colorAttachments[0].pixelFormat = .rgba8Unorm
+        ppd.colorAttachments[0].isBlendingEnabled = true
+        ppd.colorAttachments[0].rgbBlendOperation = .add
+        ppd.colorAttachments[0].alphaBlendOperation = .add
+        ppd.colorAttachments[0].sourceRGBBlendFactor = .one            // premultiplied: the shader already scaled by alpha
+        ppd.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        ppd.colorAttachments[0].sourceAlphaBlendFactor = .one
+        ppd.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        guard let pps = try? device.makeRenderPipelineState(descriptor: ppd),
+              let pbuf = device.makeBuffer(length: MemoryLayout<SprVert>.stride * RasterRenderer.sprCap,
+                                           options: .storageModeShared) else {
+            print("RasterRenderer: particle pipeline failed"); return nil
+        }
+        self.particlePS = pps; self.sprBuf = pbuf
         self.wallArrTex = GPURaymarch.makeTextureArray(device, Textures.shared.walls)   // baked wall art (textured walls)
         self.meshQueen = MeshCreature(device: device, kind: .queen)
         self.meshDrone = MeshCreature(device: device, kind: .drone)
@@ -524,45 +567,176 @@ final class RasterRenderer {
             encodeCreatures(world, vis, into: .direct(cmd), eye: eye, dir: p.dir, dynLights: dynLights)
         }
         fpMark("creatures")          // CPU cost of posing + encoding them; their GPU cost lands in gpuWait
+        // ── M5 particles ── smoke / steam / embers / sparks / flame, as GPU billboards over the
+        // finished frame. This was the last CPU compositor: it splatted up to a quarter-viewport of
+        // pixels per particle through a Swift loop, cost 1.0 ms at 20 particles rising to 7.2 ms at
+        // 105, and every sub-20 ms breach in the 2026-07-29 frame log was this plus gpuWait.
+        if !creatureReadback && !world.particles.isEmpty {
+            sprScratch.removeAll(keepingCapacity: true)
+            buildParticles(world, dir: p.dir, into: &sprScratch)
+            nSprVerts = sprScratch.count
+            if nSprVerts > 0 {
+                sprScratch.withUnsafeBytes { _ = memcpy(sprBuf.contents(), $0.baseAddress!, nSprVerts * MemoryLayout<SprVert>.stride) }
+                encodeParticles(cmd)
+            }
+        } else {
+            nSprVerts = 0
+        }
+        fpMark("particles")
         cmd.commit(); cmd.waitUntilCompleted()
         fpMark("gpuWait")            // the CPU stalls here until the GPU has finished the whole frame
 
         colTex.getBytes(canvas.framebuffer, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
-        fpMark("readbackColour")     // full-frame GPU→CPU copy
+        fpMark("readbackColour")     // the ONE transfer left: the finished frame, for Canvas2D to present
 
-        // perpTex → CPU. Needed by the particle compositor, and by the legacy creature merge. Creatures
-        // that merged on the GPU have already written their perp-depth into perpTex, so this ONE copy
-        // carries world + creatures; frames with nothing drifting and nothing to merge skip it entirely.
-        func readPerp() {
+        // ── legacy CPU tail (creatureReadback only) ──
+        // Both compositors move together: creatures merge on the CPU here, so the particles that layer
+        // over them must too. On the default path nothing below runs and perpTex never comes back at all.
+        // Each mark fires only when its work ran, so a stage in the log always cost what the log says.
+        if creatureReadback && (!vis.isEmpty || !world.particles.isEmpty) {
             perpScratch.withUnsafeMutableBytes {
                 perpTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
             }
-        }
-        // Each mark below fires only when its work actually ran, so a stage that appears in the log
-        // always cost what the log says — a mark straddling a skipped block would hide the next
-        // stage's cost inside it.
-        var perpRead = false
-        if !vis.isEmpty && !directCreatures {              // legacy: read back, then merge on the CPU
-            readPerp(); perpRead = true
-            perpScratch.withUnsafeMutableBufferPointer { dp in
-                encodeCreatures(world, vis, into: .readback(canvas, dp.baseAddress!),
-                                eye: eye, dir: p.dir, dynLights: dynLights)
+            fpMark("readbackDepth")
+            if !vis.isEmpty {
+                perpScratch.withUnsafeMutableBufferPointer { dp in
+                    encodeCreatures(world, vis, into: .readback(canvas, dp.baseAddress!),
+                                    eye: eye, dir: p.dir, dynLights: dynLights)
+                }
+                fpMark("creaturesCPU")
             }
-            fpMark("creaturesCPU")
-        }
-        // ── M5 particles/projectiles ── the ONE remaining CPU compositor: smoke / embers / sparks drift
-        // over the flame, occluded by the world AND the creatures.
-        if !world.particles.isEmpty {
-            if !perpRead { readPerp(); fpMark("readbackDepth") }
-            perpScratch.withUnsafeBufferPointer { dp in
-                spriteCompositor.overlayThings(world, into: canvas, depth: dp.baseAddress,
-                                               includeProjectiles: false,      // projectiles are emissive orb+streak meshes (buildProps)
-                                               includeDrums: false, includeSockets: false, includeMines: false)   // those are raster prop meshes
+            if !world.particles.isEmpty {
+                perpScratch.withUnsafeBufferPointer { dp in
+                    spriteCompositor.overlayThings(world, into: canvas, depth: dp.baseAddress,
+                                                   includeProjectiles: false,      // projectiles are emissive orb+streak meshes (buildProps)
+                                                   includeDrums: false, includeSockets: false, includeMines: false)   // those are raster prop meshes
+                }
+                fpMark("particlesCPU")
             }
         }
-        fpMark("particles")
         fpEnd(world)
         return true
+    }
+
+    /// Project every live particle to a screen-space quad.
+    ///
+    /// Deliberately the SAME arithmetic as `SpriteCompositor.drawParticle`: the sprite projection is
+    /// the raycaster's (tX/tY, projHeight/tY, horizon), NOT the scene MVP, so re-deriving it through
+    /// the MVP would have shifted every particle. Sorted back-to-front, because the smoke sprites
+    /// alpha-blend and so are order-dependent (the flame and sparks add, which is commutative).
+    private func buildParticles(_ world: World, dir: Float, into v: inout [SprVert]) {
+        let p = world.player
+        let dirX = cosf(dir), dirY = sinf(dir)
+        let planeX = -sinf(dir) * RenderConfig.cameraPlane
+        let planeY = cosf(dir) * RenderConfig.cameraPlane
+        let invDet = 1 / (planeX * dirY - dirX * planeY)
+        let horizon = Float(RenderConfig.horizon)
+        let fw = Float(W), fh = Float(H)
+        // ── OPEN QUESTION, deliberately left as a live knob ──
+        // Dropping the CPU splat's load-shedding (see `r` below) restored the fire to its authored
+        // size, which measured 1.562× the light the old path laid down under a heavy pyre — see
+        // CreatureMergeProbe's "particles heavy" scene. Jonathan chose authored brightness on
+        // 2026-07-29, with the caveat that more play-testing might want it pulled back, so the way
+        // back is a knob rather than a re-derivation:
+        //     defaults write cc.jorviksoftware.Citadel ParticleGain -float 0.55
+        // measures 0.982 of the old brightness on that scene. Read every frame, so it can be dialled
+        // while the game runs.
+        //
+        // Two things to know before trusting a number here. It is NOT 1/1.562 = 0.64: the additive
+        // stack clips at 8 bits, so deposited light is not linear in alpha (0.64 measures 1.117).
+        // Re-measure with the probe rather than computing a ratio. And it is a GLOBAL dimmer, not a
+        // reproduction of the shed — the shed only bit when a frame's estimated blend load ran over
+        // budget, so pulling this down also dims quiet scenes the old path never touched (gain 0.64
+        // measures 0.794 on "particles light"). Predictable, but not the same curve.
+        //
+        // It dims rather than SHRINKS, which is the nicer half of what the shed did: the fire keeps
+        // its authored size and simply burns less fiercely. If a play-test ever wants the smaller
+        // fire back too, the lever for that is `r`, not this.
+        let gain = (UserDefaults.standard.object(forKey: "ParticleGain") as? Double).map { Float($0) } ?? 1
+
+        @inline(__always) func rgb(_ c: UInt32) -> SIMD3<Float> {
+            SIMD3(Float(c & 0xFF), Float((c >> 8) & 0xFF), Float((c >> 16) & 0xFF)) / 255
+        }
+        @inline(__always) func lerp(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ t: Float) -> SIMD3<Float> {
+            a + (b - a) * max(0, min(1, t))
+        }
+        /// One sprite: a pixel rect mapped to a local rect, plus the centre + depth used to cull it.
+        func quad(px0: Float, py0: Float, px1: Float, py1: Float,
+                  u0: Float, v0: Float, u1: Float, v1: Float,
+                  rgba: SIMD4<Float>, mode: Float, cx: Float, cy: Float, perp: Float) {
+            guard v.count + 6 <= RasterRenderer.sprCap else { return }
+            func ndc(_ x: Float, _ y: Float) -> SIMD2<Float> { SIMD2(x / fw * 2 - 1, 1 - y / fh * 2) }
+            let misc = SIMD4<Float>(min(max(cx, 0), fw - 1), min(max(cy, 0), fh - 1), perp, mode)
+            let a = SprVert(clip: ndc(px0, py0), local: SIMD2(u0, v0), rgba: rgba, misc: misc)
+            let b = SprVert(clip: ndc(px1, py0), local: SIMD2(u1, v0), rgba: rgba, misc: misc)
+            let c = SprVert(clip: ndc(px1, py1), local: SIMD2(u1, v1), rgba: rgba, misc: misc)
+            let d = SprVert(clip: ndc(px0, py1), local: SIMD2(u0, v1), rgba: rgba, misc: misc)
+            v.append(a); v.append(b); v.append(c)
+            v.append(a); v.append(c); v.append(d)
+        }
+
+        var order = world.particles.indices.map { ($0, simd_length_squared(world.particles[$0].pos - p.pos)) }
+        order.sort { $0.1 > $1.1 }
+
+        for (idx, _) in order {
+            let pa = world.particles[idx]
+            let rel = pa.pos - p.pos
+            let tX = invDet * (dirY * rel.x - dirX * rel.y)
+            let tY = invDet * (-planeY * rel.x + planeX * rel.y)
+            if tY <= 0.15 { continue }
+            let lineFull = Float(RenderConfig.projHeight) / tY
+            let cx = fw / 2 * (1 + tX / tY)
+            let cy = horizon + lineFull * 0.5 - lineFull * pa.height
+            if cx < 0 || cx >= fw { continue }
+            let lifeF = max(0, min(1, pa.life / pa.maxLife))
+            // The viewH/4 radius cap is ARTISTIC — a near flame is meant to fill the view — and stays.
+            // What has gone is the CPU path's `particleScale`, which shrank every radius when the frame's
+            // estimated blend load ran over budget: graceful degradation for a Swift pixel loop that no
+            // longer exists. Under a mine-into-drum chain the fire is now as big as it was authored.
+            let r = max(1, min(lineFull * 0.05 * pa.size, fh / 4))
+
+            if pa.fire && pa.color == 0 {
+                // FLAME — additive, age-ramped white-hot → orange → deep red → soot, so overlapping
+                // tongues build a body of fire. Same three anchors and same breakpoints as the CPU path.
+                let age = 1 - lifeF
+                let hot = rgb(packRGBA(255, 250, 210)), mid = rgb(packRGBA(255, 196, 70))
+                let deep = rgb(packRGBA(232, 96, 26)), soot = rgb(packRGBA(60, 46, 44))
+                let col: SIMD3<Float> = age < 0.25 ? lerp(hot, mid, age / 0.25)
+                                      : age < 0.6  ? lerp(mid, deep, (age - 0.25) / 0.35)
+                                                   : lerp(deep, soot, (age - 0.6) / 0.4)
+                quad(px0: cx - r, py0: cy - r, px1: cx + r, py1: cy + r,
+                     u0: -1, v0: -1, u1: 1, v1: 1,
+                     rgba: SIMD4(col, (1 - age) * pa.maxAlpha * gain), mode: 1, cx: cx, cy: cy, perp: tY)
+            } else if pa.fire {
+                // SPARK — a tight glint plus a streak trailing UP behind its arc, so a burst reads as a
+                // shower rather than a scatter of dots. Local coords are PIXELS: ±2 across, 8 up, 2 down.
+                quad(px0: cx - 2, py0: cy - 8, px1: cx + 2, py1: cy + 2,
+                     u0: -2, v0: -8, u1: 2, v1: 2,
+                     rgba: SIMD4(rgb(pa.color), lifeF * pa.maxAlpha * gain), mode: 2, cx: cx, cy: cy, perp: tY)
+            } else {
+                // SMOKE / STEAM / ASH — soft, alpha-blended, fading with life.
+                quad(px0: cx - r, py0: cy - r, px1: cx + r, py1: cy + r,
+                     u0: -1, v0: -1, u1: 1, v1: 1,
+                     rgba: SIMD4(rgb(pa.color), lifeF * pa.maxAlpha * gain), mode: 0, cx: cx, cy: cy, perp: tY)
+            }
+        }
+    }
+
+    /// Encode the particle billboards over the finished frame. They are the LAST layer, occluded by
+    /// the world and by the creatures — both of which have written their perp-depth into perpTex by
+    /// now, so one texture read per sprite settles visibility and nothing has to come back to the CPU.
+    private func encodeParticles(_ cmd: MTLCommandBuffer) {
+        guard nSprVerts > 0 else { return }
+        let rp = MTLRenderPassDescriptor()
+        rp.colorAttachments[0].texture = colTex
+        rp.colorAttachments[0].loadAction = .load; rp.colorAttachments[0].storeAction = .store
+        guard let e = cmd.makeRenderCommandEncoder(descriptor: rp) else { return }
+        e.setRenderPipelineState(particlePS)
+        e.setCullMode(.none)
+        e.setVertexBuffer(sprBuf, offset: 0, index: 0)
+        e.setVertexTexture(perpTex, index: 0)
+        e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: nSprVerts)
+        e.endEncoding()
     }
 
     /// The creatures that will be drawn this frame. Pure selection, no GPU work — the frame needs
@@ -689,6 +863,11 @@ final class RasterRenderer {
 
     // ── per-level build: world mesh + baked light-field texture ───────────────
     private func prepareLevel(_ world: World) {
+        // The imported bed is loaded from disk on first use, and its ONE caller is buildProps — so the
+        // parse landed on whichever frame first had a bed in view, mid-play. The 2026-07-29 frame log
+        // caught it as a 22.5 ms buildProps spike on 16k verts of geometry. Pull it forward: the cost
+        // now lands with the level build, where a hitch is expected and unavoidable anyway.
+        _ = loadBed()
         ceilingLampsOn = Progression.floorInBuilding(world.level) < 7   // 7–8 = the plant: bulkheads, not ceiling strips
         buildPlantLamps(world.map)
         buildMesh(world.map)
@@ -2670,6 +2849,53 @@ final class RasterRenderer {
         c = pow(clamp(c, 0.0, 1.0), float3(1.0 / 2.2));                       // gamma
         float2 dd = uv * 2.0 - 1.0; c *= 1.0 - 0.20 * dot(dd, dd);            // vignette
         return float4(c, 1.0);
+    }
+    """
+
+    // ── particle billboards ───────────────────────────────────────────────────
+    // The quads arrive already projected (see buildParticles), so this stage only culls, shades the
+    // radial profile and blends. Output is PREMULTIPLIED: alpha 0 = pure addition (flame, sparks),
+    // alpha = coverage = ordinary alpha blending (smoke, steam).
+    static let particleSrc = """
+    #include <metal_stdlib>
+    using namespace metal;
+    struct SV { float2 clip; float2 local; float4 rgba; float4 misc; };
+    struct SO { float4 pos [[position]]; float2 local; float4 rgba; float mode; };
+
+    vertex SO spr_vertex(uint vid [[vertex_id]],
+                         const device SV* v [[buffer(0)]],
+                         texture2d<float> scenePerp [[texture(0)]]) {
+        SV s = v[vid];
+        SO o;
+        o.local = s.local; o.rgba = s.rgba; o.mode = s.misc.w;
+        // Whole-sprite occlusion, from ONE sample at the sprite's centre — the same test the CPU
+        // compositor made, so a spark behind a sealed door stays hidden. Doing it here rather than
+        // per fragment means an occluded sprite costs six vertex invocations and no shading at all:
+        // collapse it to a point outside the clip volume and the rasteriser drops it.
+        if (s.misc.z >= scenePerp.read(uint2(s.misc.xy)).r) { o.pos = float4(2.0, 2.0, 2.0, 1.0); return o; }
+        o.pos = float4(s.clip, 0.0, 1.0);
+        return o;
+    }
+
+    fragment float4 spr_frag(SO in [[stage_in]]) {
+        if (in.mode > 1.5) {
+            // SPARK — a sharp glint with a comet streak trailing UP through its arc. `local` is in
+            // PIXELS here: the CPU path drew a 1px core plus six fading pixels above it, which is
+            // one analytic taper. −y is up.
+            float q = length(in.local);
+            float core = smoothstep(1.7, 0.0, q);
+            float tail = (in.local.y < 0.0 && abs(in.local.x) < 0.9) ? max(0.0, 1.0 + in.local.y / 7.0) : 0.0;
+            float a = in.rgba.a * max(core, tail);
+            return float4(in.rgba.rgb * a, 0.0);                       // additive
+        }
+        // SOFT ORB — the CPU path's falloff table was (1 − sqrt(d²/r²))², i.e. (1 − d/r)² exactly;
+        // evaluated here instead of read from a 257-entry LUT, so it is the same curve without the
+        // quantisation. Radial cutoff keeps the quad's corners out of the blend.
+        float q = length(in.local);
+        if (q > 1.0) discard_fragment();
+        float f = 1.0 - q; f *= f;
+        float a = in.rgba.a * f;
+        return float4(in.rgba.rgb * a, in.mode > 0.5 ? 0.0 : a);       // 1 = additive flame · 0 = alpha smoke
     }
     """
 
