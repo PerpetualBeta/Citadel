@@ -1703,15 +1703,38 @@ final class World {
     }
 
     /// Repulsion from nearby awake allies (stronger the closer) — the anti-clump.
+    ///
+    /// A purely radial push cannot break the two clumps that matter, which is why there is a lateral
+    /// term as well. COINCIDENT bodies have no offset to push along at all (the old `dl > 0.001` guard
+    /// simply skipped them, so a perfect overlap was permanent). And a COLLINEAR column — five drones
+    /// strung along one axis — gives every drone in the middle two equal and opposite neighbours, so
+    /// the radial pushes cancel exactly and the lateral component is zero because the offsets have no
+    /// lateral part. Nothing moves. Worse, `steerMove`'s free() refuses any step that closes on the
+    /// body ahead, so only the LEADER of such a column can advance and the rest stay pinned in a stack
+    /// for the rest of the level.
+    ///
+    /// The tie has to be broken by something each drone owns, not by the geometry — anything derived
+    /// from a neighbour's direction flips sign with it and cancels right back out. So: total crowding
+    /// pressure drives a nudge along a per-drone heading, spaced by the golden angle so adjacent
+    /// indices head off in markedly different directions and the stack scatters. Index-derived, not
+    /// random, so a clump resolves the same way every run and the smoke test stays reproducible.
     private func separation(_ i: Int, _ pos: SIMD2<Float>, _ r: Float) -> SIMD2<Float> {
         var push = SIMD2<Float>.zero
+        var crowd: Float = 0
         for j in monsters.indices where j != i {
             let o = monsters[j]
             if !o.awake || !o.alive { continue }
             let off = pos - o.pos
             let dl = vlen(off)
             let want = r + o.def.radius + 0.3
-            if dl < want && dl > 0.001 { push += (off / dl) * ((want - dl) / want) }
+            guard dl < want else { continue }
+            let strength = (want - dl) / want
+            crowd += strength
+            if dl > 0.001 { push += (off / dl) * strength }
+        }
+        if crowd > 0 {
+            let a = Float(i) * 2.39996323                       // golden angle
+            push += SIMD2(cos(a), sin(a)) * (crowd * 0.55)
         }
         return push
     }
@@ -1767,8 +1790,23 @@ final class World {
             // around it — unless it's already standing in one (it must climb out)
             if map.inBounds(Int(x), Int(y)), map.hazard[map.idx(Int(x), Int(y))],
                !map.hazard[map.idx(Int(m.pos.x), Int(m.pos.y))] { return false }
-            return !map.blocksMovement(Int(x - r), Int(y - r)) && !map.blocksMovement(Int(x + r), Int(y + r))
-                && !map.blocksMovement(Int(x - r), Int(y + r)) && !map.blocksMovement(Int(x + r), Int(y - r))
+            // Walls, tested at the body's four extremes. A step that gets it OUT of a wall it is
+            // already clipping must be allowed, exactly as for the ally test above — otherwise a
+            // drone whose radius merely overhangs a wall corner is frozen for the rest of the
+            // level. The corners are shared by both axes (the Y candidate keeps x, so a bad `x+r`
+            // fails the Y move too), so one clipped corner blocks every direction at once; and a
+            // per-frame step is far smaller than a cell, so it can never clear the offending cell
+            // in one go and "fewer blocked corners" would never be satisfied either. Hence: once
+            // it is already clipping, judge it on its CENTRE — free to work its way out, still
+            // unable to walk through anything. A blast shove, a door sweep or an unlucky spawn all
+            // land a body here.
+            func cornersBlocked(_ px: Float, _ py: Float) -> Bool {
+                map.blocksMovement(Int(px - r), Int(py - r)) || map.blocksMovement(Int(px + r), Int(py + r))
+                    || map.blocksMovement(Int(px - r), Int(py + r)) || map.blocksMovement(Int(px + r), Int(py - r))
+            }
+            if !cornersBlocked(x, y) { return true }
+            guard cornersBlocked(m.pos.x, m.pos.y) else { return false }   // standing clear → don't step into a wall
+            return !map.blocksMovement(Int(x), Int(y))
         }
         var moved = false
         let nx = m.pos.x + dir.x * speed, ny = m.pos.y + dir.y * speed

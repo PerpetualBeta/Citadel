@@ -347,12 +347,17 @@ enum SmokeTest {
         check(fw.player.has(.flamethrower), "flamethrower carried from the start")
         check(WeaponKind.flamethrower.def.ammo == .fuel, "flamethrower now runs on finite fuel")
         check(fw.player.ammoCount(.fuel) > 0, "marine starts with fuel (\(fw.player.ammoCount(.fuel)))")
-        if let mi = fw.monsters.firstIndex(where: { $0.alive }) {
+        // A DRONE specifically: `first(where: alive)` took whatever the generator happened to put at
+        // index 0, which is the QUEEN — and queenDeathTime is 2.8 s, so the 40-frame wait below could
+        // never see her reach `.dead`. The whole passage is written around a drone corpse (0.45 s to
+        // fall, then burnable), so name the caste rather than trust the array order.
+        if let mi = fw.monsters.firstIndex(where: { $0.alive && $0.kind == .alien }) {
             let cpos = fw.monsters[mi].pos
-            // plasma kill — an explosive kill now GIBS the drone and leaves no corpse
+            // Plasma, deliberately — DamageKind.explosive GIBS a drone and leaves nothing to burn,
+            // which would make every corpse check below vacuously true.
             fw.projectiles.append(Projectile(pos: cpos, vel: .zero, kind: .plasma, damage: 999, fromPlayer: true, life: 0.01))
             for _ in 0..<40 { fw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }   // die → corpse
-            check(fw.monsters.contains { $0.state == .dead }, "killed monster leaves a corpse")
+            check(fw.monsters.contains { $0.state == .dead && !$0.gibbed }, "killed monster leaves a corpse")
             fw.player.pos = cpos + SIMD2<Float>(0.9, 0)
             fw.player.dir = .pi                                     // face the corpse
             fw.player.current = .flamethrower
