@@ -11,7 +11,7 @@ import Cocoa
 import MetalKit
 import QuartzCore
 
-enum GameState { case title, briefing, intel, riding, playing, paused, automap, teleport, gameOver, highScores, terminal }
+enum GameState { case title, briefing, intel, riding, playing, paused, automap, teleport, gameOver, ending, highScores, terminal }
 
 final class Renderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
@@ -65,6 +65,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var deathTimer: Float = 0
 
     private var qualifies = false
+    /// Set only by the ceremony, so the tally that follows it reports a retaken cluster rather than
+    /// telling the one player who finished the game that she died.
+    private var victory = false
     private var lastRank = -1
     private var scoresReturn: GameState = .title   // where the Hall returns to (menu view → prior screen; post-game → title)
 
@@ -172,6 +175,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         case .automap: tickAutomap(dt)
         case .teleport: tickTeleport(dt)
         case .gameOver: tickGameOver(dt)
+        case .ending: tickEnding(dt)
         case .highScores: tickHighScores(dt)
         case .terminal: tickTerminal(dt)
         }
@@ -364,9 +368,33 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
     }
 
+    /// Enter the ceremony. The world stays alive — it carries the score the tally reports.
+    private func beginEnding() {
+        genEpoch += 1                    // orphan any floor-49 build that was already in flight
+        pendingWorld = nil; pendingLevel = 0
+        rideWorld = nil
+        arrivalStatic = 0
+        audio.elevatorMove(false)        // the car is still ringing; quench it before the hall
+        audio.startMusic(.title)
+        state = .ending; screenT = 0
+    }
+
+    /// The ceremony runs itself and then hands to the tally. Skippable, but not in the first second —
+    /// the marine has just pressed fire to leave the last floor, and a held key must not eat the one
+    /// screen she spent 48 floors earning.
+    private func tickEnding(_ dt: Float) {
+        guard world != nil else { state = .title; return }
+        FrontEnd.ending(canvas, t: screenT, pad: gamepad.connected)
+        if screenT >= EndingArt.duration || (rising(input.restart, pConfirm) && screenT > 1.0) {
+            victory = true
+            state = .gameOver; screenT = 0
+        }
+    }
+
     private func tickGameOver(_ dt: Float) {
         guard let world = world else { state = .title; return }
-        FrontEnd.gameOver(canvas, world: world, input: input, qualifies: qualifies, t: screenT, pad: gamepad.connected)
+        FrontEnd.gameOver(canvas, world: world, input: input, qualifies: qualifies, t: screenT,
+                          pad: gamepad.connected, victory: victory)
         if qualifies && input.nameEntryActive {
             if input.nameCommitted { recordScore(world); scoresReturn = .title; state = .highScores; screenT = 0 }
         } else if rising(input.restart, pConfirm) && screenT > 0.4 {
@@ -464,6 +492,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private func startGame() {
         baseSeed = FeatureFlags.fixedSeed > 0 ? FeatureFlags.fixedSeed : UInt64.random(in: 1...UInt64.max)
         level = max(1, FeatureFlags.startLevel); colonyIndex = Progression.planetIndex(level); carry = nil
+        victory = false                           // …and it has not been won yet
         world = nil                               // a fresh run carries nothing over
         beginWorldBuild(level: level, seed: baseSeed &+ UInt64(level))
         // the descent IS the loading screen: ride the car down while the floor builds
@@ -524,6 +553,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     private func nextLevel() {
+        // THE RUN ENDS HERE when there is no next floor: all six citadels retaken. This used to
+        // rotate the marine back to Demeter floor one indefinitely, which gave the player nothing to
+        // reach for. Now it hands off to ARC's ceremony (see EndingArt) and then the tally.
+        if Progression.isFinalFloor(level) { beginEnding(); return }
         if let w = pendingWorld, w.level == level + 1 {
             installWorld(w)
             return

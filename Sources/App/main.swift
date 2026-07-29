@@ -29,7 +29,7 @@ import QuartzCore
 for key in ["CITADEL_SMOKE", "CITADEL_TIMING",
             "CITADEL_SHOTS", "CITADEL_MATERIALS",
             "CITADEL_AUTOMAP", "CITADEL_ROOMS", "CITADEL_DISPLAYVID",
-            "CITADEL_TITLESHOT", "CITADEL_CLUSTERSHOT", "CITADEL_QUEENMESH",
+            "CITADEL_TITLESHOT", "CITADEL_ENDINGSHOT", "CITADEL_CLUSTERSHOT", "CITADEL_QUEENMESH",
             "CITADEL_MESHVERIFY", "CITADEL_DRONEMESH", "CITADEL_COLONISTMESH", "CITADEL_CORPSES", "CITADEL_DECKCHECK", "CITADEL_TERMSHOT", "CITADEL_PROOFROOM", "CITADEL_RASTERSHOT",
             "CITADEL_CREATUREPROBE", "CITADEL_GPUPROBE"]
     where ProcessInfo.processInfo.environment[key] != nil {
@@ -231,6 +231,34 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_TITLESHOT"] {
     Captures.writePNG(c.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: 1,
                       to: URL(fileURLWithPath: out))
     print("Citadel: wrote title screenshot to \(out)")
+    exit(0)
+}
+
+// CITADEL_ENDINGSHOT[=dir] → render the WHOLE ending ceremony to a PNG sequence (default
+// ~/Desktop/citadel-ending), then exit. CITADEL_ENDINGFPS sets the rate (default 30).
+//
+// This exists because the ending is reached exactly once, by clearing every floor of every
+// citadel — so no play-test will ever arrive there, and it is the one screen in the game that
+// could break and stay broken for years with nobody in a position to notice. Rendering it
+// headlessly makes it reviewable (pipe the frames through ffmpeg to watch it) and, via the shot
+// harness, guarded by shotcheck like everything else.
+if let v = ProcessInfo.processInfo.environment["CITADEL_ENDINGSHOT"] {
+    let dir = (v.isEmpty || v == "1") ? NSHomeDirectory() + "/Desktop/citadel-ending" : v
+    let fps = Float(ProcessInfo.processInfo.environment["CITADEL_ENDINGFPS"] ?? "") ?? 30
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    guard EndingArt.available else {
+        print("Citadel: no ending plate (Resources/ending_bg.png) — nothing to render")
+        exit(1)
+    }
+    let total = EndingArt.duration
+    let frames = Int((total * fps).rounded())
+    let c = Canvas2D()
+    for i in 0..<frames {
+        FrontEnd.ending(c, t: Float(i) / fps)
+        Captures.writePNG(c.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: 1,
+                          to: URL(fileURLWithPath: dir + String(format: "/f%05d.png", i)))
+    }
+    print("Citadel: wrote \(frames) ending frames (\(String(format: "%.1f", total))s @ \(Int(fps))fps) to \(dir)")
     exit(0)
 }
 

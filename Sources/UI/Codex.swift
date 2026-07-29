@@ -105,6 +105,62 @@ enum FrontEnd {
     }
 
 
+    /// THE ENDING — ARC's ceremony, with the citation read over it.
+    ///
+    /// The citation sits in the plate's dark lower third and needs NO scrim, which the image earned
+    /// rather than us: that band is mean grey 29 against the hall's 106, and across the projector
+    /// bulb's full range (×0.6 to ×1.062) it only moves between 17 and 32. Text is drawn AFTER the
+    /// plate, so the heavy grain sits underneath the glyphs instead of chewing through them, and
+    /// `glow:` carries the edges. ARC speaks in the cold palette — clinical, and deliberately at
+    /// odds with the warm hall it is congratulating itself in.
+    static func ending(_ c: Canvas2D, t: Float, pad: Bool = false) {
+        EndingArt.draw(c, t: t)
+        let black = packRGBA(0, 0, 0)
+
+        // Beat B: the text has cleared and the image is the subject. Nothing over it but the skip
+        // hint, and not until it cannot be hit by accident.
+        guard t < EndingArt.citationTime else {
+            if t > EndingArt.citationTime + 2.5, Int(t * 1.5) % 2 == 0 {
+                c.labelCentered("PRESS  \(confirmName(pad: pad))", H - uiS(30), size: uiSf(14),
+                                color: coldDim, weight: .medium, shadow: false, glow: black, mono: true)
+            }
+            return
+        }
+
+        // One block at a time, fading through. Eleven lines at once would fill the very band the
+        // citation depends on, and a citation reads better a thought at a time anyway.
+        let bi = min(EndingArt.citation.count - 1, Int(t / EndingArt.blockTime))
+        let lt = t - Float(bi) * EndingArt.blockTime
+        let a = max(0, min(min(lt / EndingArt.blockIn, 1),
+                           (EndingArt.blockTime - lt) / EndingArt.blockOut))
+
+        // Masthead: present for the whole citation, so the blocks change under a fixed letterhead.
+        let mast = max(0, min(1, min(t / EndingArt.blockIn,
+                                     (EndingArt.citationTime - t) / EndingArt.blockOut)))
+        if mast > 0.01 {
+            // Seal placed off the label's MEASURED width, not a guessed offset — the first attempt
+            // used a fixed inset and sat on top of the word it was meant to sit beside.
+            let mastLine = "ARC OFFICE OF RECLAMATION  ·  CITATION", mastSz = uiSf(12)
+            let mw = c.labelWidth(mastLine, size: mastSz, weight: .semibold, mono: true)
+            arcSeal(c, cx: (W - mw) / 2 - uiS(15), cy: uiS(261), r: uiS(9),
+                    color: mixRGBA(black, coldDim, mast), alpha: 0.85 * mast)
+            c.labelCentered(mastLine, uiS(256), size: mastSz,
+                            color: mixRGBA(black, coldDim, mast * 0.9), weight: .semibold,
+                            shadow: false, glow: black, mono: true)
+        }
+
+        var y = uiS(288)
+        for line in EndingArt.citation[bi] {
+            // The first block's opening two lines are the verdict — set them heavier and brighter
+            // than the prose that follows, so the frame has one thing to read first.
+            let head = bi == 0 && line == line.uppercased() && !line.contains("·")
+            c.labelCentered(line, y, size: head ? uiSf(19) : uiSf(15),
+                            color: mixRGBA(black, head ? cold : ink, a),
+                            weight: head ? .bold : .medium, shadow: false, glow: black)
+            y += head ? uiS(25) : uiS(21)
+        }
+    }
+
     /// The ARC corporate seal — a broken outer ring + an inner dome over "ARC",
     /// drawn from primitives so it scales with the UI. Used on the title and (faintly)
     /// in the HUD. Cold and clinical: ARC is meant to feel alien wherever it appears.
@@ -580,11 +636,23 @@ enum FrontEnd {
         c.labelRight(v, W / 2 + uiS(160), y, size: uiSf(22), color: color, weight: .bold)
     }
 
-    static func gameOver(_ c: Canvas2D, world: World, input: InputState, qualifies: Bool, t: Float, pad: Bool = false) {
-        backdrop(c, t, top: packRGBA(22, 4, 4), bottom: packRGBA(44, 8, 8))
-        c.labelCentered("YOU DIED", uiS(64), size: uiSf(88), color: red, weight: .heavy, shadow: true, glow: redGlow)
-        c.labelCentered("The \(world.colonyName) citadel holds.", uiS(168), size: uiSf(22), color: packRGBA(210, 160, 160), weight: .medium)
-        statRow(c, "DEPTH REACHED", "\(world.level)", uiS(208))
+    /// The tally. `victory` is set only when the ceremony brought us here, and it swaps the heading,
+    /// the subtitle and the palette — the stats and the name-entry path below are deliberately shared,
+    /// so the player who finishes the game records a score by exactly the same route as everyone else.
+    static func gameOver(_ c: Canvas2D, world: World, input: InputState, qualifies: Bool, t: Float,
+                         pad: Bool = false, victory: Bool = false) {
+        backdrop(c, t, top: victory ? packRGBA(8, 16, 22) : packRGBA(22, 4, 4),
+                       bottom: victory ? packRGBA(14, 30, 38) : packRGBA(44, 8, 8))
+        if victory {
+            c.labelCentered("CLUSTER RETAKEN", uiS(64), size: uiSf(72), color: cold, weight: .heavy,
+                            shadow: true, glow: packRGBA(10, 44, 58))
+            c.labelCentered("All \(Progression.totalFloors) floors. Every citadel. You walked out.",
+                            uiS(168), size: uiSf(22), color: packRGBA(170, 205, 218), weight: .medium)
+        } else {
+            c.labelCentered("YOU DIED", uiS(64), size: uiSf(88), color: red, weight: .heavy, shadow: true, glow: redGlow)
+            c.labelCentered("The \(world.colonyName) citadel holds.", uiS(168), size: uiSf(22), color: packRGBA(210, 160, 160), weight: .medium)
+        }
+        statRow(c, victory ? "FLOORS CLEARED" : "DEPTH REACHED", "\(world.level)", uiS(208))
         statRow(c, "FINAL SCORE", "\(world.score)", uiS(242), color: amber)
         if qualifies && input.nameEntryActive {
             c.labelCentered("A NEW RECORD — ENTER YOUR NAME", uiS(286), size: uiSf(20), color: packRGBA(120, 230, 150), weight: .semibold)

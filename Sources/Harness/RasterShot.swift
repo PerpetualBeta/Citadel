@@ -1189,6 +1189,25 @@ extension RasterRenderer {
             }
             if !done { print("RASTERSHOT: dorm check found no dormitory in the sampled seeds") }
         }
+
+        // ── THE ENDING ── one frame per beat, into the same directory, so shotcheck guards the
+        // ceremony alongside everything else. This matters more here than anywhere: the ending is
+        // reached exactly once, by clearing every floor of every citadel, so it is the one screen
+        // no play-test will ever visit and the only one that could break and stay broken. The
+        // sample times are chosen to catch each thing that could silently stop working: a citation
+        // block mid-hold, the medal framing, and the window framing after two dissolves.
+        if EndingArt.available {
+            for (name, at) in [("citation", Float(3.0)),
+                               ("medal", EndingArt.citationTime + 2.0),
+                               ("window", EndingArt.citationTime + 10.0)] {
+                FrontEnd.ending(canvas, t: at)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.height,
+                                  scale: 1, to: dir.appendingPathComponent("ending-\(name).png"))
+            }
+            print("RASTERSHOT: wrote 3 ending frames (ceremony runs \(String(format: "%.1f", EndingArt.duration))s)")
+        } else {
+            print("RASTERSHOT: no ending plate — ceremony frames skipped")
+        }
     }
 }
 #endif

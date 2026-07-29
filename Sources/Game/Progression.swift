@@ -24,4 +24,11 @@ enum Progression {
     static func planetName(_ level: Int) -> String { planets[planetIndex(level)] }
     /// True on the last floor of a citadel — clearing it teleports to the next planet.
     static func isLastFloor(_ level: Int) -> Bool { floorInBuilding(level) == floorsPerBuilding }
+
+    /// Every floor of every citadel — the run's end, and the only way to see the ending. Derived, so
+    /// adding a planet or a floor moves the finish line without anybody remembering to update a 48.
+    static var totalFloors: Int { floorsPerBuilding * planets.count }
+
+    /// True once this floor was the LAST one: there is no next building to rotate into.
+    static func isFinalFloor(_ level: Int) -> Bool { level >= totalFloors }
 }
