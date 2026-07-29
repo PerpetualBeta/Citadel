@@ -102,6 +102,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Harness/QueenMeshTest.swift \
                     Sources/Harness/RigProbe.swift \
                     Sources/Harness/ProofRoom.swift \
+                    Sources/Harness/RasterShot.swift \
                     Sources/Harness/CreatureMergeProbe.swift \
                     Sources/Harness/GPUProbe.swift
 
