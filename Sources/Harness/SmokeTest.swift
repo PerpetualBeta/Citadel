@@ -42,7 +42,12 @@ enum SmokeTest {
             // narrowing a route, could wall the level off and this suite would still pass. Walk it at
             // half-cell resolution against the real collider set instead. Matters most on the plant
             // floors, where the machinery is the biggest solid object in the game.
-            check(walkableWithProps(level: level), "L\(level) exit still reachable past the furniture")
+            let pw = propWalk(level: level)
+            check(walkableWithProps(pw), "L\(level) exit still reachable past the furniture")
+            // …and so must every KEYCARD be. One flood answers both questions, so this costs nothing.
+            let dry = unreachableKeys(pw)
+            check(dry.isEmpty, "L\(level) every keycard is collectable past the furniture"
+                             + (dry.isEmpty ? "" : " — STRANDED: \(dry.map { "\($0)" }.joined(separator: ", "))"))
             // side-by-side doors are mechanically impossible (leaves slide into
             // the jambs — adjacent doors have nowhere to go); the generator must
             // never produce them. And the exit must be a real elevator door.
@@ -183,6 +188,47 @@ enum SmokeTest {
             }
         }
         check(stackedItems == 0, "no stacked pickups across a 30-map sweep (\(stackedItems) pairs)")
+
+        // …and a WIDE sweep for stranded keycards, because this fault is probabilistic: it needs a
+        // locked floor whose key room happens to furnish over the rolled cell, so one seed per depth
+        // would miss it for weeks. Levels 2/4/6/8 span one-lock, two-lock and the plant floors.
+        // The "cards seen" tally is not padding: without it, a change that stopped placing keys
+        // altogether would turn every assertion above into a vacuous pass.
+        // The seeds are the ones the GAME actually visits: Renderer derives each floor's seed as
+        // `baseSeed + level * 1000` from a random per-run baseSeed, so sweeping arbitrary seeds would
+        // explore a different space than play does. Levels 2–8 span one-lock, two-lock and the plant
+        // floors. The "cards seen" tally is not padding: without it, a change that stopped placing
+        // keys would turn every assertion here into a vacuous pass.
+        var unwinnable: [String] = []
+        var cardsSeen = 0, floorsSwept = 0, floorsCulled = 0, propsCulled = 0
+        for base in stride(from: UInt64(1), through: 40, by: 1).map({ $0 &* 2_654_435_761 &+ 7 }) {
+            for lv in 2...8 {
+                let seed = base &+ UInt64(lv) &* 1000
+                let ci = Progression.planetIndex(lv)
+                let pw = propWalk(level: lv, colonyIndex: ci, seed: seed)
+                let keyKinds = Set(KeyColor.allCases.map { $0.item })
+                cardsSeen += pw.world.items.filter { keyKinds.contains($0.kind) }.count
+                floorsSwept += 1
+                // How often does the chokepoint cull actually act, and how much does it take? It is
+                // meant to be a rescue for a rare bad roll, not routine redecorating — if this ever
+                // starts reporting most floors, the fix has become the problem.
+                let lostProps = MapGen.generate(level: lv, colonyIndex: ci, seed: seed).props.count
+                              - pw.world.props.count
+                if lostProps > 0 { floorsCulled += 1; propsCulled += lostProps }
+                for d in keyDiagnosis(pw) { unwinnable.append("L\(lv)/base\(base) \(d)") }
+                let win = winnable(level: lv, colonyIndex: ci, seed: seed)
+                if !win.ok {
+                    unwinnable.append("L\(lv)/base\(base) UNWINNABLE — \(win.why) || "
+                                      + blockageReport(level: lv, colonyIndex: ci, seed: seed))
+                }
+            }
+        }
+        check(cardsSeen > 0, "the keycard sweep actually saw keycards (\(cardsSeen) across \(floorsSwept) floors)")
+        check(floorsCulled * 20 <= floorsSwept,
+              "the chokepoint cull stays a rescue, not routine (\(floorsCulled)/\(floorsSwept) floors, \(propsCulled) props)")
+        check(unwinnable.isEmpty,
+              "every floor winnable with locks AND furniture together (\(floorsSwept) floors)"
+              + (unwinnable.isEmpty ? "" : " — \(unwinnable.count) BAD: \(unwinnable.prefix(6).joined(separator: " · "))"))
 
         // the pipe-routing mask must be DIAGONALLY CLEAN: a diagonal-only
         // adjacency makes the kernel's bilinear upsample plateau at mid-values,
@@ -970,15 +1016,54 @@ enum SmokeTest {
         FileManager.default.temporaryDirectory.appendingPathComponent("citadel-smoke-scores.json")
     }
 
-    /// Can the marine actually WALK from the arrival car to the exit, with every solid prop in place?
+    /// One furniture-aware flood of a level, then answerable at any world position.
     ///
     /// `reachableIgnoringLocks` walks the map, which knows nothing about furniture — so it would pass a
     /// level whose only route was blocked by a machine. This builds the real World (which derives
     /// `propColliders` from the authored geometry) and floods a HALF-CELL grid, rejecting any node the
     /// player's own radius could not occupy. Half-cell because a 1-wide corridor with a prop pushed
     /// into it can still be passable down one side, and a whole-cell test would call that solid.
-    private static func walkableWithProps(level: Int) -> Bool {
-        let w = World(level: level, colonyIndex: level - 1, seed: UInt64(level) &* 7919 &+ 13)
+    ///
+    /// Locked doors count as OPEN, which makes this a one-directional test — "can the marine physically
+    /// get there at all" — and therefore free of false alarms: whatever it rejects is unreachable however
+    /// the locks are ordered. Lock ORDERING is `MapGen.solvable()`'s business, not this flood's.
+    private struct PropWalk {
+        let world: World
+        let step: Float
+        let nx: Int, ny: Int
+        let seen: Set<Int>
+
+        /// Is any part of map cell (cx, cy) reachable? A whole cell spans a 2×2 block of half-cell
+        /// nodes, and a route can arrive at any of them — testing only the centre one invents blockages.
+        func reachedCell(_ cx: Int, _ cy: Int) -> Bool {
+            guard cx >= 0, cy >= 0 else { return false }
+            for sy in 0...1 { for sx in 0...1 {
+                let jx = cx * 2 + sx, jy = cy * 2 + sy
+                if jx < nx, jy < ny, seen.contains(jy * nx + jx) { return true }
+            } }
+            return false
+        }
+
+        /// Could the marine stand somewhere that puts `p` within `within` of her centre?
+        /// Node centres sit on a half-cell lattice, so allow half a step of quantisation slack —
+        /// generous by design, because a test that cries wolf gets ignored.
+        func canReach(_ p: SIMD2<Float>, within: Float) -> Bool {
+            let reach = within + step * 0.5
+            let span = Int((reach / step).rounded(.up))
+            let ix = Int(p.x / step), iy = Int(p.y / step)
+            for oy in -span...span { for ox in -span...span {
+                let jx = ix + ox, jy = iy + oy
+                guard jx >= 0, jy >= 0, jx < nx, jy < ny else { continue }
+                let c = SIMD2((Float(jx) + 0.5) * step, (Float(jy) + 0.5) * step)
+                if vlen(c - p) <= reach, seen.contains(jy * nx + jx) { return true }
+            } }
+            return false
+        }
+    }
+
+    private static func propWalk(level: Int, colonyIndex: Int? = nil, seed: UInt64? = nil) -> PropWalk {
+        let w = World(level: level, colonyIndex: colonyIndex ?? (level - 1),
+                      seed: seed ?? (UInt64(level) &* 7919 &+ 13))
         let m = w.map
         let r: Float = 0.28                                  // a shade under the player's own radius
         let step: Float = 0.5
@@ -989,8 +1074,7 @@ enum SmokeTest {
             guard m.inBounds(cx, cy), m.wall[m.idx(cx, cy)] == 0 || m.doors[m.idx(cx, cy)] != nil else { return false }
             return !w.blockedBySolidProp(px, py, r)
         }
-        func node(_ p: SIMD2<Float>) -> Int { Int(p.y / step) * nx + Int(p.x / step) }
-        let start = node(m.playerStart)
+        let start = Int(m.playerStart.y / step) * nx + Int(m.playerStart.x / step)
         var seen = Set<Int>([start])
         var q = [start], qi = 0
         while qi < q.count {
@@ -1002,13 +1086,210 @@ enum SmokeTest {
                 if !seen.contains(n), free(jx, jy) { seen.insert(n); q.append(n) }
             }
         }
+        return PropWalk(world: w, step: step, nx: nx, ny: ny, seen: seen)
+    }
+
+    /// Can the marine actually WALK from the arrival car to the exit, with every solid prop in place?
+    private static func walkableWithProps(_ pw: PropWalk) -> Bool {
+        let m = pw.world.map
         // the exit switch counts as reached if any node on its cell — or a neighbouring one — is in
         let ex = m.exitCell % m.w, ey = m.exitCell / m.w
         for (ox, oy) in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] {
-            let px = Float(ex + ox) + 0.5, py = Float(ey + oy) + 0.5
-            if seen.contains(node(SIMD2(px, py))) { return true }
+            if pw.reachedCell(ex + ox, ey + oy) { return true }
         }
         return false
+    }
+
+    /// The COMPLETE winnability test: a keyed flood over the FURNITURE-AWARE grid.
+    ///
+    /// The two checks that came before it each see half the problem, and a floor can be unwinnable
+    /// while passing both:
+    ///   • `MapGen.solvable()` reasons about lock ORDER, but over the bare map grid — blind to a route
+    ///     a machine blocks.
+    ///   • `propWalk` sees furniture, but treats every lock as open — blind to a card sealed behind
+    ///     the very door it opens.
+    /// Put a keycard where furniture blocks its only approach and both pass: the mask never gets set,
+    /// so the locked door never opens, so the exit is unreachable. State is (half-cell node, key mask)
+    /// — the product `solvable()` already walks, moved onto the finer prop-aware grid.
+    private static func winnable(level: Int, colonyIndex: Int, seed: UInt64,
+                                 ignoreProps: Bool = false) -> (ok: Bool, why: String) {
+        let w = World(level: level, colonyIndex: colonyIndex, seed: seed)
+        let m = w.map
+        let r: Float = 0.28, step: Float = 0.5
+        let nx = Int(Float(m.w) / step), ny = Int(Float(m.h) / step)
+        let keyKinds = Set(KeyColor.allCases.map { $0.item })
+        let keys = w.items.filter { keyKinds.contains($0.kind) }
+        let pickR = Float(0.5) + step * 0.5              // World.pickups distance + lattice slack
+
+        /// Cell-level passability for a node, given the keys held.
+        func free(_ ix: Int, _ iy: Int, _ mask: Int) -> Bool {
+            let px = (Float(ix) + 0.5) * step, py = (Float(iy) + 0.5) * step
+            let cx = Int(px), cy = Int(py)
+            guard m.inBounds(cx, cy) else { return false }
+            let ci = m.idx(cx, cy)
+            if m.wall[ci] != 0 {
+                guard let d = m.doors[ci] else { return false }
+                if let lock = d.locked, (mask & (1 << lock.rawValue)) == 0 { return false }
+            }
+            return ignoreProps || !w.blockedBySolidProp(px, py, r)
+        }
+        func maskAt(_ ix: Int, _ iy: Int, _ mask: Int) -> Int {
+            let p = SIMD2((Float(ix) + 0.5) * step, (Float(iy) + 0.5) * step)
+            var out = mask
+            for k in keys where vlen(k.pos - p) <= pickR {
+                if let kc = KeyColor.allCases.first(where: { $0.item == k.kind }) { out |= 1 << kc.rawValue }
+            }
+            return out
+        }
+
+        let sx = Int(m.playerStart.x / step), sy = Int(m.playerStart.y / step)
+        let start = sy * nx + sx
+        var seen = Set<Int>()
+        var q = [(start, maskAt(sx, sy, 0))]
+        seen.insert(start * 8 + q[0].1)
+        var qi = 0
+        let ex = m.exitCell % m.w, ey = m.exitCell / m.w
+        // A whole map cell covers FOUR half-cell nodes (2×2), so register all of them per cell. Taking
+        // only the node under the cell CENTRE reads a route that arrives via the other half as blocked —
+        // which is exactly the false alarm this line originally produced.
+        var exitNodes = Set<Int>()
+        for (ox, oy) in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let cx = ex + ox, cy = ey + oy
+            guard cx >= 0, cy >= 0 else { continue }
+            for sy in 0...1 { for sx in 0...1 {
+                let jx = cx * 2 + sx, jy = cy * 2 + sy
+                if jx < nx, jy < ny { exitNodes.insert(jy * nx + jx) }
+            } }
+        }
+        while qi < q.count {
+            let (cur, mask) = q[qi]; qi += 1
+            if exitNodes.contains(cur) { return (true, "") }
+            let ix = cur % nx, iy = cur / nx
+            for (jx, jy) in [(ix - 1, iy), (ix + 1, iy), (ix, iy - 1), (ix, iy + 1)] {
+                guard jx >= 0, jy >= 0, jx < nx, jy < ny, free(jx, jy, mask) else { continue }
+                let n = jy * nx + jx
+                let nm = maskAt(jx, jy, mask)
+                if !seen.contains(n * 8 + nm) { seen.insert(n * 8 + nm); q.append((n, nm)) }
+            }
+        }
+        // Characterise the failure so a hit is diagnosable rather than just red.
+        let got = q.reduce(0) { $0 | $1.1 }
+        let missed = keys.filter { k in
+            guard let kc = KeyColor.allCases.first(where: { $0.item == k.kind }) else { return false }
+            return (got & (1 << kc.rawValue)) == 0
+        }
+        if !missed.isEmpty {
+            return (false, "could not collect \(missed.map { "\($0.kind)" }.joined(separator: "/"))")
+        }
+        // Cards all in hand and still no exit → something physical is in the way. Name what: the exit
+        // cell, and every solid prop close enough to be sitting in its approach.
+        let near = w.props.filter { vlen($0.pos - SIMD2(Float(ex) + 0.5, Float(ey) + 0.5)) < 3.0 }
+            .sorted { vlen($0.pos - SIMD2(Float(ex) + 0.5, Float(ey) + 0.5))
+                    < vlen($1.pos - SIMD2(Float(ex) + 0.5, Float(ey) + 0.5)) }.prefix(6)
+            .map { "\($0.kind)@\(String(format: "%.2f", vlen($0.pos - SIMD2(Float(ex) + 0.5, Float(ey) + 0.5))))" }
+        // Which FAMILY of fault is this? Re-run the identical flood with furniture collision off. If the
+        // exit opens up, some prop mid-route is the wall; if it stays shut, the fault is in the map or
+        // lock topology and no amount of moving furniture will help. One bit, and it decides the fix.
+        let blame = ignoreProps ? "map/lock topology (furniture is not the cause)"
+                  : (winnable(level: level, colonyIndex: colonyIndex, seed: seed, ignoreProps: true).ok
+                     ? "FURNITURE blocks the route" : "map/lock topology — furniture is NOT the cause")
+        return (false, "exit at (\(ex),\(ey)) unreachable with all \(keys.count) card(s) in hand — \(blame)"
+                     + (near.isEmpty ? "; no props within 3 cells of the exit" : "; props at exit: " + near.joined(separator: ", ")))
+    }
+
+    /// Exactly WHAT is walling a floor off. Floods twice — with solids and without — diffs the two,
+    /// and reports the frontier where the lost region meets the reachable one, naming every prop and
+    /// drum standing at it. `blockedBySolidProp` counts drums as well as furniture, so "furniture
+    /// blocks the route" is not by itself enough to know what to move.
+    private static func blockageReport(level: Int, colonyIndex: Int, seed: UInt64) -> String {
+        let w = World(level: level, colonyIndex: colonyIndex, seed: seed)
+        let m = w.map
+        let r: Float = 0.28, step: Float = 0.5
+        let nx = Int(Float(m.w) / step), ny = Int(Float(m.h) / step)
+        func flood(_ solids: Bool) -> Set<Int> {
+            func free(_ ix: Int, _ iy: Int) -> Bool {
+                let px = (Float(ix) + 0.5) * step, py = (Float(iy) + 0.5) * step
+                let cx = Int(px), cy = Int(py)
+                guard m.inBounds(cx, cy) else { return false }
+                let ci = m.idx(cx, cy)
+                if m.wall[ci] != 0, m.doors[ci] == nil { return false }
+                return !solids || !w.blockedBySolidProp(px, py, r)
+            }
+            let s = Int(m.playerStart.y / step) * nx + Int(m.playerStart.x / step)
+            var seen = Set<Int>([s]), q = [s], qi = 0
+            while qi < q.count {
+                let cur = q[qi]; qi += 1
+                let ix = cur % nx, iy = cur / nx
+                for (jx, jy) in [(ix - 1, iy), (ix + 1, iy), (ix, iy - 1), (ix, iy + 1)] {
+                    guard jx >= 0, jy >= 0, jx < nx, jy < ny else { continue }
+                    let n = jy * nx + jx
+                    if !seen.contains(n), free(jx, jy) { seen.insert(n); q.append(n) }
+                }
+            }
+            return seen
+        }
+        let withS = flood(true), bare = flood(false)
+        let lost = bare.subtracting(withS)
+        // Did World's chokepoint cull actually fire? Compare the props that survived against what
+        // MapGen emitted: equal counts mean the cull declined to act, which is a different bug from
+        // the cull acting and not being enough.
+        let generated = MapGen.generate(level: level, colonyIndex: colonyIndex, seed: seed).props.count
+        var lines = ["lost \(lost.count) half-cell nodes to solids",
+                     "props \(generated) generated → \(w.props.count) live (cull \(generated == w.props.count ? "DID NOT FIRE" : "removed \(generated - w.props.count)"))"]
+        var shown = 0
+        for n in lost.sorted() where shown < 4 {
+            let ix = n % nx, iy = n / nx
+            let onFrontier = [(ix - 1, iy), (ix + 1, iy), (ix, iy - 1), (ix, iy + 1)].contains {
+                $0.0 >= 0 && $0.1 >= 0 && $0.0 < nx && $0.1 < ny && withS.contains($0.1 * nx + $0.0)
+            }
+            guard onFrontier else { continue }
+            shown += 1
+            let p = SIMD2<Float>((Float(ix) + 0.5) * step, (Float(iy) + 0.5) * step)
+            let np = w.props.filter { vlen($0.pos - p) < 1.6 }
+                .map { "\($0.kind)@\(String(format: "%.2f", vlen($0.pos - p)))" }
+            let nd = w.drums.filter { vlen($0.pos - p) < 1.6 }
+                .map { "DRUM@\(String(format: "%.2f", vlen($0.pos - p)))" }
+            let what = (np + nd).isEmpty ? "nothing within 1.6 — a wall-adjacent pinch"
+                                         : (np + nd).joined(separator: ", ")
+            lines.append("frontier (\(String(format: "%.2f", p.x)),\(String(format: "%.2f", p.y))): \(what)")
+        }
+        return lines.joined(separator: " | ")
+    }
+
+    /// WHY a card is unreachable. A red assertion that names the obstruction is worth ten that only
+    /// say "no": the whole point of catching this in a sweep rather than in play is that the sweep can
+    /// hand you the mechanism instead of a seed to go and stare at.
+    private static func keyDiagnosis(_ pw: PropWalk) -> [String] {
+        let m = pw.world.map
+        let keyKinds = Set(KeyColor.allCases.map { $0.item })
+        var out: [String] = []
+        for k in pw.world.items where keyKinds.contains(k.kind) && !pw.canReach(k.pos, within: 0.5) {
+            let cx = Int(k.pos.x), cy = Int(k.pos.y)
+            let ci = m.idx(cx, cy)
+            var notes = ["cell (\(cx),\(cy))"]
+            notes.append(m.wall[ci] != 0 ? "IN A WALL (tex \(m.wall[ci]))" : "on floor")
+            if m.doors[ci] != nil { notes.append("on a DOOR cell") }
+            if m.hazard[ci] { notes.append("in HAZARD") }
+            if pw.world.blockedBySolidProp(k.pos.x, k.pos.y, 0.28) { notes.append("INSIDE a solid prop") }
+            let near = pw.world.props.filter { vlen($0.pos - k.pos) < 2.0 }
+                .sorted { vlen($0.pos - k.pos) < vlen($1.pos - k.pos) }.prefix(4)
+                .map { "\($0.kind)@\(String(format: "%.2f", vlen($0.pos - k.pos)))" }
+            if !near.isEmpty { notes.append("nearest props: " + near.joined(separator: ", ")) }
+            out.append("\(k.kind) — " + notes.joined(separator: "; "))
+        }
+        return out
+    }
+
+    /// Every KEYCARD must be physically collectable. An unreachable card is an unwinnable floor —
+    /// the same severity as an unreachable exit — and nothing tested for it, because the two checks
+    /// that look adjacent each miss it from opposite sides: `MapGen.solvable()` reasons over the map
+    /// GRID and knows nothing about furniture, while the flood above is furniture-aware but only ever
+    /// asked about the EXIT. A card inside a canteen range or walled in by a bank of lockers satisfied
+    /// both. `within: 0.5` is the real pickup distance (see World.pickups), not a guess.
+    private static func unreachableKeys(_ pw: PropWalk) -> [ItemKind] {
+        let keyKinds = Set(KeyColor.allCases.map { $0.item })
+        return pw.world.items.filter { keyKinds.contains($0.kind) && !pw.canReach($0.pos, within: 0.5) }
+                             .map { $0.kind }
     }
 
     /// Flood fill from start treating any door as passable; confirms the exit

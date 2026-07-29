@@ -362,15 +362,7 @@ final class World {
         for s in gen.sockets { sockets.append(Socket(pos: s.pos, yaw: s.yaw, charge: socketCharge, maxCharge: socketCharge)) }
         self.props = gen.props
         self.colonists = gen.colonists
-        // furniture solid-collision boxes — each piece's authored footprint, oriented
-        // by its yaw and flush-matched to where it renders against the wall
-        for pr in gen.props where pr.kind != .wallPipe && pr.kind != .papers {   // papers flat on the deck — decorative, no floor collider
-            let (hw, hd) = GPURaymarch.furnitureFootprint(pr.kind)
-            let inward = SIMD2<Float>(-sin(pr.yaw), cos(pr.yaw))
-            let tangent = SIMD2<Float>(cos(pr.yaw), sin(pr.yaw))
-            let center = pr.againstWall ? pr.pos - inward * (0.46 - hd) : pr.pos
-            propColliders.append(PropBox(c: center, hw: hw, hd: hd, boundR: (hw * hw + hd * hd).squareRoot(), tangent: tangent, inward: inward))
-        }
+        propColliders = World.colliders(for: gen.props)
         self.monsterTotal = monsters.count
         // Every drum must be REFUELLABLE: the pump triggers within
         // drumRefuelRange of the drum's rim, and the player's own bulk keeps
@@ -380,6 +372,10 @@ final class World {
         // tantalisingly out of reach. Validate against the live colliders and
         // relocate any failure to the nearest clear floor.
         relocateUnreachableDrums()
+        // Then the two ways furniture can make a floor UNFINISHABLE rather than merely awkward.
+        // Props first: culling one changes the collider set the key check then reasons about.
+        clearPropsWallingOffTheFloor()
+        relocateStrandedKeys()
         buildSteamVents()
         buildSparkSites()
         buildDebris()
@@ -640,17 +636,7 @@ final class World {
     /// and monster movement so NEITHER walks through furniture. Pure CPU: a handful of
     /// cheap tests per move (bounding-circle rejected first), nothing on the GPU.
     func blockedBySolidProp(_ x: Float, _ y: Float, _ r: Float) -> Bool {
-        for b in propColliders {
-            let relx = x - b.c.x, rely = y - b.c.y
-            let br = b.boundR + r
-            if relx * relx + rely * rely > br * br { continue }              // quick reject (far)
-            let dW = relx * b.tangent.x + rely * b.tangent.y                 // into the box's frame
-            let dD = relx * b.inward.x + rely * b.inward.y
-            let cw = max(-b.hw, min(b.hw, dW)), cd = max(-b.hd, min(b.hd, dD))   // closest point on the box
-            let ox = relx - (b.tangent.x * cw + b.inward.x * cd)
-            let oy = rely - (b.tangent.y * cw + b.inward.y * cd)
-            if ox * ox + oy * oy < r * r { return true }                     // circle overlaps the box
-        }
+        for b in propColliders where World.boxHits(b, x, y, r) { return true }
         for d in drums where d.health > 0 {                                  // drums are solid too
             let rr: Float = 0.42 + r
             let dx = d.pos.x - x, dy = d.pos.y - y
@@ -2154,6 +2140,199 @@ final class World {
         return false
     }
 
+    /// Furniture solid-collision boxes — each piece's authored footprint, oriented by its yaw and
+    /// flush-matched to where it renders against the wall. Static and pure so `init` can use it before
+    /// `self` is whole, and derived from the list each time rather than appended to, so a pass that
+    /// culls a prop refreshes the colliders by simply asking again.
+    private static func colliders(for props: [Prop]) -> [PropBox] { props.compactMap { collider(for: $0) } }
+
+    /// One piece's box, or nil if the piece has no floor collider. Per-prop rather than only in bulk,
+    /// because the chokepoint cull has to ask which INDIVIDUAL piece fills a given gap.
+    private static func collider(for pr: Prop) -> PropBox? {
+        guard pr.kind != .wallPipe, pr.kind != .papers else { return nil }   // papers flat on the deck — decorative
+        let (hw, hd) = GPURaymarch.furnitureFootprint(pr.kind)
+        let inward = SIMD2<Float>(-sin(pr.yaw), cos(pr.yaw))
+        let tangent = SIMD2<Float>(cos(pr.yaw), sin(pr.yaw))
+        let center = pr.againstWall ? pr.pos - inward * (0.46 - hd) : pr.pos
+        return PropBox(c: center, hw: hw, hd: hd, boundR: (hw * hw + hd * hd).squareRoot(),
+                       tangent: tangent, inward: inward)
+    }
+
+    /// Does a circle at (x, y) of radius r overlap this oriented box? The single definition of that
+    /// test, shared by movement and by the chokepoint cull, so the two can never drift apart.
+    @inline(__always) static func boxHits(_ b: PropBox, _ x: Float, _ y: Float, _ r: Float) -> Bool {
+        let relx = x - b.c.x, rely = y - b.c.y
+        let br = b.boundR + r
+        if relx * relx + rely * rely > br * br { return false }               // quick reject (far)
+        let dW = relx * b.tangent.x + rely * b.tangent.y                     // into the box's frame
+        let dD = relx * b.inward.x + rely * b.inward.y
+        let cw = max(-b.hw, min(b.hw, dW)), cd = max(-b.hd, min(b.hd, dD))    // closest point on the box
+        let ox = relx - (b.tangent.x * cw + b.inward.x * cd)
+        let oy = rely - (b.tangent.y * cw + b.inward.y * cd)
+        return ox * ox + oy * oy < r * r
+    }
+
+    /// Is any part of map cell (cx, cy) standable-reachable? A whole cell spans a 2×2 block of
+    /// half-cell nodes and a route may arrive at any of them, so testing only the centre node
+    /// invents blockages that aren't there.
+    private func reachedCell(_ f: (step: Float, nx: Int, ny: Int, seen: Set<Int>), _ cx: Int, _ cy: Int) -> Bool {
+        guard cx >= 0, cy >= 0 else { return false }
+        for sy in 0...1 { for sx in 0...1 {
+            let jx = cx * 2 + sx, jy = cy * 2 + sy
+            if jx < f.nx, jy < f.ny, f.seen.contains(jy * f.nx + jx) { return true }
+        } }
+        return false
+    }
+
+    private func exitStandable(_ f: (step: Float, nx: Int, ny: Int, seen: Set<Int>)) -> Bool {
+        guard map.exitCell >= 0 else { return false }
+        let ex = map.exitCell % map.w, ey = map.exitCell / map.w
+        for (ox, oy) in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
+        where reachedCell(f, ex + ox, ey + oy) { return true }
+        return false
+    }
+
+    /// A decorative prop must never WALL THE FLOOR OFF.
+    ///
+    /// `relocateUnreachableDrums` already refuses to park a drum in a chokepoint, for exactly this
+    /// reason — "a solid drum parked in a chokepoint walls off everything behind it" — but furniture
+    /// carries no such rule, and furniture became solid too. A desk shoved into a corridor mouth can
+    /// therefore sever the level. `MapGen.solvable()` cannot see it (bare grid) and the arrival flood
+    /// runs on only a handful of sampled floors, so it survived.
+    ///
+    /// The cure is to delete the offender, not to move it: these pieces are set dressing, and one
+    /// missing desk costs nothing next to an unfinishable floor. Offenders are identified precisely
+    /// rather than by area — a prop standing in the region the furniture COSTS us, with a still-reachable
+    /// node next door. That is literally the piece filling the doorway between the two sides, so the
+    /// cull stays surgical instead of stripping a whole room because one desk blocked a corridor.
+    private func clearPropsWallingOffTheFloor() {
+        // Locks open throughout: this asks whether the marine can physically get there at all.
+        // Lock ORDER is MapGen.solvable()'s business.
+        guard !exitStandable(standableFlood(exceptLock: nil)) else { return }
+        // Blockage is LAYERED in practice — a sanitary block's ranks of stalls and troughs can wall a
+        // route several pieces deep, and peeling the first rank simply exposes the next — so keep going
+        // until the exit is back rather than a fixed few passes. Each pass removes at least one prop
+        // (or returns), so this terminates.
+        while true {
+            let withProps = standableFlood(exceptLock: nil)
+            if exitStandable(withProps) { return }
+            let bare = standableFlood(exceptLock: nil, ignoreProps: true)
+            let lost = bare.seen.subtracting(withProps.seen)
+            guard !lost.isEmpty else { return }              // not the furniture's doing — leave it alone
+            let nx = bare.nx, ny = bare.ny
+            // Work from the GAP to the piece filling it, never the other way. A wall-hugging locker's
+            // `pos` is the floor cell it stands on — often still on the reachable side — while its
+            // collider is shoved toward the wall, into the gap. Matching on position therefore misses
+            // exactly the pieces that do this, so instead: find the frontier nodes (lost, but with a
+            // reachable neighbour) and cull whatever actually overlaps them.
+            var doomed = Set<Int>()
+            for n in lost {
+                let ix = n % nx, iy = n / nx
+                let onFrontier = [(ix - 1, iy), (ix + 1, iy), (ix, iy - 1), (ix, iy + 1)].contains {
+                    $0.0 >= 0 && $0.1 >= 0 && $0.0 < nx && $0.1 < ny && withProps.seen.contains($0.1 * nx + $0.0)
+                }
+                guard onFrontier else { continue }
+                let px = (Float(ix) + 0.5) * bare.step, py = (Float(iy) + 0.5) * bare.step
+                for (pi, pr) in props.enumerated() {
+                    if let b = World.collider(for: pr), World.boxHits(b, px, py, 0.28) { doomed.insert(pi) }
+                }
+            }
+            guard !doomed.isEmpty else { return }
+            props = props.enumerated().filter { !doomed.contains($0.offset) }.map { $0.element }
+            propColliders = World.colliders(for: props)
+        }
+    }
+
+    /// Every KEYCARD must be COLLECTABLE, or the floor cannot be finished.
+    ///
+    /// This is the drum problem again, and it hid for the same reason: MapGen rolls the card's cell
+    /// while the room is still bare, and the wall-hugging furniture passes never consult it — so a card
+    /// landing one cell off a wall can end up penned by a desk on one side and a locker on the diagonal.
+    /// Neither existing guard sees it. `MapGen.solvable()` reasons over the bare grid, where the cell is
+    /// plain floor; the arrival-reachability flood is furniture-aware but treats every lock as open, so
+    /// it never asks whether the card that opens a door can itself be picked up. Observed at roughly one
+    /// floor in 280 — which over a 48-floor run is something like one playthrough in six.
+    ///
+    /// Unlike a drum, a card can never simply be dropped, so this relocates and is written to succeed.
+    /// The destination must satisfy both halves of solvability at once, which a single flood delivers:
+    /// standable-reachable from the arrival car with every locked door treated as open EXCEPT the ones
+    /// this card opens. That keeps a layered floor layered — a blue card may still legitimately sit
+    /// beyond the red door — while making it impossible for a card to end up behind its own lock.
+    private func relocateStrandedKeys() {
+        var keyOf: [Int: KeyColor] = [:]
+        for c in KeyColor.allCases { keyOf[c.item.rawValue] = c }
+        for i in items.indices {
+            guard let color = keyOf[items[i].kind.rawValue] else { continue }
+            let f = standableFlood(exceptLock: color)
+            // Could the marine stand somewhere that brings this point within pickup range? Node centres
+            // sit on a half-cell lattice, so allow half a step of quantisation slack.
+            func collectable(_ p: SIMD2<Float>) -> Bool {
+                let reach = World.pickupRange + f.step * 0.5
+                let span = Int((reach / f.step).rounded(.up))
+                let ix = Int(p.x / f.step), iy = Int(p.y / f.step)
+                for oy in -span...span { for ox in -span...span {
+                    let jx = ix + ox, jy = iy + oy
+                    guard jx >= 0, jy >= 0, jx < f.nx, jy < f.ny else { continue }
+                    let c = SIMD2<Float>((Float(jx) + 0.5) * f.step, (Float(jy) + 0.5) * f.step)
+                    if vlen(c - p) <= reach, f.seen.contains(jy * f.nx + jx) { return true }
+                } }
+                return false
+            }
+            if collectable(items[i].pos) { continue }
+            // Nearest qualifying cell ANYWHERE on the floor, not within a fixed ring: a bounded search
+            // could come back empty and leave the card stranded, which is the one outcome not allowed.
+            // Nearest-to-home keeps it in its intended room whenever that room has anywhere valid.
+            let home = items[i].pos
+            var best: SIMD2<Float>?, bestD = Float.greatestFiniteMagnitude
+            for cy in 0..<map.h { for cx in 0..<map.w {
+                let ci = map.idx(cx, cy)
+                guard map.wall[ci] == 0, map.doors[ci] == nil, !map.hazard[ci] else { continue }
+                let c = SIMD2<Float>(Float(cx) + 0.5, Float(cy) + 0.5)
+                let d = vlen(c - home)
+                guard d < bestD else { continue }                      // cheap reject before the dear tests
+                guard !blockedBySolidProp(c.x, c.y, 0.3) else { continue }
+                guard !items.indices.contains(where: { $0 != i && vlen(items[$0].pos - c) < 0.9 }) else { continue }
+                guard collectable(c) else { continue }
+                bestD = d; best = c
+            } }
+            if let b = best { items[i].pos = b }
+        }
+    }
+
+    /// Half-cell flood from the arrival car over floor a player-sized body can actually stand on, with
+    /// locked doors treated as OPEN except any locked with `exceptLock`. Half-cell because a one-wide
+    /// corridor with a prop pushed into it is still passable down one side, and a whole-cell test would
+    /// call that solid.
+    private func standableFlood(exceptLock: KeyColor?,
+                                ignoreProps: Bool = false) -> (step: Float, nx: Int, ny: Int, seen: Set<Int>) {
+        let r: Float = 0.28, step: Float = 0.5                   // a shade under the player's own radius
+        let nx = Int(Float(map.w) / step), ny = Int(Float(map.h) / step)
+        func free(_ ix: Int, _ iy: Int) -> Bool {
+            let px = (Float(ix) + 0.5) * step, py = (Float(iy) + 0.5) * step
+            let cx = Int(px), cy = Int(py)
+            guard map.inBounds(cx, cy) else { return false }
+            let ci = map.idx(cx, cy)
+            if map.wall[ci] != 0 {
+                guard let d = map.doors[ci] else { return false }
+                if let lock = d.locked, lock == exceptLock { return false }
+            }
+            return ignoreProps || !blockedBySolidProp(px, py, r)
+        }
+        let start = Int(map.playerStart.y / step) * nx + Int(map.playerStart.x / step)
+        var seen = Set<Int>([start]), q = [start]
+        var qi = 0
+        while qi < q.count {
+            let cur = q[qi]; qi += 1
+            let ix = cur % nx, iy = cur / nx
+            for (jx, jy) in [(ix - 1, iy), (ix + 1, iy), (ix, iy - 1), (ix, iy + 1)] {
+                guard jx >= 0, jy >= 0, jx < nx, jy < ny else { continue }
+                let n = jy * nx + jx
+                if !seen.contains(n), free(jx, jy) { seen.insert(n); q.append(n) }
+            }
+        }
+        return (step, nx, ny, seen)
+    }
+
     private func relocateUnreachableDrums() {
         // Fuel-STORE drums are exempt: the chamber is an intentional stack —
         // you pump what you can reach from the doorway and shoot the rest.
@@ -2325,9 +2504,14 @@ final class World {
 
     // ── pickups & hazards ──────────────────────────────────────────────────
 
+    /// How close the marine must get to sweep up an item. Shared with the keycard-collectability
+    /// guarantee in `relocateStrandedKeys` — were these two ever to disagree, the generator would
+    /// certify cards the player cannot actually pick up.
+    static let pickupRange: Float = 0.5
+
     private func pickups(audio: AudioEngine) {
         for i in items.indices where !items[i].taken {
-            if vlen(player.pos - items[i].pos) < 0.5 {
+            if vlen(player.pos - items[i].pos) < World.pickupRange {
                 if applyPickup(items[i].kind, audio: audio) {
                     items[i].taken = true
                     message(items[i].kind.pickupMessage)
