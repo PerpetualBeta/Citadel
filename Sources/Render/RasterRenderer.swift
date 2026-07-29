@@ -4070,6 +4070,24 @@ final class RasterRenderer {
             if let comp = world.props.first(where: { $0.kind == .machineCompressor }) {
                 frame(comp.pos, "raster-machinewall-L\(lvl)")
             }
+            // COST OF THE MACHINERY, measured rather than assumed. It is static geometry, so it costs
+            // no CPU rebuild — but it is ~296k vertices added to a ~550k static mesh, drawn in full
+            // every frame including the shadow passes, and that lands squarely on the GPU time that the
+            // frame log already showed as the dominant remaining cost on these floors. A/B by stripping
+            // the machine props and rebuilding the level, from the same camera.
+            func medianMS(_ w: World) -> Double {
+                var ms: [Double] = []
+                for _ in 0..<12 { let t = ProcessInfo.processInfo.systemUptime; _ = rr.render(w, into: canvas); ms.append((ProcessInfo.processInfo.systemUptime - t) * 1000) }
+                ms.sort(); return ms[ms.count / 2]
+            }
+            let withMach = medianMS(world)
+            let bare = World(level: lvl, colonyIndex: 0, seed: 3)
+            bare.monsters = []; bare.colonists = []
+            bare.props.removeAll { RasterRenderer.machineSpec($0.kind) != nil }
+            bare.player.pos = world.player.pos; bare.player.dir = world.player.dir
+            let without = medianMS(bare)
+            print(String(format: "RASTERSHOT: L%d machinery frame cost — %.2fms with, %.2fms without (+%.2fms, %+.0f%%)",
+                         lvl, withMach, without, withMach - without, (withMach / max(without, 1e-6) - 1) * 100))
         }
 
         // FUEL STORE check: the 2×2 hazard-doored fuel chamber — how it reads from OUTSIDE (the hazard-striped
