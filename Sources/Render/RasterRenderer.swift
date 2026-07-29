@@ -1071,10 +1071,10 @@ final class RasterRenderer {
     private func buildHallSteelwork(_ map: GameMap, into v: inout [PVert]) {
         hallLamps.removeAll(keepingCapacity: true)
         guard !ceilingLampsOn else { return }              // plant floors only (they carry the tall halls)
-        let steel  = M(SIMD3(0.30, 0.31, 0.34), 0.52, 0.72)
-        let strut  = M(SIMD3(0.26, 0.27, 0.30), 0.56, 0.70)
-        let shade  = M(SIMD3(0.22, 0.22, 0.24), 0.50, 0.60)
-        let lampE  = M(SIMD3(0.95, 0.88, 0.72), 0.40, 0.0, SIMD3(2.3, 1.85, 1.15))   // the lit face, over-bright → blooms
+        let steel  = Self.M(SIMD3(0.30, 0.31, 0.34), 0.52, 0.72)
+        let strut  = Self.M(SIMD3(0.26, 0.27, 0.30), 0.56, 0.70)
+        let shade  = Self.M(SIMD3(0.22, 0.22, 0.24), 0.50, 0.60)
+        let lampE  = Self.M(SIMD3(0.95, 0.88, 0.72), 0.40, 0.0, SIMD3(2.3, 1.85, 1.15))   // the lit face, over-bright → blooms
         let chordTop: Float = 1.42, chordBot: Float = 1.24  // the truss sits high in the hall, clear of sightlines
         func tall(_ x: Int, _ y: Int) -> Bool {
             guard map.inBounds(x, y) else { return false }
@@ -1115,11 +1115,11 @@ final class RasterRenderer {
                 let hw: Float = 0.055                                          // chord half-width
                 // top + bottom chords
                 if spanAlongX {
-                    emitAABB(SIMD3(p0, chordTop - 0.035, c - hw), SIMD3(p1, chordTop + 0.035, c + hw), steel, into: &v)
-                    emitAABB(SIMD3(p0, chordBot - 0.030, c - hw * 0.8), SIMD3(p1, chordBot + 0.030, c + hw * 0.8), steel, into: &v)
+                    Self.emitAABB(SIMD3(p0, chordTop - 0.035, c - hw), SIMD3(p1, chordTop + 0.035, c + hw), steel, into: &v)
+                    Self.emitAABB(SIMD3(p0, chordBot - 0.030, c - hw * 0.8), SIMD3(p1, chordBot + 0.030, c + hw * 0.8), steel, into: &v)
                 } else {
-                    emitAABB(SIMD3(c - hw, chordTop - 0.035, p0), SIMD3(c + hw, chordTop + 0.035, p1), steel, into: &v)
-                    emitAABB(SIMD3(c - hw * 0.8, chordBot - 0.030, p0), SIMD3(c + hw * 0.8, chordBot + 0.030, p1), steel, into: &v)
+                    Self.emitAABB(SIMD3(c - hw, chordTop - 0.035, p0), SIMD3(c + hw, chordTop + 0.035, p1), steel, into: &v)
+                    Self.emitAABB(SIMD3(c - hw * 0.8, chordBot - 0.030, p0), SIMD3(c + hw * 0.8, chordBot + 0.030, p1), steel, into: &v)
                 }
                 // zig-zag web bracing between the chords — what makes it read as a truss, not two bars
                 var t = p0
@@ -1129,7 +1129,7 @@ final class RasterRenderer {
                     let yA = up ? chordBot : chordTop, yB = up ? chordTop : chordBot
                     let pa = spanAlongX ? SIMD3<Float>(t, yA, c) : SIMD3<Float>(c, yA, t)
                     let pb = spanAlongX ? SIMD3<Float>(t2, yB, c) : SIMD3<Float>(c, yB, t2)
-                    emitTube(pa, pb, r: 0.022, sides: 4, strut, caps: false, into: &v)
+                    Self.emitTube(pa, pb, r: 0.022, sides: 4, strut, caps: false, into: &v)
                     t = t2; up = !up
                 }
                 // every other bay carries a downlight slung under the truss
@@ -1137,9 +1137,9 @@ final class RasterRenderer {
                     let lx = spanAlongX ? Float(s + e + 1) * 0.5 : c
                     let lz = spanAlongX ? c : Float(s + e + 1) * 0.5
                     let hangTop = chordBot, lampY: Float = chordBot - 0.16
-                    emitTube(SIMD3(lx, hangTop, lz), SIMD3(lx, lampY + 0.05, lz), r: 0.012, sides: 5, strut, caps: false, into: &v)
-                    emitAABB(SIMD3(lx - 0.10, lampY + 0.02, lz - 0.10), SIMD3(lx + 0.10, lampY + 0.07, lz + 0.10), shade, into: &v)
-                    emitQuad(SIMD3(lx, lampY + 0.019, lz), SIMD3(0.085, 0, 0), SIMD3(0, 0, 0.085), SIMD3(0, -1, 0), lampE, into: &v)
+                    Self.emitTube(SIMD3(lx, hangTop, lz), SIMD3(lx, lampY + 0.05, lz), r: 0.012, sides: 5, strut, caps: false, into: &v)
+                    Self.emitAABB(SIMD3(lx - 0.10, lampY + 0.02, lz - 0.10), SIMD3(lx + 0.10, lampY + 0.07, lz + 0.10), shade, into: &v)
+                    Self.emitQuad(SIMD3(lx, lampY + 0.019, lz), SIMD3(0.085, 0, 0), SIMD3(0, 0, 0.085), SIMD3(0, -1, 0), lampE, into: &v)
                     hallLamps.append(SIMD3(lx, lampY, lz))
                 }
                 bay += 1
@@ -1148,19 +1148,7 @@ final class RasterRenderer {
         } }
     }
 
-    /// A cast TEE: the main passes through a slightly fatter body, and the branch leaves it square. Real plant
-    /// pipework never just abuts — a branch is taken off a tee, so this is what a junction must look like.
-    private func emitTee(at p: SIMD3<Float>, run: SIMD3<Float>, branch: SIMD3<Float>, r: Float, _ body: Mat, into v: inout [PVert]) {
-        emitTube(p - run * 0.052, p + run * 0.052, r: r * 1.34, sides: 9, body, caps: false, into: &v)   // the tee body on the main
-        emitTube(p, p + branch * 0.055, r: r * 1.18, sides: 9, body, caps: false, into: &v)              // the branch socket
-    }
 
-    /// A 90° ELBOW: a fatter short sleeve on each leg where the two directions meet, so the corner reads as a
-    /// cast fitting rather than two pipes mitred into each other.
-    private func emitElbow(at p: SIMD3<Float>, legA: SIMD3<Float>, legB: SIMD3<Float>, r: Float, _ body: Mat, into v: inout [PVert]) {
-        emitTube(p, p + legA * 0.055, r: r * 1.26, sides: 9, body, caps: false, into: &v)
-        emitTube(p, p + legB * 0.055, r: r * 1.26, sides: 9, body, caps: false, into: &v)
-    }
 
     /// WALL PIPEWORK — the copper runs the raymarcher draws in its SDF (`wallPipes` + `fittingsField`), ported
     /// to real geometry so the raster gets them too. Dimensions are taken from the kernel so both renderers
@@ -1169,11 +1157,11 @@ final class RasterRenderer {
     /// valve (tapered bonnet, rising stem, red-enamel handwheel) or a pressure gauge (stub + dial).
     /// Emitted into the STATIC mesh: pipework never moves, so it costs nothing per frame.
     private func buildPipework(_ map: GameMap, into v: inout [PVert]) {
-        let copper = M(SIMD3(0.60, 0.35, 0.25), 0.44, 0.85)      // drawn copper, warm against the iron
-        let flange = M(SIMD3(0.42, 0.26, 0.19), 0.52, 0.80)
-        let steel  = M(SIMD3(0.34, 0.36, 0.40), 0.40, 0.80)
-        let enamel = M(SIMD3(0.40, 0.045, 0.035), 0.34, 0.10)    // red-enamel handwheel
-        let dialF  = M(SIMD3(0.82, 0.80, 0.74), 0.35, 0.05)
+        let copper = Self.M(SIMD3(0.60, 0.35, 0.25), 0.44, 0.85)      // drawn copper, warm against the iron
+        let flange = Self.M(SIMD3(0.42, 0.26, 0.19), 0.52, 0.80)
+        let steel  = Self.M(SIMD3(0.34, 0.36, 0.40), 0.40, 0.80)
+        let enamel = Self.M(SIMD3(0.40, 0.045, 0.035), 0.34, 0.10)    // red-enamel handwheel
+        let dialF  = Self.M(SIMD3(0.82, 0.80, 0.74), 0.35, 0.05)
         // Pipework hangs at ONE height for the whole level — the standard storey less the kernel's 0.28 drop.
         // Keying it to each cell's own ceiling made a run jump a whole storey at a hall/corridor boundary and
         // let a fitting sit off its own run; a constant also matches the raymarcher (which uses a global ceilH).
@@ -1236,12 +1224,12 @@ final class RasterRenderer {
                     func service(_ py: Float, _ r: Float, _ mat: Mat, _ lateral: Float, _ sides: Int) {
                         let a2 = at(t0, lateral), b2 = at(t1, lateral)
                         let a = SIMD3<Float>(a2.x, py, a2.y), b = SIMD3<Float>(b2.x, py, b2.y)
-                        emitTube(a, b, r: r, sides: sides, mat, caps: false, into: &v)
+                        Self.emitTube(a, b, r: r, sides: sides, mat, caps: false, into: &v)
                         for (pt, dir) in [(a, SIMD3<Float>(-axis.x, 0, -axis.y)), (b, SIMD3<Float>(axis.x, 0, axis.y))] {
                             let face = pt + intoWall * (off + lateral + 0.04)
-                            emitTube(pt, face, r: r, sides: sides, mat, caps: false, into: &v)     // spur square into the wall
-                            emitElbow(at: pt, legA: dir * -1, legB: intoWall, r: r, flange, into: &v)
-                            emitTube(face - intoWall * 0.012, face + intoWall * 0.012, r: r * 1.6, sides: 8, flange, into: &v)
+                            Self.emitTube(pt, face, r: r, sides: sides, mat, caps: false, into: &v)     // spur square into the wall
+                            Self.emitElbow(at: pt, legA: dir * -1, legB: intoWall, r: r, flange, into: &v)
+                            Self.emitTube(face - intoWall * 0.012, face + intoWall * 0.012, r: r * 1.6, sides: 8, flange, into: &v)
                         }
                     }
                     service(runY, pipeR, copper, 0, 10)                     // the copper main
@@ -1265,14 +1253,14 @@ final class RasterRenderer {
                         if hEnd - riserT > 0.15 {
                             let r2 = at(riserT, lateral), e2 = at(hEnd, lateral)
                             let footY = runY, top = SIMD3<Float>(r2.x, highY, r2.y), foot = SIMD3<Float>(r2.x, footY, r2.y)
-                            emitTube(foot, top, r: hr, sides: 9, copper, caps: false, into: &v)                       // the riser
-                            emitTube(top, SIMD3(e2.x, highY, e2.y), r: hr, sides: 9, copper, caps: false, into: &v)    // the high main
+                            Self.emitTube(foot, top, r: hr, sides: 9, copper, caps: false, into: &v)                       // the riser
+                            Self.emitTube(top, SIMD3(e2.x, highY, e2.y), r: hr, sides: 9, copper, caps: false, into: &v)    // the high main
                             let up = SIMD3<Float>(0, 1, 0), along = SIMD3<Float>(axis.x, 0, axis.y)
-                            emitTee(at: SIMD3(r2.x, footY, r2.y), run: along, branch: up, r: pipeR, flange, into: &v)  // branch off the low main
-                            emitElbow(at: top, legA: -up, legB: along, r: hr, flange, into: &v)                        // riser turns into the high main
+                            Self.emitTee(at: SIMD3(r2.x, footY, r2.y), run: along, branch: up, r: pipeR, flange, into: &v)  // branch off the low main
+                            Self.emitElbow(at: top, legA: -up, legB: along, r: hr, flange, into: &v)                        // riser turns into the high main
                             let fEnd = SIMD3<Float>(e2.x, highY, e2.y)
-                            emitTube(fEnd, fEnd + intoWall * (off + lateral + 0.04), r: hr, sides: 9, copper, caps: false, into: &v)
-                            emitElbow(at: fEnd, legA: -along, legB: intoWall, r: hr, flange, into: &v)                 // and back into the wall
+                            Self.emitTube(fEnd, fEnd + intoWall * (off + lateral + 0.04), r: hr, sides: 9, copper, caps: false, into: &v)
+                            Self.emitElbow(at: fEnd, legA: -along, legB: intoWall, r: hr, flange, into: &v)                 // and back into the wall
                         }
                         t = hi + 1
                     }
@@ -1288,8 +1276,8 @@ final class RasterRenderer {
             let base = SIMD3<Float>(f.x, py, f.y)
             let outw = SIMD3<Float>(n2.x, 0, n2.y)
             if f.w < 0.5 {                                                 // ── SHUT-OFF VALVE ──
-                emitTube(base + outw * 0.10, base + outw * 0.152, r: 0.032, sides: 10, copper, into: &v)   // tapered bonnet
-                emitTube(base + outw * 0.150, base + outw * 0.196, r: 0.011, sides: 8, steel, into: &v)    // rising stem
+                Self.emitTube(base + outw * 0.10, base + outw * 0.152, r: 0.032, sides: 10, copper, into: &v)   // tapered bonnet
+                Self.emitTube(base + outw * 0.150, base + outw * 0.196, r: 0.011, sides: 8, steel, into: &v)    // rising stem
                 let hubC = base + outw * 0.19, rimR: Float = 0.052
                 let t = SIMD3<Float>(-n2.y, 0, n2.x), up = SIMD3<Float>(0, 1, 0)
                 let seg = 14                                                                              // handwheel RIM as a ring of chords
@@ -1297,23 +1285,23 @@ final class RasterRenderer {
                 for k in 1...seg {
                     let ang = Float(k) / Float(seg) * 2 * Float.pi
                     let cur = hubC + t * (cosf(ang) * rimR) + up * (sinf(ang) * rimR)
-                    emitTube(prev, cur, r: 0.0095, sides: 6, enamel, caps: false, into: &v)
+                    Self.emitTube(prev, cur, r: 0.0095, sides: 6, enamel, caps: false, into: &v)
                     prev = cur
                 }
                 for k in 0..<4 {                                                                          // four spokes
                     let ang = Float(k) / 4 * 2 * Float.pi
-                    emitTube(hubC, hubC + t * (cosf(ang) * rimR) + up * (sinf(ang) * rimR), r: 0.007, sides: 6, enamel, into: &v)
+                    Self.emitTube(hubC, hubC + t * (cosf(ang) * rimR) + up * (sinf(ang) * rimR), r: 0.007, sides: 6, enamel, into: &v)
                 }
-                emitTube(hubC - outw * 0.014, hubC + outw * 0.014, r: 0.014, sides: 8, steel, into: &v)    // stem nut
+                Self.emitTube(hubC - outw * 0.014, hubC + outw * 0.014, r: 0.014, sides: 8, steel, into: &v)    // stem nut
             } else {                                                       // ── PRESSURE GAUGE ──
                 let stubTop = base + SIMD3<Float>(0, 0.09, 0)
-                emitTube(base + outw * 0.10, stubTop + outw * 0.10, r: 0.013, sides: 8, copper, into: &v)  // stub up off the run
+                Self.emitTube(base + outw * 0.10, stubTop + outw * 0.10, r: 0.013, sides: 8, copper, into: &v)  // stub up off the run
                 let dialC = base + SIMD3<Float>(0, 0.105, 0) + outw * 0.10
-                emitTube(dialC - outw * 0.016, dialC + outw * 0.016, r: 0.038, sides: 14, steel, into: &v) // dial body
+                Self.emitTube(dialC - outw * 0.016, dialC + outw * 0.016, r: 0.038, sides: 14, steel, into: &v) // dial body
                 let t = SIMD3<Float>(-n2.y, 0, n2.x), up = SIMD3<Float>(0, 1, 0)
-                emitEllipse(dialC + outw * 0.018, t, up, 0.031, 0.031, outw, dialF, into: &v)              // pale dial face
-                emitTube(dialC + outw * 0.019, dialC + outw * 0.019 + t * 0.012 + up * 0.020, r: 0.0035, sides: 5,
-                         M(SIMD3(0.08, 0.07, 0.06), 0.5, 0.1), into: &v)                                  // needle
+                Self.emitEllipse(dialC + outw * 0.018, t, up, 0.031, 0.031, outw, dialF, into: &v)              // pale dial face
+                Self.emitTube(dialC + outw * 0.019, dialC + outw * 0.019 + t * 0.012 + up * 0.020, r: 0.0035, sides: 5,
+                         Self.M(SIMD3(0.08, 0.07, 0.06), 0.5, 0.1), into: &v)                                  // needle
             }
         }
     }
@@ -1349,51 +1337,48 @@ final class RasterRenderer {
         return wallMat(WallTex(rawValue: map.wall[map.idx(x, y)]) ?? .steelPanel)
     }
 
-    // ── procedural PBR material tables (asset-light) ──────────────────────────
-    struct Mat { var a: SIMD3<Float>; var r: Float; var m: Float; var e: SIMD3<Float> }
-    private func M(_ a: SIMD3<Float>, _ r: Float, _ m: Float, _ e: SIMD3<Float> = .zero) -> Mat { Mat(a: a, r: r, m: m, e: e) }
     private func wallMat(_ t: WallTex) -> Mat {
         switch t {
-        case .none:           return M(SIMD3(0.45, 0.45, 0.50), 0.60, 0.50)
-        case .ironPlate:      return M(SIMD3(0.40, 0.35, 0.31), 0.66, 0.55)
-        case .brushedSteel:   return M(SIMD3(0.56, 0.59, 0.66), 0.44, 0.75)
-        case .steelPanel:     return M(SIMD3(0.38, 0.40, 0.46), 0.52, 0.62)
-        case .litPanel:       return M(SIMD3(0.40, 0.44, 0.52), 0.45, 0.40, SIMD3(0.12, 0.26, 0.23))   // soft strip-light glow
-        case .ribbedSteel:    return M(SIMD3(0.42, 0.44, 0.50), 0.50, 0.66)
-        case .pipework:       return M(SIMD3(0.44, 0.46, 0.52), 0.34, 0.78)
-        case .glass:          return M(SIMD3(0.14, 0.22, 0.28), 0.14, 0.25)
-        case .stone:          return M(SIMD3(0.40, 0.36, 0.31), 0.90, 0.02)
-        case .stoneSteel:     return M(SIMD3(0.36, 0.34, 0.31), 0.80, 0.22)
-        case .computer:       return M(SIMD3(0.22, 0.26, 0.32), 0.50, 0.35, SIMD3(0.32, 0.24, 0.10))   // amber CRT
-        case .hazard:         return M(SIMD3(0.52, 0.44, 0.12), 0.60, 0.35)
-        case .doorPanel:      return M(SIMD3(0.44, 0.46, 0.50), 0.50, 0.60)
-        case .doorRed:        return M(SIMD3(0.48, 0.16, 0.14), 0.55, 0.40, SIMD3(0.24, 0.03, 0.02))
-        case .doorBlue:       return M(SIMD3(0.16, 0.24, 0.48), 0.55, 0.40, SIMD3(0.03, 0.06, 0.24))
-        case .doorYellow:     return M(SIMD3(0.52, 0.46, 0.12), 0.55, 0.40, SIMD3(0.22, 0.18, 0.03))
-        case .exitSwitch:     return M(SIMD3(0.20, 0.44, 0.24), 0.50, 0.30, SIMD3(0.10, 0.36, 0.16))   // green exit glow
-        case .doorHazard:     return M(SIMD3(0.50, 0.44, 0.12), 0.60, 0.35)
-        case .elevatorSealed: return M(SIMD3(0.40, 0.42, 0.47), 0.50, 0.60)
-        case .liftWall:       return M(SIMD3(0.42, 0.44, 0.49), 0.50, 0.62)
-        case .concrete:       return M(SIMD3(0.52, 0.51, 0.48), 0.92, 0.02)   // matte poured concrete — no metal, no glow
-        case .opsBoard:       return M(SIMD3(0.05, 0.055, 0.065), 0.42, 0.20)   // dark glass; the RGB content is emissive (see rr_fragment)
-        case .medWall:        return M(SIMD3(0.82, 0.83, 0.82), 0.68, 0.02)     // white painted concrete — bright, matte, sterile
-        case .subwayTile:     return M(SIMD3(0.86, 0.87, 0.86), 0.24, 0.04)     // glazed ceramic — bright and a touch shiny
-        case .sanTile:        return M(SIMD3(0.70, 0.78, 0.74), 0.20, 0.04)     // glazed pale green — wet-room shine
+        case .none:           return Self.M(SIMD3(0.45, 0.45, 0.50), 0.60, 0.50)
+        case .ironPlate:      return Self.M(SIMD3(0.40, 0.35, 0.31), 0.66, 0.55)
+        case .brushedSteel:   return Self.M(SIMD3(0.56, 0.59, 0.66), 0.44, 0.75)
+        case .steelPanel:     return Self.M(SIMD3(0.38, 0.40, 0.46), 0.52, 0.62)
+        case .litPanel:       return Self.M(SIMD3(0.40, 0.44, 0.52), 0.45, 0.40, SIMD3(0.12, 0.26, 0.23))   // soft strip-light glow
+        case .ribbedSteel:    return Self.M(SIMD3(0.42, 0.44, 0.50), 0.50, 0.66)
+        case .pipework:       return Self.M(SIMD3(0.44, 0.46, 0.52), 0.34, 0.78)
+        case .glass:          return Self.M(SIMD3(0.14, 0.22, 0.28), 0.14, 0.25)
+        case .stone:          return Self.M(SIMD3(0.40, 0.36, 0.31), 0.90, 0.02)
+        case .stoneSteel:     return Self.M(SIMD3(0.36, 0.34, 0.31), 0.80, 0.22)
+        case .computer:       return Self.M(SIMD3(0.22, 0.26, 0.32), 0.50, 0.35, SIMD3(0.32, 0.24, 0.10))   // amber CRT
+        case .hazard:         return Self.M(SIMD3(0.52, 0.44, 0.12), 0.60, 0.35)
+        case .doorPanel:      return Self.M(SIMD3(0.44, 0.46, 0.50), 0.50, 0.60)
+        case .doorRed:        return Self.M(SIMD3(0.48, 0.16, 0.14), 0.55, 0.40, SIMD3(0.24, 0.03, 0.02))
+        case .doorBlue:       return Self.M(SIMD3(0.16, 0.24, 0.48), 0.55, 0.40, SIMD3(0.03, 0.06, 0.24))
+        case .doorYellow:     return Self.M(SIMD3(0.52, 0.46, 0.12), 0.55, 0.40, SIMD3(0.22, 0.18, 0.03))
+        case .exitSwitch:     return Self.M(SIMD3(0.20, 0.44, 0.24), 0.50, 0.30, SIMD3(0.10, 0.36, 0.16))   // green exit glow
+        case .doorHazard:     return Self.M(SIMD3(0.50, 0.44, 0.12), 0.60, 0.35)
+        case .elevatorSealed: return Self.M(SIMD3(0.40, 0.42, 0.47), 0.50, 0.60)
+        case .liftWall:       return Self.M(SIMD3(0.42, 0.44, 0.49), 0.50, 0.62)
+        case .concrete:       return Self.M(SIMD3(0.52, 0.51, 0.48), 0.92, 0.02)   // matte poured concrete — no metal, no glow
+        case .opsBoard:       return Self.M(SIMD3(0.05, 0.055, 0.065), 0.42, 0.20)   // dark glass; the RGB content is emissive (see rr_fragment)
+        case .medWall:        return Self.M(SIMD3(0.82, 0.83, 0.82), 0.68, 0.02)     // white painted concrete — bright, matte, sterile
+        case .subwayTile:     return Self.M(SIMD3(0.86, 0.87, 0.86), 0.24, 0.04)     // glazed ceramic — bright and a touch shiny
+        case .sanTile:        return Self.M(SIMD3(0.70, 0.78, 0.74), 0.20, 0.04)     // glazed pale green — wet-room shine
         }
     }
     private func flatMat(_ id: Int) -> Mat {
         switch FlatTex(rawValue: id) ?? .concrete {
-        case .concrete:    return M(SIMD3(0.34, 0.33, 0.31), 0.85, 0.02)
-        case .metalFloor:  return M(SIMD3(0.31, 0.31, 0.33), 0.55, 0.32)   // near-neutral, less metal so it doesn't crush to a dark blue patch vs concrete
-        case .grate:       return M(SIMD3(0.23, 0.23, 0.24), 0.55, 0.45)   // dark IRON grate — clearly darker than concrete but not a blue void (also lifts tier-3/4 base floor)
-        case .nukage:      return M(SIMD3(0.22, 0.34, 0.12), 0.30, 0.00, SIMD3(0.15, 0.36, 0.09))      // toxic glow
-        case .ceilTech:    return M(SIMD3(0.17, 0.19, 0.23), 0.70, 0.32)
-        case .ceilDark:    return M(SIMD3(0.10, 0.11, 0.13), 0.72, 0.22)
-        case .ceilStone:   return M(SIMD3(0.30, 0.28, 0.25), 0.85, 0.02)
-        case .ceilWhite:   return M(SIMD3(0.80, 0.81, 0.80), 0.60, 0.02, SIMD3(0.10, 0.10, 0.098))   // painted panels + a faint light run
-        case .rock:        return M(SIMD3(0.32, 0.29, 0.25), 0.90, 0.00)
-        case .blood:       return M(SIMD3(0.18, 0.05, 0.05), 0.40, 0.00)
-        case .teleportPad: return M(SIMD3(0.20, 0.30, 0.50), 0.30, 0.20, SIMD3(0.16, 0.30, 0.62))      // teleporter glow
+        case .concrete:    return Self.M(SIMD3(0.34, 0.33, 0.31), 0.85, 0.02)
+        case .metalFloor:  return Self.M(SIMD3(0.31, 0.31, 0.33), 0.55, 0.32)   // near-neutral, less metal so it doesn't crush to a dark blue patch vs concrete
+        case .grate:       return Self.M(SIMD3(0.23, 0.23, 0.24), 0.55, 0.45)   // dark IRON grate — clearly darker than concrete but not a blue void (also lifts tier-3/4 base floor)
+        case .nukage:      return Self.M(SIMD3(0.22, 0.34, 0.12), 0.30, 0.00, SIMD3(0.15, 0.36, 0.09))      // toxic glow
+        case .ceilTech:    return Self.M(SIMD3(0.17, 0.19, 0.23), 0.70, 0.32)
+        case .ceilDark:    return Self.M(SIMD3(0.10, 0.11, 0.13), 0.72, 0.22)
+        case .ceilStone:   return Self.M(SIMD3(0.30, 0.28, 0.25), 0.85, 0.02)
+        case .ceilWhite:   return Self.M(SIMD3(0.80, 0.81, 0.80), 0.60, 0.02, SIMD3(0.10, 0.10, 0.098))   // painted panels + a faint light run
+        case .rock:        return Self.M(SIMD3(0.32, 0.29, 0.25), 0.90, 0.00)
+        case .blood:       return Self.M(SIMD3(0.18, 0.05, 0.05), 0.40, 0.00)
+        case .teleportPad: return Self.M(SIMD3(0.20, 0.30, 0.50), 0.30, 0.20, SIMD3(0.16, 0.30, 0.62))      // teleporter glow
         }
     }
 
@@ -1408,59 +1393,8 @@ final class RasterRenderer {
     //  Colours over 1.0 denote an emissive/bloom part (LEDs, charged sockets, screens).
     //  Winding is irrelevant — the passes cull .none — so only the NORMALS must be right.
 
-    /// A GShape colour → PBR material. Over-bright (peak channel > 1) = a self-lit part
-    /// (the raymarcher's emissive convention); otherwise the prop CLASS's rough/metal.
-    private func propMat(_ col: SIMD3<Float>, _ rough: Float, _ metal: Float) -> Mat {
-        let peak = max(col.x, max(col.y, col.z))
-        if peak > 1.0 {                       // authored bloom → emissive fixture part
-            let base = col / peak             // hue at unit brightness
-            return M(base * 0.30, 0.40, 0.0, base * peak * 0.9)
-        }
-        return M(col, rough, metal)           // greasy industrial metal (grime added in-shader)
-    }
 
-    /// Tessellate one prop shape into `v`, mapping local→world with `xf` (position:
-    /// yaw + translate) and `xn` (normal: yaw only). Emits per-vertex normals.
-    private func tessShape(_ sh: GPURaymarch.GShape, rough: Float, metal: Float,
-                           _ xf: (SIMD3<Float>) -> SIMD3<Float>,
-                           _ xn: (SIMD3<Float>) -> SIMD3<Float>,
-                           into v: inout [PVert]) {
-        let m = propMat(SIMD3(sh.col.x, sh.col.y, sh.col.z), rough, metal)
-        func push(_ lp: SIMD3<Float>, _ ln: SIMD3<Float>) {
-            let p = xf(lp); let n = simd_normalize(xn(ln))
-            v.append(PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
-                           ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z))
-        }
-        func tri(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>,
-                 _ na: SIMD3<Float>, _ nb: SIMD3<Float>, _ nc: SIMD3<Float>) { push(a, na); push(b, nb); push(c, nc) }
-        func quad(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>, _ d: SIMD3<Float>, _ n: SIMD3<Float>) {
-            tri(a, b, c, n, n, n); tri(a, c, d, n, n, n)
-        }
-        let c = SIMD3(sh.a.x, sh.a.y, sh.a.z), bw = sh.b.w
-        if bw < -3.5 {                        // ── Z-disc: flat-capped cylinder along local +Z
-            tessAxial(c, r: sh.a.w, half: sh.b.y, axis: SIMD3(0, 0, 1), rad1: SIMD3(1, 0, 0), rad2: SIMD3(0, 1, 0), tri: tri)
-        } else if bw < -2.5 {                 // ── Y-cylinder: oil-drum axis
-            tessAxial(c, r: sh.a.w, half: sh.b.y, axis: SIMD3(0, 1, 0), rad1: SIMD3(1, 0, 0), rad2: SIMD3(0, 0, 1), tri: tri)
-        } else if bw < -1.5 {                 // ── box
-            tessBox(c, h: SIMD3(sh.b.x, sh.b.y, sh.b.z), quad: quad)
-        } else if bw < 0 {                    // ── sphere
-            tessSphere(c, r: sh.a.w, tri: tri)
-        } else {                              // ── round cone A(r1) → B(r2)
-            tessCone(c, SIMD3(sh.b.x, sh.b.y, sh.b.z), r1: sh.a.w, r2: sh.b.w, tri: tri)
-        }
-    }
 
-    private func tessBox(_ c: SIMD3<Float>, h: SIMD3<Float>,
-                         quad: (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>) -> Void) {
-        let x0 = c.x - h.x, x1 = c.x + h.x, y0 = c.y - h.y, y1 = c.y + h.y, z0 = c.z - h.z, z1 = c.z + h.z
-        func P(_ x: Float, _ y: Float, _ z: Float) -> SIMD3<Float> { SIMD3(x, y, z) }
-        quad(P(x1, y0, z0), P(x1, y0, z1), P(x1, y1, z1), P(x1, y1, z0), SIMD3(1, 0, 0))
-        quad(P(x0, y0, z1), P(x0, y0, z0), P(x0, y1, z0), P(x0, y1, z1), SIMD3(-1, 0, 0))
-        quad(P(x0, y1, z0), P(x1, y1, z0), P(x1, y1, z1), P(x0, y1, z1), SIMD3(0, 1, 0))
-        quad(P(x0, y0, z1), P(x1, y0, z1), P(x1, y0, z0), P(x0, y0, z0), SIMD3(0, -1, 0))
-        quad(P(x1, y0, z1), P(x0, y0, z1), P(x0, y1, z1), P(x1, y1, z1), SIMD3(0, 0, 1))
-        quad(P(x0, y0, z0), P(x1, y0, z0), P(x1, y1, z0), P(x0, y1, z0), SIMD3(0, 0, -1))
-    }
 
     /// A CHAMFERED box — the 6 faces inset by `r` in their in-plane axes, joined by 12 bevel quads and 8
     /// corner tris (45° facets). Rounds off the razor edges/corners so a hand-carried weapon reads as worn
@@ -1490,56 +1424,8 @@ final class RasterRenderer {
         } } }
     }
 
-    private func tessSphere(_ c: SIMD3<Float>, r: Float,
-                            tri: (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>) -> Void) {
-        let LON = 12, LAT = 8, tau = 2 * Float.pi
-        func nrm(_ la: Int, _ lo: Int) -> SIMD3<Float> {
-            let ph = Float(la) / Float(LAT) * Float.pi, s = Float(lo) / Float(LON) * tau
-            return SIMD3(sinf(ph) * cosf(s), cosf(ph), sinf(ph) * sinf(s))
-        }
-        for la in 0..<LAT { for lo in 0..<LON {
-            let n00 = nrm(la, lo), n01 = nrm(la, lo + 1), n10 = nrm(la + 1, lo), n11 = nrm(la + 1, lo + 1)
-            tri(c + r * n00, c + r * n01, c + r * n11, n00, n01, n11)
-            tri(c + r * n00, c + r * n11, c + r * n10, n00, n11, n10)
-        } }
-    }
 
-    /// A flat-capped cylinder about an arbitrary local `axis` (with `rad1`,`rad2` the
-    /// two unit directions spanning the circular cross-section). Serves both the
-    /// Y-cylinder (drums) and the Z-disc (reel faces) — same body, different axis.
-    private func tessAxial(_ c: SIMD3<Float>, r: Float, half: Float,
-                           axis: SIMD3<Float>, rad1: SIMD3<Float>, rad2: SIMD3<Float>,
-                           tri: (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>) -> Void) {
-        let SEG = 18, tau = 2 * Float.pi
-        let cb = c - axis * half, ct = c + axis * half   // bottom/top cap centres
-        func rd(_ s: Int) -> SIMD3<Float> { let a = Float(s) / Float(SEG) * tau; return cosf(a) * rad1 + sinf(a) * rad2 }
-        for s in 0..<SEG {
-            let d0 = rd(s), d1 = rd(s + 1)
-            let b0 = cb + r * d0, b1 = cb + r * d1, t0 = ct + r * d0, t1 = ct + r * d1
-            tri(b0, b1, t1, d0, d1, d1); tri(b0, t1, t0, d0, d1, d0)   // side (radial normals)
-            tri(ct, t0, t1, axis, axis, axis)                          // top cap (+axis)
-            tri(cb, b1, b0, -axis, -axis, -axis)                       // bottom cap (−axis)
-        }
-    }
 
-    private func tessCone(_ A: SIMD3<Float>, _ B: SIMD3<Float>, r1: Float, r2: Float,
-                          tri: (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>) -> Void) {
-        let ab = B - A, L = simd_length(ab)
-        let axis = L > 1e-5 ? ab / L : SIMD3<Float>(0, 1, 0)
-        let up = abs(axis.y) < 0.99 ? SIMD3<Float>(0, 1, 0) : SIMD3<Float>(1, 0, 0)
-        let u = simd_normalize(simd_cross(up, axis)), vv = simd_cross(axis, u)
-        let slope = L > 1e-5 ? (r2 - r1) / L : 0
-        let SEG = 14, tau = 2 * Float.pi
-        func rd(_ s: Int) -> SIMD3<Float> { let a = Float(s) / Float(SEG) * tau; return cosf(a) * u + sinf(a) * vv }
-        for s in 0..<SEG {
-            let d0 = rd(s), d1 = rd(s + 1)
-            let a0 = A + r1 * d0, a1 = A + r1 * d1, b0 = B + r2 * d0, b1 = B + r2 * d1
-            let n0 = simd_normalize(d0 - axis * slope), n1 = simd_normalize(d1 - axis * slope)   // slope-corrected side normal
-            tri(a0, a1, b1, n0, n1, n1); tri(a0, b1, b0, n0, n1, n0)
-            if r1 > 1e-4 { tri(A, a1, a0, -axis, -axis, -axis) }
-            if r2 > 1e-4 { tri(B, b0, b1, axis, axis, axis) }
-        }
-    }
 
     // ══ first-person weapon viewmodel ════════════════════════════════════════
     //  Reuses the SHARED gun geometry (Viewmodel.pack → gun-local GShapes, x=right y=up z=forward),
@@ -1574,9 +1460,9 @@ final class RasterRenderer {
         if em > 0.001 || peak > 1.0 {                        // self-lit part → low albedo + HDR emission
             let base = peak > 1e-3 ? col / peak : col
             let gain = max(em, peak > 1 ? peak : 0)
-            m = M(base * 0.25, 0.40, 0.0, base * gain * 0.9)
+            m = Self.M(base * 0.25, 0.40, 0.0, base * gain * 0.9)
         } else {
-            m = M(col, 0.34, 0.55)                           // gunmetal: semi-glossy, fairly metallic
+            m = Self.M(col, 0.34, 0.55)                           // gunmetal: semi-glossy, fairly metallic
         }
         func push(_ lp: SIMD3<Float>, _ ln: SIMD3<Float>) {
             let p = xf(lp); let n = simd_normalize(xn(ln))
@@ -1590,18 +1476,18 @@ final class RasterRenderer {
         }
         let c = SIMD3(sh.a.x, sh.a.y, sh.a.z)
         if bw < -4.5 {                                       // glow → emissive sphere
-            tessSphere(c, r: sh.a.w, tri: tri)
+            Self.tessSphere(c, r: sh.a.w, tri: tri)
         } else if bw < -3.5 {                                // z-cylinder (barrel / coils / nozzle) — axis +Z
-            tessAxial(c, r: sh.a.w, half: sh.b.y, axis: SIMD3(0, 0, 1), rad1: SIMD3(1, 0, 0), rad2: SIMD3(0, 1, 0), tri: tri)
+            Self.tessAxial(c, r: sh.a.w, half: sh.b.y, axis: SIMD3(0, 0, 1), rad1: SIMD3(1, 0, 0), rad2: SIMD3(0, 1, 0), tri: tri)
         } else if bw < -2.5 {                                // y-cylinder (fuel tank / cell housing) — axis +Y
-            tessAxial(c, r: sh.a.w, half: sh.b.y, axis: SIMD3(0, 1, 0), rad1: SIMD3(1, 0, 0), rad2: SIMD3(0, 0, 1), tri: tri)
+            Self.tessAxial(c, r: sh.a.w, half: sh.b.y, axis: SIMD3(0, 1, 0), rad1: SIMD3(1, 0, 0), rad2: SIMD3(0, 0, 1), tri: tri)
         } else if bw < -1.5 {                                // box → CHAMFERED (a hand-carried weapon has worn, rounded edges)
             let hb = SIMD3(sh.b.x, sh.b.y, sh.b.z)
             tessRoundBox(c, hb, min(hb.x, min(hb.y, hb.z)) * 0.32, quad: quad, tri: tri)
         } else if bw < 0 {                                   // sphere
-            tessSphere(c, r: sh.a.w, tri: tri)
+            Self.tessSphere(c, r: sh.a.w, tri: tri)
         } else {                                             // round cone A(r1) → B(r2)
-            tessCone(c, SIMD3(sh.b.x, sh.b.y, sh.b.z), r1: sh.a.w, r2: sh.b.w, tri: tri)
+            Self.tessCone(c, SIMD3(sh.b.x, sh.b.y, sh.b.z), r1: sh.a.w, r2: sh.b.w, tri: tri)
         }
     }
 
@@ -1611,14 +1497,6 @@ final class RasterRenderer {
     //  visible instances each frame (cheap: a few dozen objects) and rebuild the dynamic
     //  buffer, which draws in the SAME shadow+main passes → props cast/receive the pools.
 
-    private func rrShapeYExtent(_ s: GPURaymarch.GShape) -> (Float, Float) {
-        let a = s.a, b = s.b
-        if b.w < -3.5 { return (a.y - a.w, a.y + a.w) }               // z-disc: radius a.w spans Y
-        if b.w < -2.5 { return (a.y - b.y, a.y + b.y) }               // Y-cylinder: half-height b.y
-        if b.w < -1.5 { return (a.y - b.y - a.w, a.y + b.y + a.w) }   // box
-        if b.w < 0    { return (a.y - a.w, a.y + a.w) }               // sphere
-        return (min(a.y - a.w, b.y - b.w), max(a.y + a.w, b.y + b.w)) // cone
-    }
     private func rrShapeZExtent(_ s: GPURaymarch.GShape) -> (Float, Float) {
         let a = s.a, b = s.b
         if b.w < -3.5 { return (a.z - b.y, a.z + b.y) }               // z-disc: half-length b.y along Z
@@ -1636,133 +1514,13 @@ final class RasterRenderer {
         for i in shapes.indices { shapes[i].a.z += dz; if shapes[i].b.w >= 0 { shapes[i].b.z += dz } }
     }
 
-    /// Emit an axis-aligned box [lo,hi] with flat outward normals and material `m`. Winding is
-    /// irrelevant (the passes cull .none) — only the NORMALS must point out. Used for door leaves.
-    private func emitAABB(_ lo: SIMD3<Float>, _ hi: SIMD3<Float>, _ m: Mat, tid: Float = -1, into v: inout [PVert]) {
-        func vert(_ p: SIMD3<Float>, _ n: SIMD3<Float>) -> PVert {
-            PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
-                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z, tid: tid)
-        }
-        func face(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>, _ d: SIMD3<Float>, _ n: SIMD3<Float>) {
-            v += [vert(a, n), vert(b, n), vert(c, n), vert(a, n), vert(c, n), vert(d, n)]
-        }
-        let x0 = lo.x, y0 = lo.y, z0 = lo.z, x1 = hi.x, y1 = hi.y, z1 = hi.z
-        face(SIMD3(x0, y0, z1), SIMD3(x1, y0, z1), SIMD3(x1, y1, z1), SIMD3(x0, y1, z1), SIMD3(0, 0, 1))    // +Z
-        face(SIMD3(x1, y0, z0), SIMD3(x0, y0, z0), SIMD3(x0, y1, z0), SIMD3(x1, y1, z0), SIMD3(0, 0, -1))   // −Z
-        face(SIMD3(x1, y0, z1), SIMD3(x1, y0, z0), SIMD3(x1, y1, z0), SIMD3(x1, y1, z1), SIMD3(1, 0, 0))    // +X
-        face(SIMD3(x0, y0, z0), SIMD3(x0, y0, z1), SIMD3(x0, y1, z1), SIMD3(x0, y1, z0), SIMD3(-1, 0, 0))   // −X
-        face(SIMD3(x0, y1, z1), SIMD3(x1, y1, z1), SIMD3(x1, y1, z0), SIMD3(x0, y1, z0), SIMD3(0, 1, 0))    // +Y top
-        face(SIMD3(x0, y0, z0), SIMD3(x1, y0, z0), SIMD3(x1, y0, z1), SIMD3(x0, y0, z1), SIMD3(0, -1, 0))   // −Y bottom
-    }
 
-    /// A single flat quad (two triangles), centred at `c`, spanning ±`u` (right) and ±`w` (up), facing `n`.
-    private func emitQuad(_ c: SIMD3<Float>, _ u: SIMD3<Float>, _ w: SIMD3<Float>, _ n: SIMD3<Float>, _ m: Mat, into v: inout [PVert]) {
-        func vert(_ p: SIMD3<Float>) -> PVert {
-            PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
-                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z, tid: -1)
-        }
-        let a = c - u - w, b = c + u - w, cc = c + u + w, dd = c - u + w
-        v += [vert(a), vert(b), vert(cc), vert(a), vert(cc), vert(dd)]
-    }
 
-    /// A capped cylinder between two world points. The GShape cylinders the prop path uses are Y-axis or
-    /// Z-axis only, but a pipe run lies along an ARBITRARY axis, so tessellate it directly here.
-    private func emitTube(_ a: SIMD3<Float>, _ b: SIMD3<Float>, r: Float, sides: Int = 10, _ m: Mat, caps: Bool = true, into v: inout [PVert]) {
-        let ax = b - a; let len = simd_length(ax)
-        guard len > 1e-5, r > 1e-5 else { return }
-        let d = ax / len
-        let up = abs(d.y) < 0.9 ? SIMD3<Float>(0, 1, 0) : SIMD3<Float>(1, 0, 0)
-        let t = simd_normalize(simd_cross(up, d)), s = simd_cross(d, t)
-        func vert(_ p: SIMD3<Float>, _ n: SIMD3<Float>) -> PVert {
-            PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
-                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z, tid: -1)
-        }
-        var prevN = t, prevA = a + t * r, prevB = b + t * r
-        for i in 1...sides {
-            let ang = Float(i) / Float(sides) * 2 * Float.pi
-            let n = t * cosf(ang) + s * sinf(ang)
-            let ca = a + n * r, cb = b + n * r
-            v += [vert(prevA, prevN), vert(ca, n), vert(cb, n), vert(prevA, prevN), vert(cb, n), vert(prevB, prevN)]
-            if caps {
-                v += [vert(a, -d), vert(prevA, -d), vert(ca, -d)]      // near cap
-                v += [vert(b, d), vert(cb, d), vert(prevB, d)]         // far cap
-            }
-            prevN = n; prevA = ca; prevB = cb
-        }
-    }
 
-    /// A flat filled ELLIPSE (triangle-fan), radii `ru`×`rv` in the (u, up) plane, centred at `c`, facing `n`.
-    private func emitEllipse(_ c: SIMD3<Float>, _ u: SIMD3<Float>, _ up: SIMD3<Float>, _ ru: Float, _ rv: Float, _ n: SIMD3<Float>, _ m: Mat, into v: inout [PVert]) {
-        func vert(_ p: SIMD3<Float>) -> PVert {
-            PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
-                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z, tid: -1)
-        }
-        let seg = 20
-        var prev = c + u * ru
-        for i in 1...seg {
-            let a = Float(i) / Float(seg) * 2 * Float.pi
-            let cur = c + u * (cosf(a) * ru) + up * (sinf(a) * rv)
-            v += [vert(c), vert(prev), vert(cur)]; prev = cur
-        }
-    }
 
-    /// A flat DIAMOND (rotated-square) decal — tip up/down/left/right — centred at `c`, facing `n`.
-    private func emitDiamond(_ c: SIMD3<Float>, _ u: SIMD3<Float>, _ up: SIMD3<Float>, _ s: Float, _ n: SIMD3<Float>, _ m: Mat, into v: inout [PVert]) {
-        func vert(_ p: SIMD3<Float>) -> PVert {
-            PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
-                  ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z, tid: -1)
-        }
-        let top = c + up * s, rgt = c + u * s, bot = c - up * s, lft = c - u * s
-        v += [vert(top), vert(rgt), vert(bot), vert(top), vert(bot), vert(lft)]
-    }
 
-    /// A flame silhouette (fan-triangulated outline) centred at `c`, in the (u, up) plane, facing `n`.
-    private func emitFlame(_ c: SIMD3<Float>, _ u: SIMD3<Float>, _ up: SIMD3<Float>, _ s: Float, _ n: SIMD3<Float>, _ m: Mat, into v: inout [PVert]) {
-        let pts: [SIMD2<Float>] = [                                    // x=across, y=up; a licking flame with a hooked tip
-            SIMD2(0.00, -0.55), SIMD2(0.42, -0.30), SIMD2(0.22, -0.02), SIMD2(0.46, 0.18),
-            SIMD2(0.10, 0.30), SIMD2(0.28, 0.62), SIMD2(0.02, 0.60), SIMD2(0.16, 1.00),
-            SIMD2(-0.18, 0.58), SIMD2(-0.08, 0.24), SIMD2(-0.42, 0.12), SIMD2(-0.14, -0.06), SIMD2(-0.40, -0.34)]
-        func vert(_ p2: SIMD2<Float>) -> PVert {
-            let p = c + u * (p2.x * s) + up * (p2.y * s)
-            return PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
-                         ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z, tid: -1)
-        }
-        var s2 = SIMD2<Float>(0, 0); for p in pts { s2 += p }
-        let ctr = s2 / Float(pts.count)
-        for i in 0..<pts.count { v += [vert(ctr), vert(pts[i]), vert(pts[(i + 1) % pts.count])] }
-    }
 
-    /// A SINGLE oil placard PAINTED on the drum — a yellow warning diamond (dark border + symbol), like a
-    /// real barrel. Billboarded to face the player so the one label always reads; sits flush on the r≈0.155
-    /// body between the rolling hoops. Kept off the drum-weathering flag so the rust doesn't eat it.
-    private func emitDrumLabel(pos: SIMD2<Float>, toward pp: SIMD2<Float>, into v: inout [PVert]) {
-        let border = M(SIMD3(0.06, 0.05, 0.03), 0.6, 0.05)   // dark diamond border
-        let plate  = M(SIMD3(0.80, 0.64, 0.05), 0.6, 0.05)   // hazard yellow (printed, not metal)
-        let mark   = M(SIMD3(0.06, 0.05, 0.03), 0.6, 0.05)   // dark central symbol
-        let rel = pp - pos, dist = simd_length(rel)
-        let f = dist > 1e-4 ? SIMD3<Float>(rel.x / dist, 0, rel.y / dist) : SIMD3<Float>(0, 0, 1)   // face the player
-        let u = SIMD3<Float>(-f.z, 0, f.x), up = SIMD3<Float>(0, 1, 0)
-        let c = SIMD3<Float>(pos.x, 0.235, pos.y) + f * 0.161                                        // between the hoops, proud of the body
-        emitDiamond(c,            u, up, 0.062, f, border, into: &v)
-        emitDiamond(c + f * 0.002, u, up, 0.050, f, plate,  into: &v)
-        emitFlame(c + f * 0.004, u, up, 0.030, f, mark, into: &v)   // flammable flame pictogram
-    }
 
-    /// Tessellate a prop's local shapes into `v`, applying the kernel's LOCAL→WORLD
-    /// transform inverted: XZ rotation about +yaw, translate to `pos`, drop the lowest
-    /// authored point to the floor when `floored` (yOff = loY; wall-pipes/sockets keep
-    /// their authored height). `rough`/`metal` are the prop class's PBR base.
-    private func emitProp(_ shapes: [GPURaymarch.GShape], pos: SIMD2<Float>, yaw: Float,
-                          floored: Bool, rough: Float, metal: Float, yScale: Float = 1, into v: inout [PVert]) {
-        var yOff: Float = 0
-        if floored { var lo: Float = 1e9; for s in shapes { lo = min(lo, rrShapeYExtent(s).0) }; yOff = lo }
-        let cy = cosf(yaw), sy = sinf(yaw)
-        // yScale stretches a floor-to-ceiling prop (the structural column, authored y 0…1) to its cell's own
-        // ceiling — in a double-height machine hall an unscaled column would stop halfway up as a floating stub.
-        let xf: (SIMD3<Float>) -> SIMD3<Float> = { l in SIMD3(pos.x + l.x * cy - l.z * sy, (l.y - yOff) * yScale, pos.y + l.x * sy + l.z * cy) }
-        let xn: (SIMD3<Float>) -> SIMD3<Float> = { n in SIMD3(n.x * cy - n.z * sy, n.y, n.x * sy + n.z * cy) }
-        for s in shapes { tessShape(s, rough: rough, metal: metal, xf, xn, into: &v) }
-    }
 
     /// Parse the imported wall-bulkhead lamp (bulkhead.usdz) via ModelIO: walk the USD hierarchy accumulating
     /// each node's composed transform, collect WORLD-space triangles (skipping the scene backdrop plane),
@@ -1805,7 +1563,7 @@ final class RasterRenderer {
         for (a, b, c) in tris { for p in [a, b, c] { mn = simd_min(mn, p); mx = simd_max(mx, p) } }
         let size = mx - mn, ctr = (mn + mx) * 0.5
         let sc = 0.34 / max(size.x, max(size.y, size.z))
-        let steel = M(SIMD3(0.66, 0.48, 0.17), 0.34, 0.92)   // BRASS frame (was steel) — matches the marine bulkhead reference
+        let steel = Self.M(SIMD3(0.66, 0.48, 0.17), 0.34, 0.92)   // BRASS frame (was steel) — matches the marine bulkhead reference
         func vert(_ p: SIMD3<Float>, _ n: SIMD3<Float>) -> PVert {
             PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
                   ar: steel.a.x, ag: steel.a.y, ab: steel.a.z, rough: steel.r, metal: steel.m,
@@ -1824,32 +1582,7 @@ final class RasterRenderer {
         return out
     }
 
-    /// Emit the imported bulkhead lamp (centred local PVerts) at a wall mount: yaw about +Y, lifted to `height`.
-    private func emitBulkheadMesh(_ mesh: [PVert], pos: SIMD2<Float>, yaw: Float, height: Float, into v: inout [PVert]) {
-        let cy = cosf(yaw), sy = sinf(yaw)
-        for pv in mesh {
-            v.append(PVert(px: pos.x + pv.px * cy - pv.pz * sy, py: pv.py + height, pz: pos.y + pv.px * sy + pv.pz * cy,
-                           nx: pv.nx * cy - pv.nz * sy, ny: pv.ny, nz: pv.nx * sy + pv.nz * cy,
-                           ar: pv.ar, ag: pv.ag, ab: pv.ab, rough: pv.rough, metal: pv.metal, er: pv.er, eg: pv.eg, eb: pv.eb, tid: pv.tid))
-        }
-    }
 
-    /// A floating PICKUP: like emitProp but UNIFORMLY scaled about its origin, its base
-    /// dropped to 0 then lifted by `floatH` (hover), and spun by `yaw` — mirrors the
-    /// raymarcher's packItems so items read identically. Emissive parts (peak>1 colours,
-    /// e.g. cell rings) light themselves via propMat; the rest is semi-glossy canister metal.
-    private func emitItem(_ shapes: [GPURaymarch.GShape], pos: SIMD2<Float>, yaw: Float,
-                          scale: Float, floatH: Float, into v: inout [PVert]) {
-        var loY: Float = 1e9
-        for s in shapes { loY = min(loY, rrShapeYExtent(s).0) }
-        let cy = cosf(yaw), sy = sinf(yaw)
-        let xf: (SIMD3<Float>) -> SIMD3<Float> = { l in
-            let sx = l.x * scale, sz = l.z * scale
-            return SIMD3(pos.x + sx * cy - sz * sy, (l.y - loY) * scale + floatH, pos.y + sx * sy + sz * cy)
-        }
-        let xn: (SIMD3<Float>) -> SIMD3<Float> = { n in SIMD3(n.x * cy - n.z * sy, n.y, n.x * sy + n.z * cy) }
-        for s in shapes { tessShape(s, rough: 0.42, metal: 0.40, xf, xn, into: &v) }
-    }
 
     /// Parse the imported bed OBJ (positions + faces) into local-space PVerts with flat normals and a
     /// height-split material (steel frame low, pale mattress high), centred on XZ with its base at y=0.
@@ -2035,7 +1768,7 @@ final class RasterRenderer {
                 let inward = SIMD2<Float>(-sinf(pr.yaw), cosf(pr.yaw))
                 seat += inward * max(0, fp.halfD - 0.5)
             }
-            emitMesh(mesh, pos: seat, yaw: pr.yaw, scale: machineHeight(pr.kind), into: &v)
+            Self.emitMesh(mesh, pos: seat, yaw: pr.yaw, scale: machineHeight(pr.kind), into: &v)
             // A CENTREPIECE gets its own downlight. The truss lamps are slung on a fixed bay stride,
             // so whether the hall's hero machine happens to stand under one is luck — and one that
             // doesn't is a dark mass you cannot read at all. These floors are meant to be dark, but
@@ -2047,22 +1780,6 @@ final class RasterRenderer {
         }
     }
 
-    private func emitMesh(_ mesh: [PVert], pos: SIMD2<Float>, yaw: Float, scale: Float, into v: inout [PVert]) {
-        let cy = cosf(yaw), sy = sinf(yaw)
-        for pv in mesh {
-            let lx = pv.px * scale, ly = pv.py * scale, lz = pv.pz * scale
-            let nx = pv.nx, nz = pv.nz
-            v.append(PVert(px: pos.x + lx * cy - lz * sy, py: ly, pz: pos.y + lx * sy + lz * cy,
-                           nx: nx * cy - nz * sy, ny: pv.ny, nz: nx * sy + nz * cy,
-                           ar: pv.ar, ag: pv.ag, ab: pv.ab, rough: pv.rough, metal: pv.metal, er: pv.er, eg: pv.eg, eb: pv.eb,
-                           // FORWARD the material id. This argument was missing, so it defaulted to −1 and
-                           // EVERY imported mesh arrived at the fragment claiming "plain flat material" —
-                           // which is why the machinery's tid −6 weathering branch never once executed.
-                           // Nothing complained: the vertex still built, the mesh still drew, it just
-                           // quietly lost the one field that selects a surface treatment.
-                           tid: pv.tid))
-        }
-    }
 
     /// The elevator CAR interior — a recessed overhead light and a 7-segment LED floor indicator on the
     /// car's back wall (opposite the door), for both cars. The digit is world.elevatorFloorDisplay, which
@@ -2075,9 +1792,9 @@ final class RasterRenderer {
         let seg: [(Float, Float, Float, Float)] = [                                     // (u across, w up, halfU, halfW)
             (0, 0.11, 0.05, 0.013), (0.05, 0.056, 0.013, 0.045), (0.05, -0.056, 0.013, 0.045),
             (0, -0.11, 0.05, 0.013), (-0.05, -0.056, 0.013, 0.045), (-0.05, 0.056, 0.013, 0.045), (0, 0, 0.05, 0.013)]
-        let lit  = M(SIMD3(0.55, 0.16, 0.03), 0.6, 0.0, SIMD3(2.8, 0.85, 0.12))         // amber LED — emissive, blooms
-        let dark = M(SIMD3(0.014, 0.011, 0.009), 0.75, 0.1)                             // dark LED glass (blacks read black)
-        let lamp = M(SIMD3(0.90, 0.92, 1.00), 0.4, 0.0, SIMD3(2.2, 2.15, 2.0))          // overhead panel — emissive
+        let lit  = Self.M(SIMD3(0.55, 0.16, 0.03), 0.6, 0.0, SIMD3(2.8, 0.85, 0.12))         // amber LED — emissive, blooms
+        let dark = Self.M(SIMD3(0.014, 0.011, 0.009), 0.75, 0.1)                             // dark LED glass (blacks read black)
+        let lamp = Self.M(SIMD3(0.90, 0.92, 1.00), 0.4, 0.0, SIMD3(2.2, 2.15, 2.0))          // overhead panel — emissive
         let ledY: Float = 0.80, scale: Float = 0.5                                       // scale: the LED glyph is authored large, shrunk to a realistic ~30 cm digit
         for cell in [map.exitCell, map.entryCell] where cell >= 0 {
             let cx = cell % map.w, cy = cell / map.w
@@ -2087,7 +1804,7 @@ final class RasterRenderer {
             for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)]
                 where map.inBounds(cx + dx, cy + dy) && map.wall[map.idx(cx + dx, cy + dy)] == 0 { fdx = dx; fdy = dy; break }
             if fdx == 0 && fdy == 0 { continue }
-            emitAABB(SIMD3(ccx - 0.26, 0.965, ccz - 0.26), SIMD3(ccx + 0.26, 0.996, ccz + 0.26), lamp, into: &v)   // overhead light
+            Self.emitAABB(SIMD3(ccx - 0.26, 0.965, ccz - 0.26), SIMD3(ccx + 0.26, 0.996, ccz + 0.26), lamp, into: &v)   // overhead light
             // LED on the BACK wall (opposite the door); thin box per lit segment, facing into the car
             let fixedZ = fdy != 0
             let back: Float = fixedZ ? (fdy > 0 ? Float(cy) + 0.05 : Float(cy + 1) - 0.05)
@@ -2099,8 +1816,8 @@ final class RasterRenderer {
             let uFlip: Float = fixedZ ? Float(fdy) : Float(-fdx)
             let tanC: Float = fixedZ ? ccx : ccz
             func box(_ fc: Float, _ tc: Float, _ y: Float, _ hu: Float, _ hw: Float, _ th: Float, _ m: Mat) {
-                if fixedZ { emitAABB(SIMD3(tc - hu, y - hw, fc - th), SIMD3(tc + hu, y + hw, fc + th), m, into: &v) }
-                else      { emitAABB(SIMD3(fc - th, y - hw, tc - hu), SIMD3(fc + th, y + hw, tc + hu), m, into: &v) }
+                if fixedZ { Self.emitAABB(SIMD3(tc - hu, y - hw, fc - th), SIMD3(tc + hu, y + hw, fc + th), m, into: &v) }
+                else      { Self.emitAABB(SIMD3(fc - th, y - hw, tc - hu), SIMD3(fc + th, y + hw, tc + hu), m, into: &v) }
             }
             let span = Float(digits.count)
             box(back, tanC, ledY, (0.075 * span + 0.03) * scale, 0.16 * scale, 0.02, dark)   // dark backing panel
@@ -2143,25 +1860,6 @@ final class RasterRenderer {
         return [mount(-1), mount(1)]
     }
 
-    /// Wall-mount ONE bulkhead fixture: the imported brass lamp plus its lit, ribbed lens (or the procedural
-    /// caged lamp if the mesh is unavailable). Shared by every placement — the fuel store and the plant floors.
-    private func emitBulkheadFixture(pos: SIMD2<Float>, yaw: Float, inward: SIMD2<Float>, into v: inout [PVert]) {
-        let glow = M(SIMD3(0.95, 0.78, 0.5), 0.4, 0.0, SIMD3(1.7, 1.05, 0.42))     // warm GOLDEN lens (matches the brass reference), modest so the frame reads
-        guard let lamp = loadBulkhead() else {                            // fallback: the procedural caged lamp
-            emitProp(GPURaymarch.bulkheadShapes(), pos: pos, yaw: yaw, floored: false, rough: 0.5, metal: 0.7, into: &v)
-            return
-        }
-        emitBulkheadMesh(lamp, pos: pos, yaw: yaw, height: 0.56, into: &v)  // imported bulkhead mesh (vertical), at eye height
-        // a lit lens — a warm, VERTICAL rounded glow set just inside the cage so the frame stays visible over it
-        let n = SIMD3<Float>(inward.x, 0, inward.y), u = SIMD3<Float>(-inward.y, 0, inward.x), up = SIMD3<Float>(0, 1, 0)
-        let c = SIMD3<Float>(pos.x, 0.56, pos.y) + n * 0.03
-        emitEllipse(c, u, up, 0.045, 0.11, n, glow, into: &v)
-        // fluted-glass RIBBING (the reference's ribbed lens): a few thin darker verticals over the glow
-        let rib = M(SIMD3(0.5, 0.36, 0.12), 0.5, 0.0, SIMD3(0.5, 0.34, 0.12))
-        for rx in [Float(-0.026), 0, 0.026] {
-            emitEllipse(c + n * 0.002 + u * rx, u, up, 0.004, 0.095, n, rib, into: &v)
-        }
-    }
 
     /// Mount the wall BULKHEAD fixtures — the fuel store's pair, plus (on the plant floors 7–8, which carry no
     /// ceiling grid) the fixtures that light the workings. Their glow is added as point lights in render().
@@ -2172,10 +1870,10 @@ final class RasterRenderer {
     /// furniture popped in and out within a single room. They never move, so they are static geometry.
     private func buildWallFixtures(_ map: GameMap, into v: inout [PVert]) {
         for b in fuelBulkheads(map) {
-            emitBulkheadFixture(pos: b.pos, yaw: b.yaw, inward: simd_normalize(b.light - b.pos), into: &v)
+            Self.emitBulkheadFixture(pos: b.pos, yaw: b.yaw, inward: simd_normalize(b.light - b.pos), lamp: loadBulkhead(), into: &v)
         }
         for b in plantLamps {
-            emitBulkheadFixture(pos: b.pos, yaw: b.yaw, inward: simd_normalize(b.light - b.pos), into: &v)
+            Self.emitBulkheadFixture(pos: b.pos, yaw: b.yaw, inward: simd_normalize(b.light - b.pos), lamp: loadBulkhead(), into: &v)
         }
     }
 
@@ -2230,27 +1928,27 @@ final class RasterRenderer {
             }
             if slideX {
                 let zc = (frontFace && rfy != 0) ? (rfy > 0 ? fz + 1 - t : fz + t) : fz + 0.5
-                emitAABB(SIMD3(fx, 0, zc - t),            SIMD3(fx + halfOpen, 1, zc + t), mat, tid: tid, into: &v)   // left leaf → its jamb
-                emitAABB(SIMD3(fx + 1 - halfOpen, 0, zc - t), SIMD3(fx + 1, 1, zc + t), mat, tid: tid, into: &v)      // right leaf → its jamb
+                Self.emitAABB(SIMD3(fx, 0, zc - t),            SIMD3(fx + halfOpen, 1, zc + t), mat, tid: tid, into: &v)   // left leaf → its jamb
+                Self.emitAABB(SIMD3(fx + 1 - halfOpen, 0, zc - t), SIMD3(fx + 1, 1, zc + t), mat, tid: tid, into: &v)      // right leaf → its jamb
             } else {
                 let xc = (frontFace && rfx != 0) ? (rfx > 0 ? fx + 1 - t : fx + t) : fx + 0.5
-                emitAABB(SIMD3(xc - t, 0, fz),            SIMD3(xc + t, 1, fz + halfOpen), mat, tid: tid, into: &v)   // near leaf
-                emitAABB(SIMD3(xc - t, 0, fz + 1 - halfOpen), SIMD3(xc + t, 1, fz + 1), mat, tid: tid, into: &v)      // far leaf
+                Self.emitAABB(SIMD3(xc - t, 0, fz),            SIMD3(xc + t, 1, fz + halfOpen), mat, tid: tid, into: &v)   // near leaf
+                Self.emitAABB(SIMD3(xc - t, 0, fz + 1 - halfOpen), SIMD3(xc + t, 1, fz + 1), mat, tid: tid, into: &v)      // far leaf
             }
             // FUEL STORE — a round amber warning lamp on EACH leaf, mounted on the room face so it TRAVELS with
             // the leaf as the door parts and is occluded from inside the store. Emissive-only (blooms as a lamp);
             // no point light (raster fixture lights are unshadowed and would leak amber into the sealed store).
             if isFuelDoor, rfx != 0 || rfy != 0 {
                 let blink = 0.14 + 0.86 * powf(max(0, sinf(Float(world.elapsed) * 3.4)), 0.35)   // a warning beacon's amber pulse
-                let lm = M(SIMD3(0.02, 0.015, 0.005), 0.6, 0.0, SIMD3(7.0, 2.2, 0.15) * blink)   // near-black lens; only the orange-amber glow reads
+                let lm = Self.M(SIMD3(0.02, 0.015, 0.005), 0.6, 0.0, SIMD3(7.0, 2.2, 0.15) * blink)   // near-black lens; only the orange-amber glow reads
                 let ly: Float = 0.81, lr: Float = 0.03, up = SIMD3<Float>(0, 1, 0)
                 for lu in [halfOpen * 0.5, 1 - halfOpen * 0.5] {                                  // centre of each leaf → rides it into the jamb as it opens
                     if slideX {
                         let zc = rfy > 0 ? fz + 1 - t : fz + t
-                        emitEllipse(SIMD3(fx + lu, ly, zc + Float(rfy) * (t + 0.01)), SIMD3(1, 0, 0), up, lr, lr, SIMD3(0, 0, Float(rfy)), lm, into: &v)
+                        Self.emitEllipse(SIMD3(fx + lu, ly, zc + Float(rfy) * (t + 0.01)), SIMD3(1, 0, 0), up, lr, lr, SIMD3(0, 0, Float(rfy)), lm, into: &v)
                     } else {
                         let xc = rfx > 0 ? fx + 1 - t : fx + t
-                        emitEllipse(SIMD3(xc + Float(rfx) * (t + 0.01), ly, fz + lu), SIMD3(0, 0, 1), up, lr, lr, SIMD3(Float(rfx), 0, 0), lm, into: &v)
+                        Self.emitEllipse(SIMD3(xc + Float(rfx) * (t + 0.01), ly, fz + lu), SIMD3(0, 0, 1), up, lr, lr, SIMD3(Float(rfx), 0, 0), lm, into: &v)
                     }
                 }
             }
@@ -2276,7 +1974,7 @@ final class RasterRenderer {
                     let inward = SIMD2<Float>(-sinf(pr.yaw), cosf(pr.yaw))          // yawFor⁻¹: the into-room direction
                     seat += inward * max(0, bedHalfLen * bedScale - 0.5)
                 }
-                emitMesh(bed, pos: seat, yaw: pr.yaw + .pi / 2 + .pi, scale: bedScale, into: &v)
+                Self.emitMesh(bed, pos: seat, yaw: pr.yaw + .pi / 2 + .pi, scale: bedScale, into: &v)
                 continue
             }
             var sl: [GPURaymarch.GShape]
@@ -2297,31 +1995,31 @@ final class RasterRenderer {
                 let cxi = Int(pr.pos.x), cyi = Int(pr.pos.y)
                 if dmap.inBounds(cxi, cyi) { ys = dmap.ceilY[dmap.idx(cxi, cyi)] }
             }
-            emitProp(sl, pos: pr.pos, yaw: pr.yaw, floored: floored, rough: 0.82, metal: 0.12, yScale: ys, into: &v)
+            Self.emitProp(sl, pos: pr.pos, yaw: pr.yaw, floored: floored, rough: 0.82, metal: 0.12, yScale: ys, into: &v)
         }
         // fuel drums (red/blue by the same stable cell hash the packer uses) — MATTE painted steel, weathered
         // with rust/grime in the shader (tid=−5, matching the raymarcher), plus flat FLAMMABLE label decals
         for d in world.drums where d.health > 0 && visible(d.pos, 20) {
             let key = Int(d.pos.x.rounded()) &* 73856093 ^ Int(d.pos.y.rounded()) &* 19349663
             var body: [PVert] = []
-            emitProp(GPURaymarch.drumShapes(red: (key & 1) == 0), pos: d.pos, yaw: 0, floored: true, rough: 0.86, metal: 0.20, into: &body)
+            Self.emitProp(GPURaymarch.drumShapes(red: (key & 1) == 0), pos: d.pos, yaw: 0, floored: true, rough: 0.86, metal: 0.20, into: &body)
             for i in body.indices { body[i].tid = -5 }        // flag → drum rust/grime weathering in rr_fragment
             v += body
-            emitDrumLabel(pos: d.pos, toward: pp, into: &v)    // a single painted-on oil diamond (billboarded to the player)
+            Self.emitDrumLabel(pos: d.pos, toward: pp, into: &v)    // a single painted-on oil diamond (billboarded to the player)
         }
         // recharge sockets (wall-mounted; live charge/depleted readout, kept at chest height)
         for sk in world.sockets where visible(sk.pos, 20) {
             var sl = GPURaymarch.socketShapes(chargeFrac: Float(sk.charge) / Float(max(1, sk.maxCharge)), depleted: sk.depleted)
             rrFlushToWall(&sl)
-            emitProp(sl, pos: sk.pos, yaw: sk.yaw, floored: false, rough: 0.80, metal: 0.15, into: &v)
+            Self.emitProp(sl, pos: sk.pos, yaw: sk.yaw, floored: false, rough: 0.80, metal: 0.15, into: &v)
         }
         // deployed proximity mines (runtime-spawned pucks + red LED)
         for mn in world.deployedMines where visible(mn.pos, 18) {
-            emitProp(GPURaymarch.mineShapes(), pos: mn.pos, yaw: 0, floored: true, rough: 0.60, metal: 0.20, into: &v)
+            Self.emitProp(GPURaymarch.mineShapes(), pos: mn.pos, yaw: 0, floored: true, rough: 0.60, metal: 0.20, into: &v)
         }
         // rubble piles at damage sites (rough rock)
         for db in world.debris where visible(db.pos, 18) {
-            emitProp(GPURaymarch.debrisShapes(db.seed), pos: db.pos, yaw: 0, floored: true, rough: 0.92, metal: 0.02, into: &v)
+            Self.emitProp(GPURaymarch.debrisShapes(db.seed), pos: db.pos, yaw: 0, floored: true, rough: 0.92, metal: 0.02, into: &v)
         }
         // ── ITEMS / pickups (M4): hover + slow spin, tessellated like props so they are
         // lit by the same forward pass and cast/receive the lamp pools + shadows ──────
@@ -2332,7 +2030,7 @@ final class RasterRenderer {
             let phase = Float(idx) * 1.7 + it.bob
             let floatH: Float = 0.18 + sinf(t * 2 + phase) * 0.04    // gentle bob (mirrors packItems)
             let yaw = t * 0.8 + phase                                // slow spin
-            emitItem(sl, pos: it.pos, yaw: yaw, scale: 0.55, floatH: floatH, into: &v)
+            Self.emitItem(sl, pos: it.pos, yaw: yaw, scale: 0.55, floatH: floatH, into: &v)
         }
         // ── PROJECTILES (M5): a bright emissive HEAD ORB + a tapering STREAK stretched along the flight
         // direction (mirrors GPURaymarch.packProjectiles), at eye height — so a bolt reads as a bolt of
@@ -2345,9 +2043,9 @@ final class RasterRenderer {
             let dirU = speed > 0.001 ? pr.vel / speed : SIMD2<Float>(1, 0)
             let head = SIMD3<Float>(pr.pos.x, eyeY, pr.pos.y)
             let tail = head - SIMD3<Float>(dirU.x, 0, dirU.y) * min(0.8, speed * 0.045)
-            tessShape(GPURaymarch.iSphere(head, r, col * 2.6, 0.01), rough: 0.4, metal: 0.0, { $0 }, { $0 }, into: &v)
+            Self.tessShape(GPURaymarch.iSphere(head, r, col * 2.6, 0.01), rough: 0.4, metal: 0.0, { $0 }, { $0 }, into: &v)
             if simd_distance(head, tail) > 0.05 {
-                tessShape(GPURaymarch.iCone(head, tail, r * 0.9, r * 0.2, col * 1.5, 0.02), rough: 0.4, metal: 0.0, { $0 }, { $0 }, into: &v)
+                Self.tessShape(GPURaymarch.iCone(head, tail, r * 0.9, r * 0.2, col * 1.5, 0.02), rough: 0.4, metal: 0.0, { $0 }, { $0 }, into: &v)
             }
         }
     }
