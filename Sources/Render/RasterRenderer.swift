@@ -91,6 +91,18 @@ final class RasterRenderer {
     #if CITADEL_HARNESS
     var debugLightCap = -1                     // ≥0 → clamp the per-frame light list (CITADEL_GPUPROBE)
     static func machineKind(_ k: FurnitureKind) -> Bool { machineSpec(k) != nil }
+    /// Render, and hand back the per-pixel PERPENDICULAR depth as well as the frame.
+    ///
+    /// For harnesses that composite something of their own over a rendered backdrop and need the
+    /// scene depth to occlude it — QueenMeshTest does exactly that with a creature mesh. The normal
+    /// frame only reads perpTex back when there are particles to occlude, so this forces the copy.
+    func renderWithPerpDepth(_ world: World, into canvas: Canvas2D) -> [Float] {
+        _ = render(world, into: canvas)
+        perpScratch.withUnsafeMutableBytes {
+            perpTex.getBytes($0.baseAddress!, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
+        }
+        return perpScratch
+    }
     var staticVertCount: Int { nVerts }
     var machineVertCount: Int { machineVerts }
     #endif

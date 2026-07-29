@@ -98,7 +98,6 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Harness/Captures.swift \
                     Sources/Harness/RoomShots.swift \
                     Sources/Harness/MaterialPreview.swift \
-                    Sources/Harness/QueenMock.swift \
                     Sources/Harness/QueenMeshTest.swift \
                     Sources/Harness/RigProbe.swift \
                     Sources/Harness/ProofRoom.swift \

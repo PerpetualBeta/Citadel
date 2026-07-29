@@ -29,7 +29,7 @@ import QuartzCore
 for key in ["CITADEL_SMOKE", "CITADEL_TIMING",
             "CITADEL_SHOTS", "CITADEL_MATERIALS",
             "CITADEL_AUTOMAP", "CITADEL_ROOMS", "CITADEL_DISPLAYVID",
-            "CITADEL_TITLESHOT", "CITADEL_CLUSTERSHOT", "CITADEL_QUEENMOCK", "CITADEL_QUEENMESH",
+            "CITADEL_TITLESHOT", "CITADEL_CLUSTERSHOT", "CITADEL_QUEENMESH",
             "CITADEL_MESHVERIFY", "CITADEL_DRONEMESH", "CITADEL_COLONISTMESH", "CITADEL_CORPSES", "CITADEL_DECKCHECK", "CITADEL_TERMSHOT", "CITADEL_PROOFROOM", "CITADEL_RASTERSHOT",
             "CITADEL_CREATUREPROBE", "CITADEL_GPUPROBE"]
     where ProcessInfo.processInfo.environment[key] != nil {
@@ -86,12 +86,6 @@ if ProcessInfo.processInfo.environment["CITADEL_MATERIALS"] != nil {
     exit(0)
 }
 
-// CITADEL_QUEENMOCK[=src.png] → mock the QUEEN as a flux-art billboard in the
-// live lair render (env + real WorldLight), to judge the billboard direction.
-if let v = ProcessInfo.processInfo.environment["CITADEL_QUEENMOCK"] {
-    QueenMock.run(src: (v.isEmpty || v == "1") ? nil : v, outDir: nil)
-    exit(0)
-}
 
 // CITADEL_QUEENMESH[=mesh.usdz] → rasterise the 3D queen mesh into the live lair
 // (matched pinhole + perp-depth composite + per-pixel lighting), to judge 3D.

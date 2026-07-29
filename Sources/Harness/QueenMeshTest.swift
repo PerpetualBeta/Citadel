@@ -114,9 +114,13 @@ enum QueenMeshTest {
     static func run(meshPath: String?, texPath: String? = nil, height: Float = 2.7,
                     tag: String = "mesh-lair", outDir: String?) {
         guard let device = MTLCreateSystemDefaultDevice() else { print("Citadel: no Metal device"); return }
-        let mesh = meshPath ?? (NSHomeDirectory() + "/Desktop/Citadel-QueenMock/demonic+creature+3d+model.usdz")
-        let texFile = texPath ?? (NSHomeDirectory() + "/Desktop/Citadel-QueenMock/_tex/textures/demonic_creature_3d_model_basecolor.JPEG")
-        let dir = URL(fileURLWithPath: outDir ?? NSHomeDirectory() + "/Desktop/Citadel-QueenMock")
+        // Default to the SHIPPED queen. These used to point at a hand-downloaded R&D mesh in a
+        // Desktop folder named after the billboard-mock harness — a path that only ever existed on
+        // one machine, and whose folder that harness's retirement has now taken with it. The bundled
+        // resource is what the game actually draws, so it is the honest default for a look-test.
+        let mesh = meshPath ?? Bundle.main.url(forResource: "queen", withExtension: "usdz")?.path ?? ""
+        let texFile = texPath ?? Bundle.main.url(forResource: "queen_basecolor", withExtension: "jpg")?.path ?? ""
+        let dir = URL(fileURLWithPath: outDir ?? NSHomeDirectory() + "/Desktop/Citadel-MeshTest")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         // ── load the mesh (add normals, force a known interleaved layout) ─────────
@@ -151,9 +155,21 @@ enum QueenMeshTest {
         let dsd = MTLDepthStencilDescriptor(); dsd.depthCompareFunction = .less; dsd.isDepthWriteEnabled = true
         let dss = device.makeDepthStencilState(descriptor: dsd)!
 
-        // ── the lair (env + perp-depth) from the existing mock scaffolding ────────
-        guard let plate = QueenMock.renderLair(level: 8) else { print("Citadel: lair render failed"); return }
-        let W = plate.W, H = plate.H
+        // ── the lair (env + perp-depth) ──────────────────────────────────────────
+        // Built here through RasterRenderer. It used to come from QueenMock.renderLair, which
+        // dispatched the SDF kernel directly; that renderer is retired, and QueenMock with it. The
+        // camera still comes from bestCorridorView, so the framing is unchanged.
+        guard let lairRR = RasterRenderer(device: device) else { print("Citadel: no renderer"); return }
+        let lairWorld = World(level: 8, colonyIndex: 7, seed: 1234 &+ 8)
+        if let cor = GPURaymarch.bestCorridorView(lairWorld.map) {
+            lairWorld.player.pos = cor.pos; lairWorld.player.dir = cor.dir
+        }
+        let lairCanvas = Canvas2D()
+        let lairDepth = lairRR.renderWithPerpDepth(lairWorld, into: lairCanvas)
+        let W = RenderConfig.width, H = RenderConfig.viewHeight
+        let plate = (fb: Array(UnsafeBufferPointer(start: lairCanvas.framebuffer, count: W * H)),
+                     depth: lairDepth, world: lairWorld,
+                     camPos: lairWorld.player.pos, camDir: lairWorld.player.dir, W: W, H: H)
         let queue = device.makeCommandQueue()!
 
         // targets
@@ -228,7 +244,8 @@ enum QueenMeshTest {
             for i in 0..<W * H {
                 if alphaOf(mcol[i]) > 2 && mdep[i] < plate.depth[i] { fb[i] = mcol[i] | 0xFF00_0000 }
             }
-            QueenMock.writeFB(fb, W, H, to: dir.appendingPathComponent(name))
+            var out = fb
+            out.withUnsafeMutableBufferPointer { Captures.writePNG($0.baseAddress!, w: W, h: H, scale: 1, to: dir.appendingPathComponent(name)) }
             print("  wrote \(name)")
         }
 
