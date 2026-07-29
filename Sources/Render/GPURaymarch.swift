@@ -2319,6 +2319,33 @@ enum GPURaymarch {
             // path, glowing VU meters, status LEDs, and two warning placards. The
             // spoke-windows are spun by packProps when the deck is playing.
             return tapeDeckShapes(spin: 0, playing: false)
+        // ── PLANT MACHINERY (floors 7–8) ──
+        // These four are imported meshes in the raster path (Resources/machine_*.obj). What lives
+        // here is the coarse bulk: it is what the SDF raymarcher draws, and — because
+        // furnitureFootprint measures these shapes — it is also what derives the COLLIDER. So the
+        // half-extents are the mesh's own measured game-space bounds, not an eyeballed box:
+        // tools/3ds2obj.py reports each source bound, and scaling by (target height / source height)
+        // gives the numbers below. Re-run the converter and re-measure if a mesh is ever re-sourced.
+        case .machineFilter:
+            // Three tanks in a gantry — 2.817 W × 1.027 D × 1.500 H. Two stacked boxes read as the
+            // frame and the tank bank; the mesh carries the real silhouette in the shipping renderer.
+            return [iBox(SIMD3(0, 0.30, 0), SIMD3(1.408, 0.30, 0.513), 0.02, darkM, 0.01),   // gantry base + legs
+                    iBox(SIMD3(0, 1.00, 0), SIMD3(1.300, 0.44, 0.460), 0.10, steel, 0.01)]   // the tank bank above it
+        case .machineColumn:
+            // Vertical vessel on a base with side drums — 2.698 W × 2.329 D × 1.600 H. The vessel is
+            // the mass that matters; the drums are inside the same footprint.
+            return [iBox(SIMD3(0, 0.22, 0), SIMD3(1.349, 0.22, 1.164), 0.02, darkM, 0.01),          // base raft + side drums
+                    iCylinder(SIMD3(0, 1.00, 0), r: 0.42, halfH: 0.60, round: 0.06, steel, 0.01)]   // the column itself
+        case .machineCompressor:
+            // Cabinet + twin receivers + manifold — 1.019 W × 1.410 D × 1.000 H. Lines a wall, so the
+            // caller shoves it flush; the receivers sit high on the cabinet.
+            return [iBox(SIMD3(0, 0.34, 0), SIMD3(0.509, 0.34, 0.705), 0.02, darkM, 0.008),         // cabinet
+                    iCylinder(SIMD3(0, 0.80, -0.10), r: 0.19, halfH: 0.42, round: 0.04, steel, 0.01)] // receiver drum
+        case .machineSwitchgear:
+            // Distribution cabinet with a lever isolator — 0.469 W × 0.367 D × 0.850 H. Compact
+            // enough for one cell, and cheap enough to rank several along a wall.
+            return [iBox(SIMD3(0, 0.425, 0), SIMD3(0.234, 0.425, 0.183), 0.015, darkM, 0.006),      // carcass
+                    iBox(SIMD3(0.18, 0.52, 0.19), SIMD3(0.02, 0.09, 0.02), 0.008, steel, 0.004)]    // lever handle
         case .column:                                          // riveted-steel structural column, floor → ceiling (y 0…1)
             // A slender ROUND steel post with a proud base plinth and a capital that meets the
             // roof; the steel's baked relief/rivet grain does the "riveted" read. Free-standing

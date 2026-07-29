@@ -105,6 +105,16 @@ enum MapGen {
     // third. No fuel drums, no toxic pools. Chosen after the other room types have taken theirs.
     private static var sanRoom = -1
     static let sanMinDim = 3
+    // ── PLANT MACHINE HALLS (floors 7–8) ──
+    // A centrepiece machine is 2.7–2.8 cells across, so a 5-cell room is the smallest that leaves a
+    // clear cell all the way round it. Below that the machine would wall the room off, and these
+    // floors still have to be solvable. The column is nearly as deep as it is wide (2.7 × 2.3), so it
+    // needs a squarer room than the filter (2.8 × 1.0) does.
+    static let machineHallMinDim = 5      // both dims ≥ this → a centrepiece machine may stand in the middle
+    static let machineColumnMinDim = 6    // both dims ≥ this → the deep process column is a candidate too
+    static let machineHallsPerFloor = 2   // the roomiest N halls on a plant floor become machine rooms
+    private static var machineHalls = Set<Int>()
+    static func isMachineHall(_ ri: Int) -> Bool { machineHalls.contains(ri) }
     private static func isSanitary(_ ri: Int) -> Bool { ri == sanRoom }
     private static func roomsAdjacent(_ a: Room, _ b: Room) -> Bool {
         let xOverlap = a.x < b.x + b.w && b.x < a.x + a.w
@@ -119,6 +129,10 @@ enum MapGen {
     static var debugOpsRoom: Int { opsRoomIndex }
     private static var lastRoomCount = 0
     static var debugRoomCount: Int { lastRoomCount }
+    /// Room dimensions of the last generated level, largest first — so a debug dump can say WHY a
+    /// room-type threshold was never met, instead of leaving it to be guessed at.
+    static var debugRoomDims: [(Int, Int)] { lastRoomDims }
+    private static var lastRoomDims: [(Int, Int)] = []
     /// Any damaging floor inside the room (the ops-centre pick needs this at attemptGen scope, where
     /// populate's own local `roomHasHazard` isn't in view).
     private static func roomHasHazardCells(_ map: GameMap, _ r: Room) -> Bool {
@@ -262,6 +276,7 @@ enum MapGen {
         //    leave nothing for the operations centre, canteen, sick bay and washroom to occupy. A floor needs one
         //    or two dormitories, not every large room it happens to have.
         lastRoomCount = rooms.count
+        lastRoomDims = rooms.map { ($0.w, $0.h) }.sorted { $0.0 * $0.1 > $1.0 * $1.1 }
         dormRooms.removeAll()
         do {
             let eligible = rooms.enumerated()
@@ -534,6 +549,24 @@ enum MapGen {
             }
         }
 
+        // ── PLANT MACHINE HALLS (floors 7–8) ── allocated BEFORE the sick bay and the washroom, because
+        //    on the working floors the machine hall is the defining room, exactly as the operations
+        //    centre is on 1–6. Without this the sick bay and washroom take the roomiest halls first (they
+        //    both pick by area) and the machinery inherits the scraps — which on the two floors Jonathan
+        //    described as "the working heart of the complex" is precisely backwards. It also starved the
+        //    process column, whose 2.7 × 2.3 footprint needs a 6-cell room: the only two rooms that
+        //    qualified on a typical plant floor were the two the sick bay and washroom had already taken.
+        machineHalls.removeAll()
+        if industrialFloor {
+            var cands: [(Int, Int)] = []                     // (area, room index), roomiest first
+            for (ri, r) in rooms.enumerated() where ri != 0 && ri != rooms.count - 1 {
+                guard min(r.w, r.h) >= machineHallMinDim, !roomHasHazardCells(map, r) else { continue }
+                cands.append((r.w * r.h, ri))
+            }
+            cands.sort { $0.0 > $1.0 }
+            for (_, ri) in cands.prefix(machineHallsPerFloor) { machineHalls.insert(ri) }
+        }
+
         // ── MEDICAL CENTRES ── one or more per floor. Any room that isn't already claimed and carries no hazard
         //    (toxic pools are barred outright) becomes a sick bay: white painted concrete walls, a white painted
         //    ceiling with its light run, and a plain concrete deck. Every floor gets at least one where the
@@ -543,7 +576,8 @@ enum MapGen {
             var cands: [Int] = []
             for (ri, r) in rooms.enumerated() where ri != 0 && ri != rooms.count - 1 {
                 guard min(r.w, r.h) >= medMinDim, !roomHasHazardCells(map, r), ri != opsRoomIndex,
-                      ri != canteenRoom, ri != canteenMess, !isDormitory(r, ri, rooms.count) else { continue }
+                      ri != canteenRoom, ri != canteenMess, !machineHalls.contains(ri),
+                      !isDormitory(r, ri, rooms.count) else { continue }
                 cands.append(ri)
             }
             let want = min(cands.count, rooms.count >= 13 ? 2 : 1)
@@ -576,7 +610,7 @@ enum MapGen {
             for (ri, r) in rooms.enumerated() where ri != 0 && ri != rooms.count - 1 {
                 guard min(r.w, r.h) >= sanMinDim, !roomHasHazardCells(map, r), ri != opsRoomIndex,
                       ri != canteenRoom, ri != canteenMess, !medRooms.contains(ri),
-                      !isDormitory(r, ri, rooms.count) else { continue }
+                      !machineHalls.contains(ri), !isDormitory(r, ri, rooms.count) else { continue }
                 if r.w * r.h > best.score { best = (r.w * r.h, ri) }
             }
             if best.ri >= 0 {
@@ -1367,6 +1401,50 @@ enum MapGen {
             placed.append(slot.pos)
             return true
         }
+        /// Would this centrepiece machine leave the hall walkable?
+        ///
+        /// The dormitories guaranteed a path by RESERVING aisles; a 2.8-cell machine dropped in the
+        /// middle of a room is too big to trust to a reservation, so this VERIFIES instead. Mark the
+        /// cells the machine's footprint covers, then flood-fill the room's remaining open floor from
+        /// one edge cell: if every other open cell is still reached, you can walk round it. Rejecting
+        /// is cheap — the hall simply keeps its wall machines and no centrepiece.
+        ///
+        /// The footprint is taken as an axis-aligned box from the derived half-extents, swapped for a
+        /// quarter-turn yaw, and rounded OUTWARD. Conservative on purpose: a machine that reads as
+        /// slightly larger than it is here can only ever reject a layout that would have been tight.
+        func machineLeavesRoomWalkable(_ kind: FurnitureKind, at c: SIMD2<Float>, yaw: Float, room r: Room) -> Bool {
+            let fp = GPURaymarch.furnitureFootprint(kind)
+            let turned = abs(yaw.truncatingRemainder(dividingBy: .pi)) > 0.7      // ±90° swaps width and depth
+            let hw = turned ? fp.halfD : fp.halfW, hd = turned ? fp.halfW : fp.halfD
+            var blocked = Set<Int>()
+            let x0 = Int((c.x - hw).rounded(.down)), x1 = Int((c.x + hw).rounded(.up))
+            let y0 = Int((c.y - hd).rounded(.down)), y1 = Int((c.y + hd).rounded(.up))
+            for yy in y0..<y1 { for xx in x0..<x1 where map.inBounds(xx, yy) { blocked.insert(map.idx(xx, yy)) } }
+
+            // every open floor cell of the room that the machine does NOT stand on
+            var want = Set<Int>()
+            for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) {
+                let i = map.idx(xx, yy)
+                guard map.wall[i] == 0, map.doors[i] == nil, !blocked.contains(i) else { continue }
+                want.insert(i)
+            } }
+            guard let seed = want.min() else { return false }          // nothing left to stand on at all
+
+            var seen: Set<Int> = [seed]
+            var queue = [seed], qi = 0
+            while qi < queue.count {
+                let cur = queue[qi]; qi += 1
+                let cx = cur % map.w, cy = cur / map.w
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let nx = cx + dx, ny = cy + dy
+                    guard map.inBounds(nx, ny) else { continue }
+                    let ni = map.idx(nx, ny)
+                    if want.contains(ni), !seen.contains(ni) { seen.insert(ni); queue.append(ni) }
+                }
+            }
+            return seen.count == want.count                            // one connected walk-round, or reject
+        }
+
         // ── DORMITORY furnishing ── a dedicated sleeping HALL: Locker-Bunk-Locker-Bunk rows down the two
         // LONG walls (bunks perpendicular, pillow flush to the wall — `againstWall` + flushToWall seat the
         // frame, no extrusion), centre row(s) when wide (one; or two head-to-head with lockers back-to-back),
@@ -1450,6 +1528,37 @@ enum MapGen {
             let hazard = roomHasHazard(r)
             // structural support for ANY large hall — dorm, open room, or a large start/exit chamber
             if min(r.w, r.h) >= MapGen.dormMinDim { placeColumns(r, ri) }
+            // ── PLANT MACHINE HALL (floors 7–8) ── the working heart of the complex: a big machine
+            //    standing in the middle of the hall, with compressors and switchgear ranked along the
+            //    walls. Claims whatever rooms the sick bay and the washroom did not take. Machinery is
+            //    STATIC level geometry (see RasterRenderer.buildMachines), so a hall costs nothing per
+            //    frame no matter how much of it is in view.
+            if industrialFloor && !hazard && !isMedical(ri) && !isSanitary(ri) {
+                // Only an ALLOCATED hall gets a centrepiece — allocation runs ahead of the sick bay and
+                // the washroom so the machinery gets the grand halls, not the leftovers. Every other
+                // industrial room still takes wall machines.
+                if MapGen.isMachineHall(ri) {
+                    // The deep column needs a squarer room than the long filter; where both fit, alternate
+                    // so adjacent halls do not read as copies.
+                    let kind: FurnitureKind = (min(r.w, r.h) >= MapGen.machineColumnMinDim && rng.chance(0.5))
+                                            ? .machineColumn : .machineFilter
+                    let c = SIMD2<Float>(Float(r.x) + Float(r.w) * 0.5, Float(r.y) + Float(r.h) * 0.5)
+                    let yaw: Float = r.w >= r.h ? 0 : .pi / 2       // width runs along the room's long axis
+                    if machineLeavesRoomWalkable(kind, at: c, yaw: yaw, room: r) {
+                        props.append(Prop(kind: kind, pos: c, yaw: yaw, againstWall: false))
+                        placed.append(c)
+                    }
+                }
+                // Compressors first — they are the machines that hum, so they want to be near where the
+                // player walks — then switchgear to fill what is left. Both seat flush to the wall.
+                var comps = 0, gear = 0
+                let compTarget = max(1, min(3, area / 12)), gearTarget = max(1, min(4, area / 9))
+                for s in wallSlots(r, ri).sorted(by: { ($0.x + $0.y) < ($1.x + $1.y) }) {
+                    if comps < compTarget, placeProp(.machineCompressor, s, gap: 1.7) { comps += 1; continue }
+                    if gear < gearTarget, placeProp(.machineSwitchgear, s, gap: 1.05) { gear += 1 }
+                }
+                continue
+            }
             // ── SANITARY BLOCK ── the washroom, sorted by wall as a real one is: trough basins under their
             //    mirrors on the longest wall, open shower stalls on the next, WC cubicles on the third. Nothing
             //    stands in the middle, so the floor (and its drains) stays clear to walk.

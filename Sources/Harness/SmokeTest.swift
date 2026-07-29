@@ -21,7 +21,11 @@ enum SmokeTest {
 
         // 1. procedural generation across several depths / colonies
         var darkPockets = 0          // genuinely unlit walkable cells across the sweep
-        for level in 1...6 {
+        // 1…8, not 1…6: the plant floors have their own room mix (machine halls, no dorms, no display
+        // banks) and were the two this suite could not see. That blind spot is what let a mess hall
+        // leak onto floor 8 unnoticed, and it is where the machinery — the largest solid object in the
+        // game — now stands, so the reachability checks below need to run there most of all.
+        for level in 1...8 {
             let g = MapGen.generate(level: level, colonyIndex: level - 1, seed: UInt64(level) &* 7919 &+ 13)
             let m = g.map
             let sx = Int(m.playerStart.x), sy = Int(m.playerStart.y)
@@ -33,6 +37,12 @@ enum SmokeTest {
             check(!g.items.isEmpty, "L\(level) has items (\(g.items.count))")
             // exit reachable from start (ignoring locks — MapGen already verifies keyed reachability)
             check(reachableIgnoringLocks(m), "L\(level) exit reachable from start")
+            // …and reachable with the FURNITURE in the way. The check above walks the map, which knows
+            // nothing about props — so a machine hall's 2.8-cell centrepiece, or a rank of compressors
+            // narrowing a route, could wall the level off and this suite would still pass. Walk it at
+            // half-cell resolution against the real collider set instead. Matters most on the plant
+            // floors, where the machinery is the biggest solid object in the game.
+            check(walkableWithProps(level: level), "L\(level) exit still reachable past the furniture")
             // side-by-side doors are mechanically impossible (leaves slide into
             // the jambs — adjacent doors have nowhere to go); the generator must
             // never produce them. And the exit must be a real elevator door.
@@ -44,7 +54,14 @@ enum SmokeTest {
                 }
             }
             check(adjacentDoors == 0, "L\(level) no side-by-side doors")
-            check(m.doors[m.exitCell] != nil, "L\(level) exit is an elevator (real door)")
+            // The DEEPEST floor of a citadel has no down-lift: clearing it teleports to the next planet,
+            // so its exit is an open receiver alcove with no car and no doors (see MapGen's teleporterPad).
+            // Assert the right thing for each rather than skipping — a skipped case tests nothing.
+            if Progression.isLastFloor(level) {
+                check(m.floor[m.exitCell] == FlatTex.teleportPad.rawValue, "L\(level) exit is a teleporter pad (deepest floor)")
+            } else {
+                check(m.doors[m.exitCell] != nil, "L\(level) exit is an elevator (real door)")
+            }
             check(m.entryCell >= 0 && m.doors[m.entryCell] != nil, "L\(level) arrival elevator placed")
             // each car must be a sealed box: exactly ONE open neighbour (the
             // doorway) — an open jamb or back exposes the shaft interior
@@ -842,6 +859,47 @@ enum SmokeTest {
 
     private static func tmpURL() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("citadel-smoke-scores.json")
+    }
+
+    /// Can the marine actually WALK from the arrival car to the exit, with every solid prop in place?
+    ///
+    /// `reachableIgnoringLocks` walks the map, which knows nothing about furniture — so it would pass a
+    /// level whose only route was blocked by a machine. This builds the real World (which derives
+    /// `propColliders` from the authored geometry) and floods a HALF-CELL grid, rejecting any node the
+    /// player's own radius could not occupy. Half-cell because a 1-wide corridor with a prop pushed
+    /// into it can still be passable down one side, and a whole-cell test would call that solid.
+    private static func walkableWithProps(level: Int) -> Bool {
+        let w = World(level: level, colonyIndex: level - 1, seed: UInt64(level) &* 7919 &+ 13)
+        let m = w.map
+        let r: Float = 0.28                                  // a shade under the player's own radius
+        let step: Float = 0.5
+        let nx = Int(Float(m.w) / step), ny = Int(Float(m.h) / step)
+        func free(_ ix: Int, _ iy: Int) -> Bool {
+            let px = (Float(ix) + 0.5) * step, py = (Float(iy) + 0.5) * step
+            let cx = Int(px), cy = Int(py)
+            guard m.inBounds(cx, cy), m.wall[m.idx(cx, cy)] == 0 || m.doors[m.idx(cx, cy)] != nil else { return false }
+            return !w.blockedBySolidProp(px, py, r)
+        }
+        func node(_ p: SIMD2<Float>) -> Int { Int(p.y / step) * nx + Int(p.x / step) }
+        let start = node(m.playerStart)
+        var seen = Set<Int>([start])
+        var q = [start], qi = 0
+        while qi < q.count {
+            let cur = q[qi]; qi += 1
+            let ix = cur % nx, iy = cur / nx
+            for (jx, jy) in [(ix - 1, iy), (ix + 1, iy), (ix, iy - 1), (ix, iy + 1)] {
+                guard jx >= 0, jy >= 0, jx < nx, jy < ny else { continue }
+                let n = jy * nx + jx
+                if !seen.contains(n), free(jx, jy) { seen.insert(n); q.append(n) }
+            }
+        }
+        // the exit switch counts as reached if any node on its cell — or a neighbouring one — is in
+        let ex = m.exitCell % m.w, ey = m.exitCell / m.w
+        for (ox, oy) in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let px = Float(ex + ox) + 0.5, py = Float(ey + oy) + 0.5
+            if seen.contains(node(SIMD2(px, py))) { return true }
+        }
+        return false
     }
 
     /// Flood fill from start treating any door as passable; confirms the exit

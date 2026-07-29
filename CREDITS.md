@@ -28,14 +28,27 @@ project, under the same terms.
 
 ### Imported models
 
-One piece of furniture is a **third-party downloaded model** rather than AI-generated
-or code-synthesised — the dormitory bunk, imported so the rasterised renderer draws a
-real bed mesh instead of an SDF platform. It is re-materialled in code (a height split
-into a dark-steel frame and a pale institutional mattress); only the geometry is imported.
+A handful of props are **third-party downloaded models** rather than AI-generated or
+code-synthesised: the dormitory bunk, and the plant machinery that fills the machine
+halls on floors 7–8. In every case **only the geometry is imported** — the meshes carry
+no materials or textures into the game. They are re-materialled in code (the bunk by a
+height split into dark-steel frame and pale mattress; the machinery by a carcass/vessel
+split plus procedural rust, oil film and settled dust in the fragment shader), so the
+surfaces are ours even where the shapes are not.
 
 | File | Asset | Source |
 |------|-------|--------|
 | `bed.obj` | dormitory bunk (two-tier institutional bed) | *Institutional Bed 5*, [archibase.net](https://archibase.net) |
+| `machine_filter.obj` | plant hall centrepiece — three-tank water filter in a steel gantry | *Water filter*, [archibase.net](https://archibase.net) |
+| `machine_column.obj` | plant hall centrepiece — process column / scrubber vessel | *Complex N300608*, [archibase.net](https://archibase.net) |
+| `machine_compressor.obj` | compressor set — cabinet, twin receivers, valve manifold | *Compressor N250716*, [archibase.net](https://archibase.net) |
+| `machine_switchgear.obj` | electrical distribution cabinet with lever isolator | *Box electrical panel N250616*, [archibase.net](https://archibase.net) |
+
+The four machines arrived as `.3ds` (and one `.obj`) at 44k–145k triangles apiece, which
+is one to two orders of magnitude past what this game spends on a prop. They were
+converted and decimated to ~3.2k triangles each by **`tools/3ds2obj.py`**, which is in
+the repository so the conversion is reproducible rather than a binary blob of unknown
+origin: each OBJ header records its source file and its before/after counts.
 
 ArchiBase distributes community-contributed models for visualisation, design, and art.
 Its terms are informal — objects remain "the property of their respective owners," may

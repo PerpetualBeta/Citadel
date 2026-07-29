@@ -86,6 +86,7 @@ final class RasterRenderer {
     private var plantLamps: [(pos: SIMD2<Float>, yaw: Float, light: SIMD2<Float>)] = []
     private var hallLamps: [SIMD3<Float>] = []  // downlights slung under the halls' roof trusses (see buildHallSteelwork)
     private var pipeVerts = 0                  // vertices the static pipework contributes (reported by the harness)
+    private var machineVerts = 0               // vertices the static plant machinery contributes (reported by the harness)
     // ── FRAME BUDGET PROBE ── always TIMED (a handful of clock reads costs nothing), but only ever WRITTEN when
     // a frame misses its budget, and then only if `frameLog` is enabled. The point is not a running FPS number:
     // it is that when the game stutters we get told WHICH stage ate the frame, because guessing at a stutter
@@ -201,6 +202,8 @@ final class RasterRenderer {
     private let spriteCompositor = SpriteCompositor()   // M5: CPU billboards/particles (gibs/sparks/smoke/ash + projectiles) over the frame
     private var bedMesh: [PVert]?                        // imported Institutional Bed (bed.obj) → local-space PVerts, centred on XZ, base at y=0
     private var bedTried = false
+    private var machineMeshes: [FurnitureKind: [PVert]] = [:]   // imported plant machinery, normalised to height 1
+    private var machineTried: Set<FurnitureKind> = []
     private var bulkheadMesh: [PVert]?                   // imported wall bulkhead lamp (bulkhead.usdz) → local PVerts, centred at origin, ~0.3m
     private var bulkheadTried = false
     private var bedHalfLen: Float = 0                    // half-extent along the bed's LENGTH axis (game X), unscaled — for flush seating
@@ -870,7 +873,7 @@ final class RasterRenderer {
         _ = loadBed()
         ceilingLampsOn = Progression.floorInBuilding(world.level) < 7   // 7–8 = the plant: bulkheads, not ceiling strips
         buildPlantLamps(world.map)
-        buildMesh(world.map)
+        buildMesh(world)
         mapW = world.map.w; mapH = world.map.h
         var lc = [SIMD4<Float>](repeating: .zero, count: mapW * mapH)
         for k in 0..<lc.count { let c = world.map.lightColor[k]; lc[k] = SIMD4(c.x, c.y, c.z, 1) }   // mirror liTex upload
@@ -904,7 +907,8 @@ final class RasterRenderer {
         distTex = dtt
     }
 
-    private func buildMesh(_ map: GameMap) {
+    private func buildMesh(_ world: World) {
+        let map = world.map
         var v: [PVert] = []; v.reserveCapacity(map.w * map.h * 12)
         lampCells.removeAll(keepingCapacity: true)
         lampMaskData = [UInt8](repeating: 0, count: map.w * map.h)   // per-cell lamp-presence, stamped at the same site as the housing
@@ -1004,6 +1008,13 @@ final class RasterRenderer {
         let prePipe = v.count
         buildPipework(map, into: &v)          // copper wall runs + valves/gauges — static, so it lives in this mesh
         pipeVerts = v.count - prePipe
+        let preMach = v.count
+        buildMachines(world, into: &v)        // imported plant machinery — it never moves, so it is level geometry
+        machineVerts = v.count - preMach
+        if machineVerts > 0 || world.props.contains(where: { RasterRenderer.machineSpec($0.kind) != nil }) {
+            let n = world.props.filter { RasterRenderer.machineSpec($0.kind) != nil }.count
+            print("RasterRenderer: machinery — \(n) placed, \(machineVerts) static verts")
+        }
         nVerts = v.count
         vbuf = v.isEmpty ? nil : device.makeBuffer(bytes: v, length: MemoryLayout<PVert>.stride * v.count)
     }
@@ -1850,6 +1861,148 @@ final class RasterRenderer {
     }
 
     /// Emit an imported mesh (local PVerts, base at y=0) at a prop: uniform scale, yaw about +Y, translate.
+    // ── PLANT MACHINERY (floors 7–8) ────────────────────────────────────────────
+    /// One imported machine: which mesh, how tall, and how to tell its carcass from its vessels.
+    ///
+    /// `height` is in GAME UNITS, not metres — the world is vertically compressed (a two-tier bunk
+    /// is 0.90 and nearly fills a 1.0 corridor; the plant halls are 2.0), so metres would mislead.
+    /// It is also a live `defaults` knob, read per frame, so a machine can be dialled in-game
+    /// instead of described in a screenshot: `defaults write cc.jorviksoftware.Citadel
+    /// MachineFilterHeight -float 1.7`.
+    private struct MachineSpec {
+        let res: String            // Resources/<res>.obj
+        let key: String            // live height knob
+        let height: Float          // default height, game units
+        let split: Float           // height fraction: below is carcass, above is vessel
+        let carcass: Mat
+        let vessel: Mat
+    }
+
+    private static func machineSpec(_ kind: FurnitureKind) -> MachineSpec? {
+        // Materials are assigned from GEOMETRY, not from the file — the OBJs carry positions and
+        // triangles only. A height split is enough because these machines are all built the same
+        // way: a dark painted base or frame carrying brighter bare-metal vessels above it. Same
+        // idiom as the bed's bedding/frame split, and it costs no authoring per mesh.
+        // Dark and ROUGH. The first pass used showroom values (albedo ~0.40, metal ~0.90) and every
+        // machine blew out to near-white under the halls' downlights — the plant floors are meant to be
+        // "dark, damp, noisy… oil stains, greasy surfaces, lots of grime", and a mirror-finish tank
+        // reads as a museum piece standing in a mine. Metal is kept moderate for the same reason: a
+        // high metal term with nothing to reflect but rock goes to specular mush.
+        let vesselM = Mat(a: SIMD3(0.23, 0.24, 0.26), r: 0.56, m: 0.72, e: .zero)   // grimy bare metal
+        let drumM   = Mat(a: SIMD3(0.19, 0.20, 0.21), r: 0.62, m: 0.66, e: .zero)   // duller still
+        switch kind {
+        case .machineFilter:
+            return MachineSpec(res: "machine_filter", key: "MachineFilterHeight", height: 1.50, split: 0.40,
+                               carcass: Mat(a: SIMD3(0.09, 0.10, 0.11), r: 0.72, m: 0.40, e: .zero), vessel: vesselM)
+        case .machineColumn:
+            return MachineSpec(res: "machine_column", key: "MachineColumnHeight", height: 1.60, split: 0.28,
+                               carcass: Mat(a: SIMD3(0.10, 0.12, 0.11), r: 0.74, m: 0.34, e: .zero), vessel: drumM)
+        case .machineCompressor:
+            return MachineSpec(res: "machine_compressor", key: "MachineCompressorHeight", height: 1.00, split: 0.62,
+                               carcass: Mat(a: SIMD3(0.10, 0.14, 0.15), r: 0.76, m: 0.28, e: .zero), vessel: drumM)
+        case .machineSwitchgear:
+            // Almost all carcass: only the isolator handle and the cap read as bare steel.
+            return MachineSpec(res: "machine_switchgear", key: "MachineSwitchgearHeight", height: 0.85, split: 0.92,
+                               carcass: Mat(a: SIMD3(0.13, 0.16, 0.14), r: 0.80, m: 0.20, e: .zero), vessel: vesselM)
+        default: return nil
+        }
+    }
+
+    /// The live height for a machine (see MachineSpec.height).
+    private func machineHeight(_ kind: FurnitureKind) -> Float {
+        guard let s = RasterRenderer.machineSpec(kind) else { return 1 }
+        return (UserDefaults.standard.object(forKey: s.key) as? Double).map { Float($0) } ?? s.height
+    }
+
+    /// Load a machine mesh, NORMALISED to height 1.0 with its base on the deck and centred on XZ —
+    /// so the live height knob applies at emit time and the cache never goes stale. Cached per kind;
+    /// a failed load is remembered. (ArchiBase.net meshes; see CREDITS.md — asset exception.)
+    private func loadMachine(_ kind: FurnitureKind) -> [PVert]? {
+        if let m = machineMeshes[kind] { return m }
+        if machineTried.contains(kind) { return nil }
+        machineTried.insert(kind)
+        guard let spec = RasterRenderer.machineSpec(kind),
+              let url = Bundle.main.url(forResource: spec.res, withExtension: "obj"),
+              let txt = try? String(contentsOf: url, encoding: .utf8) else {
+            print("RasterRenderer: \(spec_res(kind)) not found"); return nil
+        }
+        var pos: [SIMD3<Float>] = []; var tris: [(Int, Int, Int)] = []
+        for line in txt.split(separator: "\n") {
+            let f = line.split(separator: " ")
+            guard f.count >= 4, f[0] == "v" || f[0] == "f" else { continue }
+            if f[0] == "v" {
+                pos.append(SIMD3(Float(f[1]) ?? 0, Float(f[2]) ?? 0, Float(f[3]) ?? 0))
+            } else {
+                func vi(_ s: Substring) -> Int { (Int(s.split(separator: "/")[0]) ?? 0) - 1 }
+                tris.append((vi(f[1]), vi(f[2]), vi(f[3])))
+            }
+        }
+        guard !pos.isEmpty, !tris.isEmpty else { return nil }
+        for i in pos.indices { let p = pos[i]; pos[i] = SIMD3(p.x, p.z, -p.y) }   // .3DS is Z-up → the game's Y-up
+        var lo = pos[0], hi = pos[0]
+        for p in pos { lo = simd_min(lo, p); hi = simd_max(hi, p) }
+        let H = max(1e-5, hi.y - lo.y)
+        let ctr = SIMD3<Float>((lo.x + hi.x) * 0.5, lo.y, (lo.z + hi.z) * 0.5)
+        var out: [PVert] = []; out.reserveCapacity(tris.count * 3)
+        for (a, b, c) in tris where a >= 0 && b >= 0 && c >= 0 && a < pos.count && b < pos.count && c < pos.count {
+            let pa = (pos[a] - ctr) / H, pb = (pos[b] - ctr) / H, pc = (pos[c] - ctr) / H
+            var n = simd_cross(pb - pa, pc - pa); let l = simd_length(n); n = l > 1e-6 ? n / l : SIMD3(0, 1, 0)
+            let h = (pa.y + pb.y + pc.y) / 3                       // 0 at the deck, 1 at the top
+            let m = h > spec.split ? spec.vessel : spec.carcass
+            // Weathering — rust, oil film, settled dust — is NOT baked in here. It lives in the
+            // fragment shader behind tid −6, keyed to world position, exactly as the fuel drums do it
+            // (tid −5). A per-vertex grease gradient was the first attempt and it was flat: it darkened
+            // the feet uniformly, so a bare panel still shaded as a bare panel. Grime has to vary
+            // ACROSS a surface to break it up, which means per-pixel.
+            func vert(_ p: SIMD3<Float>) -> PVert {
+                PVert(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
+                      ar: m.a.x, ag: m.a.y, ab: m.a.z, rough: m.r, metal: m.m, er: m.e.x, eg: m.e.y, eb: m.e.z,
+                      tid: -6)
+            }
+            out += [vert(pa), vert(pb), vert(pc)]
+        }
+        machineMeshes[kind] = out
+        return out
+    }
+
+    private func spec_res(_ kind: FurnitureKind) -> String { RasterRenderer.machineSpec(kind)?.res ?? "machine" }
+
+    /// Every plant machine on this floor, emitted ONCE into the static level mesh.
+    ///
+    /// Machinery never moves, so it is level geometry, not per-frame props — the same call the
+    /// bulkhead fixtures make, and for the same reason. Each machine is ~9.9k vertices; a plant
+    /// floor's worth rebuilt every frame is tens of thousands of vertices of re-tessellation for a
+    /// picture that cannot change, and the fixtures already showed where that leads (over the 300k
+    /// per-frame cap, silently truncated, furniture popping in and out as the camera turned).
+    ///
+    /// One consequence worth knowing: the live height knobs (MachineFilterHeight and friends) are
+    /// therefore read at LEVEL BUILD, not per frame. Dialling one takes effect on the next floor —
+    /// warp with StartLevel to see it. That is a fair trade for taking the cost off the frame clock.
+    private func buildMachines(_ world: World, into v: inout [PVert]) {
+        for pr in world.props {
+            guard RasterRenderer.machineSpec(pr.kind) != nil, let mesh = loadMachine(pr.kind) else { continue }
+            // Wall machines seat FLUSH: the mesh is centred on its footprint, so pushing it into the
+            // room by (halfDepth − 0.5) puts its back face on the wall face instead of burying it
+            // behind. Depth comes from the shape bounds, so it tracks the mesh rather than a
+            // hand-tuned per-kind number.
+            var seat = pr.pos
+            if pr.againstWall {
+                let fp = GPURaymarch.furnitureFootprint(pr.kind)
+                let inward = SIMD2<Float>(-sinf(pr.yaw), cosf(pr.yaw))
+                seat += inward * max(0, fp.halfD - 0.5)
+            }
+            emitMesh(mesh, pos: seat, yaw: pr.yaw, scale: machineHeight(pr.kind), into: &v)
+            // A CENTREPIECE gets its own downlight. The truss lamps are slung on a fixed bay stride,
+            // so whether the hall's hero machine happens to stand under one is luck — and one that
+            // doesn't is a dark mass you cannot read at all. These floors are meant to be dark, but
+            // the thing the room exists for should not be the part you can't see. Wall machines get
+            // nothing: they are furniture, and the bulkheads already wash the walls they stand on.
+            if pr.kind == .machineFilter || pr.kind == .machineColumn {
+                hallLamps.append(SIMD3(seat.x, GameMap.tallCeiling - 0.22, seat.y))
+            }
+        }
+    }
+
     private func emitMesh(_ mesh: [PVert], pos: SIMD2<Float>, yaw: Float, scale: Float, into v: inout [PVert]) {
         let cy = cosf(yaw), sy = sinf(yaw)
         for pv in mesh {
@@ -1857,7 +2010,13 @@ final class RasterRenderer {
             let nx = pv.nx, nz = pv.nz
             v.append(PVert(px: pos.x + lx * cy - lz * sy, py: ly, pz: pos.y + lx * sy + lz * cy,
                            nx: nx * cy - nz * sy, ny: pv.ny, nz: nx * sy + nz * cy,
-                           ar: pv.ar, ag: pv.ag, ab: pv.ab, rough: pv.rough, metal: pv.metal, er: pv.er, eg: pv.eg, eb: pv.eb))
+                           ar: pv.ar, ag: pv.ag, ab: pv.ab, rough: pv.rough, metal: pv.metal, er: pv.er, eg: pv.eg, eb: pv.eb,
+                           // FORWARD the material id. This argument was missing, so it defaulted to −1 and
+                           // EVERY imported mesh arrived at the fragment claiming "plain flat material" —
+                           // which is why the machinery's tid −6 weathering branch never once executed.
+                           // Nothing complained: the vertex still built, the mesh still drew, it just
+                           // quietly lost the one field that selects a surface treatment.
+                           tid: pv.tid))
         }
     }
 
@@ -2052,6 +2211,12 @@ final class RasterRenderer {
         for pr in world.props where visible(pr.pos, 20) {
             // BEDS: the imported Institutional Bed MESH replaces the SDF platform bunk (yaw +90° so the
             // bed's length runs along the prop's local Z, head at the wall like the old bunk).
+            // PLANT MACHINERY is STATIC — baked into the level mesh by buildMachines, not rebuilt
+            // here every frame. At ~9.9k verts each, a plant floor's worth in the per-frame buffer
+            // would be tens of thousands of vertices of pointless re-tessellation, and the bulkhead
+            // fixtures already taught us where that ends: over the 300k cap, silently truncated,
+            // furniture popping as the camera turned.
+            if RasterRenderer.machineSpec(pr.kind) != nil { continue }
             if pr.kind == .bunk, let bed = loadBed() {
                 // The bed's LENGTH runs along the prop's local Z after +90°; the extra +180° puts the
                 // PILLOW/head at the wall (it was reversed). For a wall bunk, seat the frame FLUSH: the
@@ -2464,6 +2629,55 @@ final class RasterRenderer {
             float rf = clamp(rustA + streak*0.5, 0.0, 1.0);                             // 0 clean → 1 rusty
             metal = mix(0.80, 0.10, rf);                                                // GLOSSY painted steel where clean; matte where rust eats it
             rough = mix(0.30, 0.92, rf);
+        }
+
+        // ── PLANT MACHINERY (tid ≈ −6) ── the imported machines on floors 7–8. These are WORKING kit
+        // that has stood in a wet hole for years, and bare geometry with two flat materials read as
+        // exactly that: a blank sheet under the headlamp, and an unreadable dark mass away from it.
+        // Three treatments break a panel up, and they have to OPPOSE each other to register — matte
+        // rust, glossy oil, pale dust. Same darkness with a different finish is what the eye picks up.
+        if(in.tid < -5.5 && in.tid > -6.5){
+            float py = in.wp.y;                                                         // base ≈ 0, top ≈ 1.0–1.6
+            // Offsetting the noise field BY HEIGHT is load-bearing, not decoration: a vertical face has
+            // only one xz coordinate down its whole span, so plain fbm(wp.xz) would smear into vertical
+            // stripes — the same trap the rock walls fell into before the tangent-plane rewrite. Adding
+            // py makes the field vary in every direction on every facing, for one multiply.
+            // Frequencies are far LOWER than the drums' 13/36: those were tuned for a 0.3-wide barrel,
+            // and these machines are 1.0–2.8 across, where that rate turns to visual noise at any range.
+            float bloom = fbm(in.wp.xz*5.5 + py*3.1);
+            float fine  = fbm(in.wp.xz*15.0 + py*7.0);
+            float patch = 0.62*bloom + 0.38*fine;
+            // MOTTLE EVERYWHERE, before any rust. Coverage alone does not fix a blank panel: wherever the
+            // rust mask happened to miss, the paint was still perfectly uniform and still read as sheet
+            // metal off a roll. Worn paint is never one value, so vary all of it — the rust below then
+            // sits on a surface that already has life rather than doing the whole job itself.
+            alb *= 0.76 + 0.34*patch;
+            rough = mix(rough, min(1.0, rough + 0.12), fine);
+            float rustA = smoothstep(0.40, 0.70, patch);
+            // STREAKS — rust bleeds DOWN from seams and fixings, and it is the single strongest cue
+            // that something has been left standing in the damp. Stretching the noise along Y draws the
+            // blotches out into runs; without this the rust reads as camouflage, not corrosion.
+            float streak = smoothstep(0.44, 0.82, fbm(float2((in.wp.x - in.wp.z)*11.0, py*1.1)));
+            streak *= smoothstep(0.02, 0.30, py);                                       // runs start off the deck, not at the feet
+            float3 rust = float3(0.28,0.12,0.055), rustDk = float3(0.15,0.065,0.03);
+            alb = mix(alb, rust, rustA*0.86);
+            alb = mix(alb, rustDk, smoothstep(0.76,0.93,patch)*0.75);                   // deep cores where it has eaten through
+            alb = mix(alb, rust*0.55, streak*0.62);
+            float rf = clamp(rustA + streak*0.45, 0.0, 1.0);
+            rough = mix(rough, 0.95, rf);
+            metal = mix(metal, 0.06, rf);                                               // oxide is not metal
+            // OIL — a wet film wicking up from the greased deck. GLOSSY, which is the whole point: it
+            // sits at the same darkness as the rust, so only the finish separates them.
+            float oil = clamp(1.0 - py/0.55, 0.0, 1.0);
+            oil *= 0.45 + 0.55*fbm(in.wp.xz*8.0 + py*2.0);
+            alb *= 1.0 - 0.62*oil;
+            rough = mix(rough, 0.16, oil*0.8);
+            metal = mix(metal, 0.50, oil*0.45);
+            // DUST settles on whatever faces the roof, and it is the only PALE term here — so it peels
+            // the horizontal surfaces away from the vertical ones without a second material.
+            float up = smoothstep(0.45, 0.95, gn.y);
+            alb = mix(alb, float3(0.20,0.19,0.17), up*0.42*(0.55+0.45*fine));
+            rough = mix(rough, 0.92, up*0.5);
         }
 
         // ── M5 aftermath DECALS on FLOOR fragments (blood/scorch/scattered-papers/ash/offal) — ported
@@ -3810,6 +4024,51 @@ final class RasterRenderer {
                         break outer
                     }
                 }
+            }
+        }
+
+        // MACHINE HALL check (7–8): the imported plant machinery in place. One view standing well back from
+        // the hall's centrepiece so its full height reads against the double-height roof steel, and one down
+        // a wall where the compressors and switchgear are ranked. Machinery is STATIC level geometry, so what
+        // these frames show is baked into the level mesh, not rebuilt per frame.
+        for lvl in [7, 8] {
+            let world = World(level: lvl, colonyIndex: 0, seed: 3)
+            let m = world.map
+            world.monsters = []; world.colonists = []                    // clear so the architecture reads
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+            /// Stand back from `t` and look at it. Maximising distance is the wrong objective — it parks
+            /// the camera in whichever side passage reaches furthest and fills half the frame with the
+            /// rock beside it. So cap the range at a distance that still shows the whole machine, and
+            /// insist the standpoint has open floor to BOTH sides: that is what distinguishes standing
+            /// in the hall from standing in a corridor leading out of it.
+            func frame(_ t: SIMD2<Float>, _ tag: String) {
+                var best = (d: Float(0), pos: SIMD2<Float>(0, 0))
+                for a in stride(from: Float(0), to: 6.2831, by: 0.26) {
+                    let dir = SIMD2<Float>(cos(a), sin(a)), side = SIMD2<Float>(-dir.y, dir.x)
+                    var k: Float = 1.8
+                    while k <= 5.2 {
+                        let q = t + dir * k
+                        if !op(Int(q.x), Int(q.y)) { break }
+                        let lf = q + side, rt = q - side
+                        if k > best.d, op(Int(lf.x), Int(lf.y)), op(Int(rt.x), Int(rt.y)) { best = (k, q) }
+                        k += 0.4
+                    }
+                }
+                guard best.d >= 2.0 else { print("RASTERSHOT: \(tag) — no standpoint"); return }
+                world.player.pos = best.pos
+                world.player.dir = atan2f(t.y - best.pos.y, t.x - best.pos.x)
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1,
+                                  to: dir.appendingPathComponent("\(tag).png"))
+                print("RASTERSHOT: wrote \(tag).png (from \(best.pos), \(String(format: "%.1f", best.d)) back)")
+            }
+            if let hero = world.props.first(where: { $0.kind == .machineFilter || $0.kind == .machineColumn }) {
+                frame(hero.pos, "raster-machinehall-L\(lvl)")
+            } else {
+                print("RASTERSHOT: L\(lvl) has no centrepiece machine")
+            }
+            if let comp = world.props.first(where: { $0.kind == .machineCompressor }) {
+                frame(comp.pos, "raster-machinewall-L\(lvl)")
             }
         }
 

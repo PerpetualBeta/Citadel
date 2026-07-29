@@ -28,6 +28,14 @@ enum FurnitureKind: Int, CaseIterable {
     case washTrough  // SANITARY — stainless trough basin with taps and a mirror panel over it
     case shower      // SANITARY — shower stall: tiled divider, head and valve
     case cubicle     // SANITARY — WC cubicle: partition, door and pan
+    // ── PLANT (floors 7–8 only) ── imported machinery, decimated to house scale by
+    // tools/3ds2obj.py. Each is a real mesh in the raster path and a coarse box in the
+    // SDF path; the box also derives the collider, so it is sized from the mesh's own
+    // measured bounds (see GPURaymarch.furnitureShapes) rather than guessed.
+    case machineFilter     // PLANT — three-tank water filter in a steel gantry. The hall's centrepiece: 2.8 × 1.0 cells, 1.5 tall
+    case machineColumn     // PLANT — process column/scrubber: a vertical vessel on a base with side drums. 2.7 × 2.3 cells, 1.6 tall
+    case machineCompressor // PLANT — compressor set: cabinet, twin receivers, valve manifold. Lines a wall; the thing that HUMS. 1.0 × 1.4 cells
+    case machineSwitchgear // PLANT — electrical distribution cabinet with a lever isolator. Cheap and repeatable, flush to a wall. 0.5 × 0.4 cells
 }
 
 struct Prop {
