@@ -23,8 +23,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // The world's 3-D view is drawn by the GPU SDF renderer — the only renderer
     // (the CPU raycaster was removed once the GPU path reached parity).
-    private var gpuWorldRenderer: GPUWorldRenderer?
-    private var rasterRenderer: RasterRenderer?      // built alongside the raymarcher; selected by FeatureFlags.rasterRenderer
+    private var rasterRenderer: RasterRenderer?      // the renderer. The SDF raymarcher it grew up beside was retired 2026-07-29.
 
     let canvas = Canvas2D()
     private let hud = HUD()
@@ -118,11 +117,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         super.init()
         buildPipeline(view: view)
         buildTexture()
-        gpuWorldRenderer = GPUWorldRenderer(device: device)
         rasterRenderer = RasterRenderer(device: device)
-        gpuWorldRenderer?.prewarm()      // build the level-independent GPU resources now (title is up), not on the first fire-press
         warmKernel()                     // …and pay the kernel's first-dispatch compile now too
-        gpuWorldRenderer?.warmPortraits()  // …and the mesh dossier busts the codex shows
+        rasterRenderer?.warmPortraits()   // the mesh dossier busts the codex shows
         ItemIcons.warm()                 // …and the SDF pickup icons (match the in-world geometry)
         audio.startMusic(.title)
     }
@@ -649,18 +646,18 @@ final class Renderer: NSObject, MTKViewDelegate {
             canvas.fillRect(0, 0, RenderConfig.width, RenderConfig.height, packRGBA(4, 4, 6))
             return
         }
-        if FeatureFlags.rasterRenderer, rasterRenderer?.render(world, into: canvas) == true { return }
-        gpuWorldRenderer?.render(world, into: canvas)
+        _ = rasterRenderer?.render(world, into: canvas)
     }
 
-    /// One throwaway dispatch on a scratch shaft world, off the main thread,
-    /// while the title screen is up. Until it completes, renderWorld paints
-    /// dark — in practice the compile finishes long before a fire press.
+    /// One throwaway render on a scratch shaft world, off the main thread, while the title screen
+    /// is up: Metal compiles a shader at its first dispatch, and that is a multi-second stall we do
+    /// not want on the first fire-press. Until it completes, renderWorld paints dark — in practice
+    /// the compile finishes long before anyone presses fire.
     private func warmKernel() {
-        guard let gpu = gpuWorldRenderer else { gpuWarm = true; return }
+        guard let rr = rasterRenderer else { gpuWarm = true; return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let scratch = Canvas2D()
-            gpu.render(World.liftRideShaft(), into: scratch)
+            _ = rr.render(World.liftRideShaft(), into: scratch)
             DispatchQueue.main.async { self?.gpuWarm = true }
         }
     }

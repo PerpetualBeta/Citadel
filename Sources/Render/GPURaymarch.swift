@@ -1,3 +1,19 @@
+// Citadel — the SDF shape library, plus the retired raymarching kernel.
+//
+// STATUS 2026-07-29: the SDF raymarcher is NO LONGER the renderer — RasterRenderer replaced it and
+// GPUWorldRenderer has been deleted. What this file is FOR now is everything below `kernelSource`:
+// the shape library (furnitureShapes, itemShapes, socketShapes, mineShapes, pipeRunShapes,
+// tapeDeckShapes, the iBox/iSphere/iCone/iCylinder constructors), the shared scene data (GShape,
+// GPULight, FireEmitter, gatherDynLights, gatherFireEmitters), buildDistanceField (the raster
+// creature wall-clip samples it) and makeTextureArray. The raster path makes ~34 calls into it.
+//
+// `kernelSource` (~1700 lines of MSL) and `makePipelines` are DEAD but not yet removed: their last
+// caller is QueenMock.renderLair, an obsolete SDF-era R&D harness whose utilities QueenMeshTest
+// still borrows. Retiring that properly is its own pass — see the task list. Renaming this file to
+// match what it actually is would be honest, and is Jonathan's call, being pure churn.
+//
+// The history below is kept because it explains the shapes' coordinate conventions.
+//
 // Citadel — GPU SDF raymarcher: the shipping renderer's Metal compute kernel.
 //
 // The renderer pivot (2026-06-21): the world is rendered per-pixel on the GPU by
@@ -2874,5 +2890,112 @@ enum GPURaymarch {
         }
         guard let b = best else { return nil }
         return (b.pos, b.dir, b.depth)
+    }
+
+    // ── transient COMBAT lights ─────────────────────────────────────────────────
+    // Muzzle flash, flamethrower, blasts, burning pyres, projectiles: a pure function of `world`,
+    // so both render paths light the scene identically. It lived on GPUWorldRenderer until that
+    // renderer was retired; it belongs here beside GPULight and the rest of the shared scene data.
+    /// Muzzle flash + projectile glows as point lights for the GPU kernel
+    /// (mirrors WorldLight.gatherLights, at eye height in 3-D).
+    // Pure function of `world` (muzzle/flame/elevator/teleport/blast/pyre/projectile point lights) —
+    // STATIC so the raster path reuses it too. (M6: relocate to GPURaymarch alongside packLights.)
+    static func gatherDynLights(_ world: World) -> [GPURaymarch.GPULight] {
+        var out: [GPURaymarch.GPULight] = []
+        let p = world.player
+        if p.muzzle > 0 && world.flameJet.t <= 0 {   // the flamethrower has its own warm light (below) — no cold muzzle flash
+            let mz = min(1, p.muzzle / 0.07), rad: Float = 6.5
+            out.append(GPURaymarch.GPULight(posR: SIMD4(p.pos.x, 0.5, p.pos.y, 1 / (rad * rad)),
+                                            colI: SIMD4(1.0, 0.86, 0.55, 1.7 * mz)))
+        }
+        // the flamethrower jet throws warm firelight down the aim — the stream
+        // lights the room ahead and flares against the wall it splashes on,
+        // guttering on two incommensurate rates so it never pulses in rhythm
+        let jt = world.flameJet
+        if jt.t > 0 {
+            let s0 = min(1, jt.t / 0.10)
+            let flick = 0.80 + 0.20 * sinf(world.elapsed * 31) + 0.12 * sinf(world.elapsed * 67 + 1.3)
+            let reach = max(0.6, jt.reach)
+            let mid = jt.nozzle + jt.dir * min(reach * 0.5, 1.6)
+            let far = jt.nozzle + jt.dir * (reach - 0.2)
+            let rM: Float = 4.2, rF: Float = 3.0
+            out.append(GPURaymarch.GPULight(posR: SIMD4(mid.x, 0.5, mid.y, 1 / (rM * rM)),
+                                            colI: SIMD4(1.0, 0.55, 0.20, 1.6 * s0 * flick)))
+            out.append(GPURaymarch.GPULight(posR: SIMD4(far.x, 0.45, far.y, 1 / (rF * rF)),
+                                            colI: SIMD4(1.0, 0.48, 0.16, 1.1 * s0 * flick)))
+        }
+        // elevator cabin light — the car interior is pitch dark once the leaves
+        // shut (no baked light reaches it), so a car in use carries its own lamp.
+        // During the descent the lamp sways and shaft lights sweep past the cage.
+        func cabin(_ cell: Int, descending: Bool) -> GPURaymarch.GPULight {
+            let cx = Float(cell % world.map.w) + 0.5, cz = Float(cell / world.map.w) + 0.5
+            var inten: Float = 0.85
+            if descending {
+                let t = world.elapsed
+                inten = 0.55 + 0.20 * sinf(t * 2.6)                    // the cabin lamp swaying
+                inten += 1.1 * powf(max(0, sinf(t * 3.6)), 12)         // a shaft light sweeping past
+            }
+            let rad: Float = 2.6
+            return GPURaymarch.GPULight(posR: SIMD4(cx, 0.78, cz, 1 / (rad * rad)),
+                                        colI: SIMD4(1.0, 0.93, 0.76, inten))
+        }
+        if world.elevatorPhase != .idle, world.map.exitCell >= 0 {
+            out.append(cabin(world.map.exitCell, descending: world.elevatorPhase == .descending))
+        }
+        if world.map.entryCell >= 0, (world.map.doors[world.map.entryCell]?.open ?? 0) > 0.01 {
+            out.append(cabin(world.map.entryCell, descending: false))
+        }
+        // teleporter pads carry their own COLD light, hugging the deck (a lamp at
+        // eye height washes the chamber to white): the exit pad breathes on
+        // standby, lifts under a boarder, and flares as the charge ramps; the
+        // arrival receiver glows as the marine materialises, then dies down.
+        func padLight(_ cell: Int, _ inten: Float, _ reach: Float) -> GPURaymarch.GPULight {
+            let cx = Float(cell % world.map.w) + 0.5, cz = Float(cell / world.map.w) + 0.5
+            return GPURaymarch.GPULight(posR: SIMD4(cx, 0.18, cz, 1 / (reach * reach)),
+                                        colI: SIMD4(0.55, 0.85, 1.0, inten))
+        }
+        if world.isTeleportFloor, world.map.exitCell >= 0, world.map.wall[world.map.exitCell] == 0 {
+            let charge: Float = world.teleportPhase == .charging ? world.teleportT
+                              : (world.teleportPhase == .await ? 0.12 : 0)
+            let breathe = 0.16 + 0.04 * sinf(world.elapsed * 2.2)
+            out.append(padLight(world.map.exitCell, breathe + 1.2 * charge, 2.0 + 1.6 * charge))
+        }
+        if world.arrivalGlow > 0.01, world.map.entryCell >= 0 {
+            out.append(padLight(world.map.entryCell, 0.10 + 0.45 * world.arrivalGlow, 2.2))
+        }
+        // impact flashes light the room — fierce, decaying, coloured per cause
+        // (warm for detonations, plasma-cyan for bolt splashes)
+        for b in world.blasts {
+            let f = max(0, b.t / 0.3)
+            let rad: Float = 5.5
+            out.append(GPURaymarch.GPULight(posR: SIMD4(b.pos.x, 0.5, b.pos.y, 1 / (rad * rad)),
+                                            colI: SIMD4(b.col.x, b.col.y, b.col.z, 2.4 * f)))
+        }
+        // burning corpses cast a live orange firelight that builds and dies with
+        // the pyre — the room flickers while a body burns
+        for (i, m) in world.monsters.enumerated() where m.state == .dead && m.burn > 0 && m.burn < 1 {
+            let flare = sinf(m.burn * .pi)
+            // gutter on two incommensurate rates, desynced per corpse — no rhythm
+            let ph = Float(i) * 1.7
+            let flick = 0.80 + 0.14 * sinf(world.elapsed * 13 + ph) + 0.10 * sinf(world.elapsed * 29 + ph * 2.3)
+            let rad: Float = 3.6
+            out.append(GPURaymarch.GPULight(posR: SIMD4(m.pos.x, 0.45, m.pos.y, 1 / (rad * rad)),
+                                            colI: SIMD4(1.0, 0.55, 0.22, (0.4 + 1.3 * flare) * flick)))
+            if out.count >= 14 { break }
+        }
+        for pr in world.projectiles {
+            let c: (Float, Float, Float), rad: Float, it: Float
+            switch pr.kind {
+            case .plasma:   c = (0.50, 0.85, 1.00); rad = 3.6; it = 1.0
+            case .rocket:   c = (1.00, 0.70, 0.40); rad = 3.0; it = 0.8
+            case .bolt:     c = (1.00, 0.85, 0.40); rad = 3.0; it = 0.9
+            case .fireball: c = (1.00, 0.45, 0.18); rad = 4.0; it = 1.2
+            case .bfgBall:  c = (0.50, 1.00, 0.45); rad = 5.5; it = 1.6
+            }
+            out.append(GPURaymarch.GPULight(posR: SIMD4(pr.pos.x, 0.5, pr.pos.y, 1 / (rad * rad)),
+                                            colI: SIMD4(c.0, c.1, c.2, it)))
+            if out.count >= 16 { break }
+        }
+        return out
     }
 }

@@ -204,7 +204,7 @@ enum Automap {
     static func run(outDir: String?) {
         let dir = URL(fileURLWithPath: outDir ?? NSHomeDirectory() + "/Desktop/Citadel-Automap")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let gpu = MTLCreateSystemDefaultDevice().flatMap { GPUWorldRenderer(device: $0) }
+        let gpu = MTLCreateSystemDefaultDevice().flatMap { RasterRenderer(device: $0) }
         for (name, frac) in [("full", 1.0), ("partial", 0.45)] {
             let world = World(level: 3, colonyIndex: 2, seed: 4242)
             revealFraction(world.map, frac)

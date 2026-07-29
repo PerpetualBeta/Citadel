@@ -27,7 +27,7 @@ enum Captures {
         let audio = AudioEngine()
         audio.muted = true                        // harnesses are SILENT — they get run in offices
         // render the 3-D view through the GPU renderer (every Mac has a Metal device)
-        let gpu = MTLCreateSystemDefaultDevice().flatMap { GPUWorldRenderer(device: $0) }
+        let gpu = MTLCreateSystemDefaultDevice().flatMap { RasterRenderer(device: $0) }
         func draw3D(_ w: World, into c: Canvas2D) { _ = gpu?.render(w, into: c) }
 
         // title
@@ -267,7 +267,7 @@ enum DisplayVid {
     static func run(outDir: String?, fault: Bool = false) {
         let dir = URL(fileURLWithPath: outDir ?? NSHomeDirectory() + "/Desktop/Citadel-DisplayVid")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        guard let device = MTLCreateSystemDefaultDevice(), let gpu = GPUWorldRenderer(device: device) else {
+        guard let device = MTLCreateSystemDefaultDevice(), let gpu = RasterRenderer(device: device) else {
             print("Citadel: no Metal device for display video"); return
         }
         let W = RenderConfig.width, H = RenderConfig.viewHeight

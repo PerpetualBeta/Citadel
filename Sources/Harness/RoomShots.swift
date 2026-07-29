@@ -15,7 +15,7 @@ enum RoomShots {
     static func run(outDir: String?) {
         let dir = URL(fileURLWithPath: outDir ?? NSHomeDirectory() + "/Desktop/Citadel-Rooms")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        guard let device = MTLCreateSystemDefaultDevice(), let gpu = GPUWorldRenderer(device: device) else {
+        guard let device = MTLCreateSystemDefaultDevice(), let gpu = RasterRenderer(device: device) else {
             print("Citadel: no Metal device for room shots"); return
         }
         let W = RenderConfig.width, H = RenderConfig.viewHeight

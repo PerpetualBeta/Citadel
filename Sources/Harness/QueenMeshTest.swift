@@ -240,7 +240,7 @@ enum QueenMeshTest {
         print("Citadel: MESH look-test [\(tag)] — wrote 4 facings to \(dir.path)")
     }
 
-    /// Drive the REAL live renderer (GPUWorldRenderer + the mesh hook) headlessly:
+    /// Drive the REAL live renderer (RasterRenderer + the mesh hook) headlessly:
     /// spawn a level, teleport the player in front of its queen, render one frame,
     /// dump it. Proves the in-game wire-in (SDF-queen exclusion + mesh composite).
     static func verifyLive(outDir: String?) {
@@ -282,7 +282,7 @@ enum QueenMeshTest {
         }
 
         let canvas = Canvas2D()
-        guard let gpu = GPUWorldRenderer(device: device) else { print("Citadel: no GPU renderer"); return }
+        guard let gpu = RasterRenderer(device: device) else { print("Citadel: no renderer"); return }
         func shot(_ name: String, _ sp: SIMD2<Float>, _ faceAng: Float) {
             world.player.pos = sp
             world.player.dir = faceAng
@@ -376,7 +376,7 @@ enum QueenMeshTest {
         } }
         guard found else { print("Citadel: no standoff for colonist verify"); return }
         let canvas = Canvas2D()
-        guard let gpu = GPUWorldRenderer(device: device) else { print("Citadel: no GPU renderer"); return }
+        guard let gpu = RasterRenderer(device: device) else { print("Citadel: no renderer"); return }
         let faceAng = atan2(target.y - stand.y, target.x - stand.x)
         let inward = simd_normalize(stand - target)
         world.player.pos = stand; world.player.dir = faceAng; world.player.muzzle = 0

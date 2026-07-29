@@ -1,11 +1,15 @@
 # Citadel — first-person retro shooter (a Doom tribute), set in the Strataris
 # universe. The SECOND native game in the Jorvik suite (after Strataris).
 #
-# Built with swiftc + Metal. The shipping renderer is a GPU SDF raymarcher: a
-# Metal compute kernel sphere-traces the level's distance field and floor/ceiling,
-# grades the HDR result (bloom / ACES / teal-amber grade / vignette) and reads it
-# back into a framebuffer; the creatures are rasterised 3-D meshes composited over
-# it, and only billboard particles are composited on the CPU with depth occlusion.
+# Built with swiftc + Metal. The renderer is a forward RASTERISER: real triangle
+# geometry with PBR shading, shadow-mapped ceiling lamps, an HDR pipeline (bloom /
+# ACES / vignette) and the animated creature meshes drawn straight into the frame.
+# Particles are GPU billboards. Nothing composites on the CPU any more — the frame
+# makes ONE GPU->CPU transfer, the finished image.
+#
+# It replaced a GPU SDF raymarcher on 2026-07-29; the shape library that path
+# defined lives on in Sources/Render/GPURaymarch.swift, which the rasteriser uses
+# for all its prop geometry.
 #
 # Graphics are generated in code, with deliberate exceptions: the creature meshes
 # (Resources/*.usdz), the title/Hall hero plates, and AUDIO — Citadel ships real
@@ -63,7 +67,6 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Game/HighScores.swift \
                     Sources/Game/Rng.swift \
                     Sources/Render/GPURaymarch.swift \
-                    Sources/Render/GPUWorldRenderer.swift \
                     Sources/Render/RasterRenderer.swift \
                     Sources/Render/Canvas2D.swift \
                     Sources/Render/Pixel.swift \

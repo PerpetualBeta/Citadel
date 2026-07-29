@@ -6,7 +6,8 @@ import ModelIO
 // ============================================================================
 //  RasterRenderer — the rasterised world renderer
 //
-//  Built ALONGSIDE the SDF raymarcher (GPUWorldRenderer), selected by
+//  THE renderer. It grew up alongside the SDF raymarcher and replaced it outright on
+//  2026-07-29; what remains of that path is the shape library in GPURaymarch.swift. Was selected by
 //  FeatureFlags.rasterRenderer. Renders the grid world as triangle meshes with
 //  PBR shading, into the same Canvas2D framebuffer the HUD then draws over.
 //
@@ -318,7 +319,7 @@ final class RasterRenderer {
         self.vmBuf = vb
     }
 
-    // ── entry point (mirrors GPUWorldRenderer.render(_:into:)) ────────────────
+    // ── entry point ───────────────────────────────────────────────────────────
     @discardableResult
     func render(_ world: World, into canvas: Canvas2D) -> Bool {
         fpMark("start")
@@ -357,7 +358,7 @@ final class RasterRenderer {
         if lights.count > 48 { lights = Array(lights.prefix(48)) }         // reserve room for the transient FX lights below (stable-order, NEVER player-sorted)
         // M5: transient COMBAT lights (muzzle flash, flamethrower, blasts, burning pyres, projectiles) —
         // a pure function of `world`, so the same builder the raymarch path uses lights the raster world.
-        let dynLights = GPUWorldRenderer.gatherDynLights(world)
+        let dynLights = GPURaymarch.gatherDynLights(world)
         lights.append(contentsOf: dynLights)
         lastLightCount = Float(lights.count)
         // fuel-store bulkhead lights — warm, low-wattage, tight radius (the store has no overhead; these light it)
@@ -752,6 +753,22 @@ final class RasterRenderer {
         e.setVertexTexture(perpTex, index: 0)
         e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: nSprVerts)
         e.endEncoding()
+    }
+
+    // ── codex dossier busts ─────────────────────────────────────────────────────
+    /// Render the Field Intel dossier busts from the SAME mesh instances the game draws, and cache
+    /// them in MeshPortraits — so the codex shows the actual creatures. Synchronous; call once.
+    /// Moved here from GPUWorldRenderer when that renderer was retired: it only ever needed the two
+    /// MeshCreature instances, which this renderer owns.
+    func renderPortraits() {
+        if let q = meshQueen { MeshPortraits.store(.queen, q.portrait(spin: MeshPortraits.spin(.queen), gain: MeshPortraits.gain(.queen))) }
+        if let d = meshDrone { MeshPortraits.store(.alien, d.portrait(spin: MeshPortraits.spin(.alien), gain: MeshPortraits.gain(.alien))) }
+    }
+
+    /// Non-blocking variant for launch: the codex is rarely the first screen reached, and it
+    /// degrades gracefully until this lands.
+    func warmPortraits() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in self?.renderPortraits() }
     }
 
     /// The creatures that will be drawn this frame. Pure selection, no GPU work — the frame needs

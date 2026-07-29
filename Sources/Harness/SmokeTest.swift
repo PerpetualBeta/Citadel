@@ -819,7 +819,7 @@ enum SmokeTest {
 
         // 3. world render path — the GPU SDF renderer
         let canvas = Canvas2D()
-        let gpu = MTLCreateSystemDefaultDevice().flatMap { GPUWorldRenderer(device: $0) }
+        let gpu = MTLCreateSystemDefaultDevice().flatMap { RasterRenderer(device: $0) }
         _ = gpu?.render(world, into: canvas)
         HUD().draw(world, into: canvas)
         var nonBlack = 0
