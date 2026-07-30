@@ -369,7 +369,14 @@ extension RasterRenderer {
         // Cheap AABB→circle reject so uncovered floor pixels pay almost nothing (nD>0 across the deck). ──
         float decalEmis = 0.0;
         int nD = int(C.amb.x);
-        if(nD > 0 && gn.y > 0.5){
+        // NOT ON THE HELD WEAPON. Both this block and the floor-liquid block below identify "the floor"
+        // as any UP-FACING fragment and then treat it by its world XZ — and the gun is a fistful of
+        // up-facing faces sitting at the marine's own XZ. So whatever she was standing on was painted
+        // straight onto her weapon: a grating drew a grating on the barrel, and a blood pool turned the
+        // whole gun red. That is what "the floor is reflecting on the barrel" was, all along — not a
+        // reflection, not the ambient, not the rail's albedo, but the deck's own decals applied to it.
+        bool isVM = (C.amb.z > 0.5);
+        if(nD > 0 && gn.y > 0.5 && !isVM){
             float dtime = C.amb.y, dn = -1.0;
             for(int di=0; di<nD; di++){
                 float4 dc = decals[di];
@@ -420,7 +427,7 @@ extension RasterRenderer {
         // the rock pools. Mirrors the raymarch floor-liquid blend: churn the normal, glaze it glossy,
         // darken + cool the bed, and (nukage) pulse the glow. Applied BEFORE the PBR lighting below. ──
         float3 waterEmis = float3(0.0);
-        if(gn.y > 0.5){
+        if(gn.y > 0.5 && !isVM){                                        // see isVM above — the gun is not the floor
             uint2 fc = uint2(clamp(int2(floor(in.wp.xz)), int2(0), int2(int(C.params.z)-1, int(C.params.w)-1)));
             int fid = int(floorId.read(fc).r);
             bool liquid = (fid == 3 || fid == 8);                       // nukage / blood — liquid at any depth

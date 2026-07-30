@@ -67,15 +67,7 @@ enum Viewmodel {
     static func plasma(fire: Float, flash: Float, charge: Float = 1, time: Float = 0) -> [GShape] {
         var s: [GShape] = []
         s.append(box(SIMD3(0, 0, -0.04), SIMD3(0.052, 0.048, 0.15), 0.014, gunBlack))          // receiver
-        // The spine rail is in the BODY's parkerised black, not darkSteel. It is the topmost face of
-        // the gun and it runs the whole length of it, so at 0.24 albedo against a 0.09 body it read as
-        // a long pale strip exactly where a reflection would sit — and that is what it was taken for,
-        // twice. Chasing it through the lighting was wrong three times over: the baked-field specular,
-        // the field ambient and the two eye-anchored terms together account for about a quarter of that
-        // strip's brightness, and this one number for the rest. An integral rail in the same finish as
-        // the receiver is also what a real parkerised rifle looks like; it reads by its edge, not by
-        // being a lighter colour.
-        s.append(box(SIMD3(0, 0.058, -0.02), SIMD3(0.020, 0.010, 0.17), 0.006, gunBlack))      // top spine rail
+        s.append(box(SIMD3(0, 0.058, -0.02), SIMD3(0.020, 0.010, 0.17), 0.006, darkSteel))     // top spine rail
         s.append(zcyl(SIMD3(0, 0.006, 0.17), r: 0.042, half: 0.10, edge: 0.008, gunBlack))     // barrel shroud
         for z in [Float(0.10), 0.15, 0.20] {                                                   // induction coils
             s.append(zcyl(SIMD3(0, 0.006, z), r: 0.050, half: 0.008, edge: 0.004, copper))

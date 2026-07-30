@@ -357,6 +357,16 @@ extension RasterRenderer {
                 _ = rr.render(world, into: canvas)
                 Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-decals.png"))
                 print("RASTERSHOT: wrote raster-decals.png (blood/scorch/papers at \(cx),\(cy))")
+                // …and STANDING IN THE BLOOD, which is the frame that matters. The decal pass and the
+                // floor-liquid pass both treat any UP-FACING fragment by its world XZ, and the held gun
+                // is up-facing faces at the marine's own XZ — so a blood pool used to paint the whole
+                // weapon red and a floor grate drew a grate on the barrel. Guarded here because it is
+                // invisible in every other frame: you have to be STANDING on the decal to see it.
+                world.player.pos = SIMD2(Float(cx - 1) + 0.5, Float(cy) + 0.5)
+                world.player.dir = -.pi / 2
+                _ = rr.render(world, into: canvas)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-viewmodel-ondecal.png"))
+                print("RASTERSHOT: wrote raster-viewmodel-ondecal.png (the gun standing IN the blood at \(cx - 1),\(cy))")
                 break search
             } }
         }
