@@ -1232,6 +1232,90 @@ enum SmokeTest {
                   "the line is sized to the frame and never touches an edge (x \(left)…\(right) of \(RenderConfig.width))")
         }
 
+        // ── NOTHING PARKED IN FRONT OF A LAMP ── the renderer hangs the plant floors' bulkhead
+        // fixtures and MapGen furnishes the same walls; each used to choose independently, so a locker
+        // could stand in front of the one light in the room. Both now read one shared walk.
+        do {
+            var lampWalls = 0, covered = 0
+            var coveredKinds = Set<String>()
+            for level in [7, 8] {
+                for seed in [UInt64(3), 11, 29, 47] {
+                    let g = MapGen.generate(level: level, colonyIndex: 0, seed: seed)
+                    lampWalls += g.map.wallLamp.count
+                    for pr in g.props {
+                        // The wall a prop BACKS ONTO — inverted from its yaw, which MapGen sets as
+                        // yawFor(inward) = atan2(-inward.x, inward.y). Checking all four neighbours
+                        // instead was too strict: it flagged a chair, a desk and a trough standing
+                        // flush against a DIFFERENT wall of a corner cell, with the lamp on the wall
+                        // beside them rather than behind them — not covering anything.
+                        let inward = SIMD2<Float>(-sinf(pr.yaw), cosf(pr.yaw))
+                        let bx = Int(pr.pos.x) - Int(inward.x.rounded()), by = Int(pr.pos.y) - Int(inward.y.rounded())
+                        guard g.map.inBounds(bx, by) else { continue }
+                        let bi = g.map.idx(bx, by)
+                        if g.map.wallLamp.contains(bi) { covered += 1; coveredKinds.insert("\(pr.kind)") }
+                    }
+                }
+            }
+            check(lampWalls > 0, "the plant floors bake their lamp walls for MapGen to avoid (\(lampWalls) across 8 floors)")
+            check(covered == 0, "…and no prop stands against one (\(covered) covered: \(coveredKinds.sorted()))")
+        }
+
+        // ── TEETH NEED A LINE ── a drone must not bite through a wall. Melee was a bare distance
+        // test while the RANGED branch beside it checked line-of-sight, and the reach is deliberately
+        // generous (radius + 1.0 → 1.4 cells for a drone, 2.1 for the Queen) against a wall one cell
+        // thick: anything standing on the far side was inside its own melee range. Reported in play.
+        do {
+            let w = World(level: 1, colonyIndex: 0, seed: 21)
+            let inp = InputState()
+            // find an open cell with a solid wall beside it, and open floor beyond that wall
+            var placed = false
+            for y in 2..<(w.map.h - 2) where !placed {
+                for x in 2..<(w.map.w - 2) where !placed {
+                    guard !w.map.blocksSight(x, y) else { continue }
+                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                        let wx = x + dx, wy = y + dy, fx = x + dx * 2, fy = y + dy * 2
+                        guard w.map.blocksSight(wx, wy), w.map.doors[w.map.idx(wx, wy)] == nil,
+                              !w.map.blocksSight(fx, fy) else { continue }
+                        // marine one side, a woken drone directly opposite — 2 cells apart, inside
+                        // melee reach, with a solid wall between them
+                        w.player.pos = SIMD2(Float(x) + 0.5, Float(y) + 0.5)
+                        w.player.health = 100; w.player.armor = 0
+                        var d = Monster(kind: .alien, pos: SIMD2(Float(fx) + 0.5, Float(fy) + 0.5))
+                        d.awake = true; d.state = .chase
+                        w.monsters = [d]
+                        let gap = vlen(d.pos - w.player.pos)
+                        for _ in 0..<180 { w.update(dt: 1.0 / 30, input: inp, audio: audio) }   // 6 s, several attack windows
+                        check(w.player.health == 100,
+                              String(format: "a drone %.1f cells away THROUGH a wall cannot bite (health %d)",
+                                     gap, w.player.health))
+                        placed = true
+                        break
+                    }
+                }
+            }
+            check(placed, "found a wall to test biting through")
+            // …and the CONTROL, which matters more than the case above: with a clear line the bite must
+            // still land, or the fix has simply disabled melee. Both cells are verified open — the
+            // marine's own spawn is INSIDE the arrival lift car, so offsetting from it lands in steel
+            // and the drone's sight line fails for the wrong reason entirely (which is what my first
+            // attempt did, and it read as a broken melee).
+            let ow = World(level: 1, colonyIndex: 0, seed: 21)
+            var bit = false
+            outer: for y in 2..<(ow.map.h - 2) {
+                for x in 2..<(ow.map.w - 2) where !ow.map.blocksSight(x, y) && !ow.map.blocksSight(x + 1, y) {
+                    ow.player.pos = SIMD2(Float(x) + 0.5, Float(y) + 0.5)
+                    ow.player.health = 100; ow.player.armor = 0
+                    var od = Monster(kind: .alien, pos: SIMD2(Float(x + 1) + 0.5, Float(y) + 0.5))
+                    od.awake = true; od.state = .chase
+                    ow.monsters = [od]
+                    for _ in 0..<180 { ow.update(dt: 1.0 / 30, input: inp, audio: audio) }
+                    bit = ow.player.health < 100
+                    break outer
+                }
+            }
+            check(bit, "…and with a clear line it bites as before (health \(ow.player.health))")
+        }
+
         // ── THE D-PAD PRECISION YAW ── it has to be genuinely FINE, and it was not: the rate was a
         // fraction of `base`, which carries the player's turn-speed slider, so it ran five times
         // faster at the top of that slider than the bottom and overshot a drone at any setting.

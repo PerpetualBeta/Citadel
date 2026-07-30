@@ -445,6 +445,14 @@ enum MapGen {
         fuelStoreCells = carveFuelStore(map, rooms: rooms, rng: &rng, theme: th)
         map.fuelStore = Set(fuelStoreCells.map { map.idx(Int($0.x), Int($0.y)) })
 
+        // ── WHERE THE LIGHTS HANG ── bake the mounted wall fixtures' cells now, while the walls are
+        // final and BEFORE anything is furnished, so the furnishing passes can refuse to stand a
+        // locker in front of one. The renderer hangs them from the same shared walk, so the two can
+        // never disagree about where they are.
+        if industrialFloor {
+            for site in LevelMeshBuilder.plantLampSites(map) { map.wallLamp.insert(site.wall) }
+        }
+
         // ── verify solvability (keyed BFS) ──
         if allowLocks && !lockedDoors.isEmpty {
             if !solvable(map: map, start: startCell, exitCell: exitCell, keyCells: keyCells, lockedDoors: lockedDoors) {
@@ -1424,9 +1432,14 @@ enum MapGen {
         // mistake. These are all feature-only textures — never a theme's base wall —
         // so rejecting them can't starve placement (litPanel/pipework stay valid).
         let socketBadBacking: Set<Int> = [WallTex.computer.rawValue, WallTex.glass.rawValue, WallTex.hazard.rawValue]
+        /// A wall a prop must not be stood against: a surface FEATURE (display bank, backlit glass,
+        /// fuel-store hazard plating) — or a mounted LIGHT FIXTURE, because covering the lamp that
+        /// lights the room is worse than covering a texture.
         func featureBacked(_ s: Slot) -> Bool {
             let bx = s.x - Int(s.inward.x), by = s.y - Int(s.inward.y)
-            return map.inBounds(bx, by) && socketBadBacking.contains(map.wall[map.idx(bx, by)])
+            guard map.inBounds(bx, by) else { return false }
+            let bi = map.idx(bx, by)
+            return socketBadBacking.contains(map.wall[bi]) || map.wallLamp.contains(bi)
         }
         func roomHasHazard(_ r: Room) -> Bool {
             for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) where map.hazard[map.idx(xx, yy)] { return true } }
@@ -1466,8 +1479,19 @@ enum MapGen {
                 return ca != cb ? ca > cb : ordinal(a) < ordinal(b)
             }
         }
+        /// Would a prop standing here cover a mounted light fixture? Checked inside the placement
+        /// helpers rather than at each call site, because "never park furniture in front of the lamp
+        /// lighting the room" is UNIVERSAL — unlike `featureBacked`'s texture rules, which are
+        /// per-prop judgements (a locker must not cover a CRT bank; a desk in front of one is fine).
+        /// Filtering only where featureBacked was already used left eleven props still covering lamps
+        /// across eight plant floors, because several furnishing paths never consulted it.
+        func lampBacked(_ x: Int, _ y: Int, _ inward: SIMD2<Float>) -> Bool {
+            let bx = x - Int(inward.x), by = y - Int(inward.y)
+            return map.inBounds(bx, by) && map.wallLamp.contains(map.idx(bx, by))
+        }
         @discardableResult
         func placeProp(_ kind: FurnitureKind, _ slot: Slot, faceInward: Bool = true, gap: Float = 0.85) -> Bool {
+            guard !lampBacked(slot.x, slot.y, slot.inward) else { return false }
             guard freeCell(slot.pos, gap) else { return false }
             props.append(Prop(kind: kind, pos: slot.pos, yaw: yawFor(faceInward ? slot.inward : -slot.inward)))
             placed.append(slot.pos)
@@ -1529,6 +1553,7 @@ enum MapGen {
             let y = horizontal ? r.y + v : r.y + u
             guard map.inBounds(x, y), map.wall[map.idx(x, y)] == 0, map.doors[map.idx(x, y)] == nil,
                   !map.hazard[map.idx(x, y)], !nearOpening(x, y, ri) else { return false }
+            guard !lampBacked(x, y, inward) else { return false }        // never bunk in front of a lamp
             let p = SIMD2<Float>(Float(x) + 0.5, Float(y) + 0.5)
             guard freeCell(p, gap) else { return false }
             props.append(Prop(kind: kind, pos: p, yaw: yawFor(inward), againstWall: against))

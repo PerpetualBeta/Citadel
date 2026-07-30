@@ -1660,8 +1660,12 @@ final class World {
             }
 
             let meleeRange = m.def.radius + 1.0        // reach for a lunge from the standoff distance (the attack stays visible)
-            // melee on contact
-            if dist <= meleeRange && m.attackCD <= 0 {
+            // Melee on contact — and it needs a CLEAR LINE, exactly as the ranged branch below does.
+            // This was a bare distance test, and the reach is deliberately generous (1.4 cells for a
+            // drone, 2.1 for the Queen) against a wall that is one cell thick: anything standing on
+            // the far side of a wall was therefore inside its own melee range and bit straight through
+            // it. The teeth have to reach the marine, not merely the coordinates.
+            if dist <= meleeRange && canSee && m.attackCD <= 0 {
                 damagePlayer(m.def.melee, audio: audio)
                 if m.kind == .alien { audio.monsterAttack(.alien) }   // a hiss/snap as the drone strikes
                 m.attackCD = m.def.attackInterval

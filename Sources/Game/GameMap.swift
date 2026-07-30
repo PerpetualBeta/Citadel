@@ -42,6 +42,11 @@ final class GameMap {
     static let tallCeiling: Float = 2.0
     var fuelStore: Set<Int> = []   // interior cells of the fuel-storage chamber: its drums are an INTENTIONAL stack (exempt from reachability relocation)
 
+    /// Wall cells carrying a mounted light FIXTURE. Baked at generation so the furnishing passes can
+    /// keep a locker off them — a wardrobe parked in front of a lamp hides the one thing lighting the
+    /// room, and until this existed the renderer and MapGen chose that wall independently.
+    var wallLamp: Set<Int> = []
+
     // ── rooms that act on the marine while she stands in them ────────────────────────────────
     // Baked as CELL SETS rather than looked up through room indices at runtime, because the room
     // bookkeeping is per-generation scratch that the NEXT floor overwrites — a live lookup would

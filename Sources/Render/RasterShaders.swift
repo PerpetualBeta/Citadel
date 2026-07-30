@@ -566,7 +566,21 @@ extension RasterRenderer {
         constexpr sampler ls(coord::normalized, address::clamp_to_edge, filter::linear);
         float3 baked = field.sample(ls, in.wp.xz/float2(C.params.z, C.params.w)).rgb;
         float ao = clamp(0.55+0.45*grime, 0.35, 1.0);
-        col += baked * C.amb.w * alb * ao;
+        // AMBIENT. `baked` is a FLOOR-PLANE lookup, so applying it omnidirectionally hands every
+        // surface the light arriving at the floor — including surfaces facing away from it. On world
+        // geometry that is a fair approximation and it is what makes the levels read, so it stays.
+        //
+        // On the HELD WEAPON it is not fair at all: the barrel's top is a big flat face a few inches
+        // from the camera, and lighting it with the floor put the deck on top of the gun — brightest
+        // over a bright floor, which is exactly backwards. Weighting the specular by the reflection
+        // vector (see kEnvCeil below) fixed the sharp Fresnel band along the upper edge but left THIS
+        // term untouched, so the wash remained and a grated deck still read on the barrel.
+        //
+        // For the viewmodel, weight it hemispherically: a downward-facing face sees the floor in
+        // full, an upward-facing one sees the ceiling, which away from the lamps is dark concrete.
+        float ambDir = 1.0;
+        if (C.amb.z > 0.5) ambDir = mix(1.0, kEnvCeil, smoothstep(-0.15, 0.65, N.y));
+        col += baked * C.amb.w * alb * ao * ambDir;
         // env-ish spec off the baked field. The field is a FLOOR-PLANE lookup — the light arriving at
         // this map cell — so it is only a plausible reflection for rays heading DOWN. Applied without
         // regard to direction it put the floor on TOP of the gun barrel, which is the one place the

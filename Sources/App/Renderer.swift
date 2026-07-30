@@ -203,6 +203,21 @@ final class Renderer: NSObject, MTKViewDelegate {
         let crowd = state == .ending ? EndingArt.crowd(at: screenT) : (bed: 0, cheer: 0, chant: 0)
         audio.ceremonyCrowd(bed: crowd.bed, cheer: crowd.cheer, chant: crowd.chant)
 
+        // ── PAUSED MEANS SILENT ── the world stops when you pause, so the world's noise has to stop
+        // with it. It did not: the frame froze while the ambient bed, the machinery, the flames and a
+        // drone mid-hiss all played on, which reads as the game still running behind the pause. Ducked
+        // at the final mixer stage, the one place proven to catch everything (per-bus zeroing leaks
+        // ~-24 dB, and the synth fallback is wired past the buses entirely). Not an instant cut —
+        // a very short ramp, so pausing does not click.
+        //
+        // A transition owns the gain while one is running (it is fading picture and sound together),
+        // so this only speaks when there is no fade in flight.
+        if transition == nil {
+            let target: Float = state == .paused ? 0 : 1
+            let k = 1 - expf(-dt / 0.05)                // ~50 ms — quick enough to feel instant, slow enough not to click
+            audio.transitionGain += (target - audio.transitionGain) * k
+        }
+
         updateEdges()
         present(view)
     }

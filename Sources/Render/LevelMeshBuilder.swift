@@ -79,9 +79,14 @@ struct LevelMeshBuilder {
     /// Site the PLANT floors' bulkhead fixtures (7–8 only; the upper floors keep their ceiling grid). Walk a
     /// coarse grid of open cells and, where one backs onto a solid wall, hang a fixture on that wall facing into
     /// the room at eye height. Deliberately offset from the ceiling-lamp grid's phase so the two never coincide.
-    private mutating func buildPlantLamps(_ map: GameMap) {
-        out.plantLamps.removeAll(keepingCapacity: true)
-        guard !ceilingLampsOn else { return }
+    /// WHERE the plant floors' bulkhead fixtures hang — a PURE function of the map, and `static`
+    /// deliberately: MapGen calls it too, before it furnishes, so the furnishing passes can keep a
+    /// locker off a wall that carries a lamp. Two systems each deciding this for themselves is how a
+    /// wardrobe ended up parked in front of a light fixture; sharing the one walk makes that
+    /// impossible rather than unlikely. Returns the mount, its yaw, the light point, and the WALL
+    /// CELL it is bolted to (which is what MapGen needs).
+    static func plantLampSites(_ map: GameMap) -> [(pos: SIMD2<Float>, yaw: Float, light: SIMD2<Float>, wall: Int)] {
+        var out: [(SIMD2<Float>, Float, SIMD2<Float>, Int)] = []
         let stride = 4, phase = 1                                   // one fixture per ~4 cells of wall run — enough to
                                                                     // navigate by; the plant stays deliberately gloomy
         for y in 1..<(map.h - 1) where y % stride == phase {
@@ -95,11 +100,18 @@ struct LevelMeshBuilder {
                     guard map.wall[wi] != 0, map.doors[wi] == nil else { continue }
                     let inward = SIMD2<Float>(-Float(dx), -Float(dy))          // wall → room
                     let mount = SIMD2<Float>(Float(x) + 0.5, Float(y) + 0.5) - inward * 0.46   // sit on the wall face
-                    out.plantLamps.append((mount, atan2(-inward.x, inward.y), mount + inward * 0.16))
+                    out.append((mount, atan2(-inward.x, inward.y), mount + inward * 0.16, wi))
                     break
                 }
             }
         }
+        return out
+    }
+
+    private mutating func buildPlantLamps(_ map: GameMap) {
+        out.plantLamps.removeAll(keepingCapacity: true)
+        guard !ceilingLampsOn else { return }
+        out.plantLamps = LevelMeshBuilder.plantLampSites(map).map { ($0.pos, $0.yaw, $0.light) }
     }
 
     private mutating func buildMesh(_ world: World) {
