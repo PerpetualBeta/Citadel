@@ -16,21 +16,27 @@ that was the air war; this is the retake on foot.
 ## Rendered in code, in real time
 
 Citadel's world is drawn in real time by a **Metal rasteriser** whose every
-surface is generated in code — **no textures, no sprites, no level files.** The
-iron-and-steel architecture, the wall-baked pipework and steelwork, the fuel drums
-and recharge panels, and the pickups are all built as geometry at level load and
-shaded procedurally, HDR-lit and colour-graded on the GPU; the fire is a puff-cloud
-of advected impostors. The HUD and front-end screens are drawn into a software 2-D
+surface is generated in code — **no sprites, no level files, and not one texture
+in the world itself.** The iron-and-steel architecture, the wall-baked pipework and
+steelwork, the fuel drums and recharge panels, and the pickups are all built as
+geometry at level load and shaded procedurally, HDR-lit and colour-graded on the
+GPU; the fire is a puff-cloud of advected impostors. The HUD and front-end screens are drawn into a software 2-D
 canvas and composited on top, then upscaled aspect-correct and letterboxed.
 
-Three deliberate exceptions earn their place:
+Four deliberate exceptions earn their place, and they are the only asset files in
+the bundle:
 
-- **The bestiary.** The biomechanical aliens — the **DRONE** and the **QUEEN** —
-  ship as **3-D meshes**: their organic, ridged anatomy reads better sculpted
-  than raymarched. They're rasterised into the SDF scene over matched depth, with
-  per-pixel lighting, so they take fire, burn and dissolve like everything else.
-- **Two hero plates.** A single cinematic image backs the title screen and the
-  Hall of the Fallen.
+- **The bodies.** The biomechanical aliens — the **DRONE** and the **QUEEN** — and
+  the colony's human dead ship as **3-D meshes with baked base-colour maps**:
+  organic, ridged anatomy reads better sculpted than generated, and a human face
+  cannot be written in code. They are drawn over shared depth with per-pixel
+  lighting, so they take fire, burn and dissolve like everything else.
+- **Three hero plates.** Cinematic images back the front-end screens — the title
+  among them.
+- **Six imported models — geometry only.** The dormitory bunk, a wall lamp and the
+  four plant machines are downloaded meshes, decimated to the house budget. They
+  bring **no materials or textures** into the game: every surface on them is
+  re-materialled in code, so the shapes are borrowed and the surfaces are ours.
 - **Audio.** Citadel's atmosphere leans too hard on sound to synthesise
   convincingly, so it ships a small, curated set of **CC0 / CC-BY** samples —
   weapon fire, the aliens' voices, and a reactive ambient bed that thickens as the
@@ -62,8 +68,8 @@ fight.
   leaves part, you step into the car, and it rides you down to the next.
   Clear the eighth and you **teleport** to the next planet — a fresh citadel that
   runs bright at the surface and dead-dark in the depths, the **lowest floors
-  flooded** so you wade. It loops after the sixth planet; only the floors get
-  deeper, and difficulty scales with how far down you are.
+  flooded** so you wade. **Forty-eight floors across six citadels to retake**, and
+  difficulty scales with how far down you are.
 - **Tools of the trade.** Shoot a **fuel drum** to rupture it into a bomb, or
   stand by one to refill the flamethrower. Plug into a wall-mounted **recharge
   socket** to top up plasma cells — the sockets slowly refill their own reserve,
@@ -74,13 +80,6 @@ fight.
   A room the **nukage** has reached does the reverse at the same rate, pool or no
   pool: the air in there is the hazard. Both timers reset the moment you leave, and
   neither is announced — the only tell is your own health moving.
-- **The seven.** There are **seven people left alive-ish** in the whole cluster,
-  and no more: colonists who sealed themselves into fuel stores and gave out there.
-  One pool for the run, dealt across the six citadels with no repeat, so once
-  you've found them all, that is everyone there was to find.
-- **The finish line.** Forty-eight floors, six citadels. Clear them all and ARC
-  gives you a **ceremony** — a citation read over a hall on its feet, which says
-  rather less than it thinks it does. Then one line on black, and the tally.
 - **The visor HUD.** No status bar — the 3-D view fills the screen, and every
   readout is projected onto the helmet visor: an *Aliens*-style **motion
   tracker** with the **objective caret** on its rim (it points to the living
@@ -167,6 +166,11 @@ defaults write cc.jorviksoftware.Citadel FixedSeed     -int   1234   # pin the l
 defaults write cc.jorviksoftware.Citadel StartLevel    -int   9      # warp new runs to a floor (1-indexed; testing)
 defaults write cc.jorviksoftware.Citadel OverheadLight -float 1.0    # ceiling-lamp brightness (default 0.5 — the tuned, moody look)
 defaults write cc.jorviksoftware.Citadel GPUFire       -bool  false  # A/B the GPU flame vs the legacy CPU billboards (default on)
+defaults write cc.jorviksoftware.Citadel Headlamp      -bool  false  # strip the helmet lamp (default on — you will not see much)
+defaults write cc.jorviksoftware.Citadel Aftermath     -bool  false  # strip the battle-damage dressing (default on)
+defaults write cc.jorviksoftware.Citadel ScatteredPapers -bool false # strip the spilled-records decals (default on)
+defaults write cc.jorviksoftware.Citadel FallenColonists -bool false # strip the human dead (default on)
+defaults write cc.jorviksoftware.Citadel CleanDroneDeaths -bool false # A/B the collapsing drone corpse (default on)
 ```
 
 ### Headless harnesses
@@ -178,7 +182,20 @@ CITADEL_SMOKE=1 ./.build/Citadel.app/Contents/MacOS/Citadel
 
 # render the documentation screenshots into docs/screenshots:
 CITADEL_SHOTS=docs/screenshots ./.build/Citadel.app/Contents/MacOS/Citadel
+
+# the workhorse: ~65 frames covering every environment feature the game has —
+# corridors, lamp pools, every room type, the plant floors, creatures at walls:
+CITADEL_RASTERSHOT=/tmp/shots ./.build/Citadel.app/Contents/MacOS/Citadel
+
+# …and the visual regression gate over those frames (a CHANGE DETECTOR, not a
+# pass/fail: it reports what moved and by how much, against a committed baseline):
+tools/shotcheck.py                # compare
+tools/shotcheck.py --update       # accept the current renders
 ```
+
+Every harness is **hard-muted by construction** — `main.swift` forces
+`CITADEL_MUTE` the moment any `CITADEL_*` variable is present, before an audio
+engine can exist, so a headless run is physically incapable of making a sound.
 
 ## Architecture
 
@@ -199,9 +216,9 @@ If you enjoy Citadel, you can [**buy me a coffee**](https://jorviksoftware.cc/do
 
 Code released into the public domain under [The Unlicense](LICENSE) — do whatever
 you like with it. The bundled audio is **CC0 / CC-BY**, with sources and the
-required attributions listed in [CREDITS.md](CREDITS.md) — note the ceremony's
-crowd recordings are **CC-BY 4.0** (Gregor Quendel), so that attribution must
-travel with any redistribution.
+required attributions listed in [CREDITS.md](CREDITS.md) — note the bundled crowd
+recordings are **CC-BY 4.0** (Gregor Quendel), so that attribution must travel with
+any redistribution.
 
 ---
 
