@@ -1376,15 +1376,18 @@ final class World {
             //  played by audio.monsterDeath below like any other kill)
             audio.monsterDeath(m.kind)
             // ── DISPOSAL: what is left of the body ─────────────────────────────────
-            // With CleanDroneDeaths on, a drone LEAVES NOTHING. Whatever killed it disposes
-            // of it where it stood, so the crumple-to-corpse posture — and with it the
-            // corpse's collider, its door-jamming, and the fuel spent cremating it — belongs
-            // to the QUEEN alone. She is one kill a floor and her topple is a set piece worth
+            // A DRONE LEAVES NOTHING. Whatever killed it disposes of it where it stood, so the
+            // crumple-to-corpse posture — and with it the corpse's collider, its door-jamming,
+            // and the fuel spent cremating it — belongs to the QUEEN alone. Settled in play and
+            // made unconditional 2026-07-30 (it had shipped behind CleanDroneDeaths, default on,
+            // as an A/B against the collapsing corpse; the flag and the collapse path are gone).
+            // A drone still leaves a BODY for the two deaths where the body IS the point: torched
+            // alive it chars where it drops, and killed on acid the pool takes it. She is one kill a floor and her topple is a set piece worth
             // the trouble; a drone is thirty, and the moment of collapse is where nearly all
             // of the creatures' visual trouble came from (limbs swinging through walls).
             //   rocket → the full blast · plasma → the same wound, a third of the show
             //   flamer → chars where it stands · acid → the pool takes it
-            let cleanDrone = FeatureFlags.cleanDroneDeaths && m.kind == .alien
+            let cleanDrone = (m.kind == .alien)
             if kind == .explosive && m.kind == .alien {
                 gibDrone(&m, heavy: true)
             } else if !m.gibbed && map.hazard[map.idx(Int(m.pos.x), Int(m.pos.y))] {

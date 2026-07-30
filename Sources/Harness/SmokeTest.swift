@@ -480,45 +480,42 @@ enum SmokeTest {
         // index 0, which is the QUEEN — and queenDeathTime is 2.8 s, so the 40-frame wait below could
         // never see her reach `.dead`. The whole passage is written around a drone corpse (0.45 s to
         // fall, then burnable), so name the caste rather than trust the array order.
-        // CleanDroneDeaths forced OFF for this passage. It is on by default and a plasma kill then
-        // gibs the drone, which would leave nothing to cremate and make every corpse check below
-        // vacuously true — the same trap the plasma choice below was written to avoid. Both
-        // mechanisms ship while the flag exists, so both are tested; the key is restored after.
-        let hadClean = UserDefaults.standard.object(forKey: "CleanDroneDeaths")
-        UserDefaults.standard.set(false, forKey: "CleanDroneDeaths")
-        if let mi = fw.monsters.firstIndex(where: { $0.alive && $0.kind == .alien }) {
-            let cpos = fw.monsters[mi].pos
-            // Plasma, deliberately — DamageKind.explosive GIBS a drone and leaves nothing to burn,
-            // which would make every corpse check below vacuously true.
-            fw.projectiles.append(Projectile(pos: cpos, vel: .zero, kind: .plasma, damage: 999, fromPlayer: true, life: 0.01))
-            for _ in 0..<40 { fw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }   // die → corpse
-            check(fw.monsters.contains { $0.state == .dead && !$0.gibbed }, "killed monster leaves a corpse")
-            fw.player.pos = cpos + SIMD2<Float>(0.9, 0)
-            fw.player.dir = .pi                                     // face the corpse
+        // THE SUBJECT IS THE QUEEN, and it has to be. A drone leaves NO corpse to cremate — plasma,
+        // rocket and mine dispose of it where it stood, acid takes it, and the flamer's own kill drops
+        // a body that is already alight (covered separately). She is the only creature that leaves a
+        // cold body, which is also why burning her is the mechanic that gates the exit. This passage
+        // used to force CleanDroneDeaths off to manufacture a drone corpse; the flag is gone and the
+        // collapse with it, so it tests the real thing instead of a configuration.
+        if let qi = fw.monsters.firstIndex(where: { $0.kind == .queen }) {
+            let cpos = fw.monsters[qi].pos
+            while fw.monsters[qi].alive { fw.damageMonsterForTest(qi, 200, audio: audio, kind: .plasma) }
+            for _ in 0..<240 { fw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }   // topple → corpse (2.8 s)
+            check(fw.monsters.contains { $0.kind == .queen && $0.state == .dead && !$0.gibbed },
+                  "a plasma-killed Queen leaves a cold body")
+            check(fw.monsters.contains { $0.kind == .queen && $0.burn == 0 },
+                  "…and it is NOT already alight — there is something to cremate")
+            fw.player.pos = cpos + SIMD2<Float>(1.2, 0)
+            fw.player.dir = .pi                                     // face the body
             fw.player.current = .flamethrower
+            fw.player.ammo[AmmoType.fuel.rawValue] = 300
             let burn = InputState(); burn.kb.fire = true
             var ignited = false
-            for _ in 0..<420 {
+            for _ in 0..<900 {
                 fw.update(dt: 1.0 / 60, input: burn, audio: audio)
-                if fw.monsters.contains(where: { $0.state == .dead && $0.burn > 0 }) { ignited = true }
-                if fw.monsters.contains(where: { $0.state == .dead && $0.burn >= 1 }) { break }
+                if fw.monsters.contains(where: { $0.kind == .queen && $0.burn > 0 }) { ignited = true }
+                if fw.monsters.contains(where: { $0.kind == .queen && $0.burn >= 1 }) { break }
             }
-            check(ignited, "flamethrower ignites the corpse")
-            check(fw.monsters.contains { $0.state == .dead && $0.burn >= 1 }, "corpse burns to charred remains")
-            check(fw.decals.contains { $0.w > 0 && $0.w <= 1 }, "burned-out corpse stamps a scorch decal")
-            check(fw.decals.contains { $0.w > 2 }, "burned-out corpse stamps smoldering ash")
-            check(fw.monsters.contains { $0.state == .dead || $0.state == .dying }, "flag OFF: the drone still collapses to a corpse")
+            check(ignited, "the flamethrower ignites it")
+            check(fw.monsters.contains { $0.kind == .queen && $0.burn >= 1 }, "and it burns to charred remains")
+            check(fw.decals.contains { $0.w > 0 && $0.w <= 1 }, "a burned-out body stamps a scorch decal")
+            check(fw.decals.contains { $0.w > 2 }, "…and smoldering ash")
         }
-        if let h = hadClean { UserDefaults.standard.set(h, forKey: "CleanDroneDeaths") }
-        else { UserDefaults.standard.removeObject(forKey: "CleanDroneDeaths") }
 
-        // ── CLEAN DRONE DEATHS ── the drone that leaves nothing. Asserted BOTH WAYS: the block above
-        // proves the collapse still happens with the flag off, this one proves plasma disposes of the
-        // body with it on. One direction alone would not distinguish "the flag works" from "the flag
-        // is ignored and drones never crumpled anyway".
+        // ── A DRONE LEAVES NOTHING ── settled in play 2026-07-30 and now the only behaviour: plasma,
+        // rocket and mine dispose of the body where it stood; only the flamer's kill leaves one, and it
+        // is already alight. Asserted per WEAPON rather than as one blanket claim, because each takes a
+        // different branch and a single check would pass while another branch quietly crumpled.
         do {
-            UserDefaults.standard.removeObject(forKey: "CleanDroneDeaths")      // default = ON
-            check(FeatureFlags.cleanDroneDeaths, "CleanDroneDeaths defaults ON")
             /// Kill the first drone with `weapon` and report what was left of it.
             func killDrone(_ weapon: ProjectileKind) -> (gibbed: Bool, burn: Float, corpses: Int, offal: Int)? {
                 let w = World(level: 1, colonyIndex: 0, seed: 99)
@@ -531,12 +528,12 @@ enum SmokeTest {
                         w.decals.filter { $0.w < -2 }.count)
             }
             if let plasma = killDrone(.plasma), let rocket = killDrone(.rocket) {
-                check(plasma.gibbed, "flag ON: a plasma kill bursts the drone (no posture change)")
+                check(plasma.gibbed, "a plasma kill bursts the drone — no posture, no corpse")
                 // burn ≥ 0.85 is the EXACT condition the corpse collider (World.free) and the
                 // door-occupancy set both test, so this one number is why a burst drone can never
                 // block a corridor or jam a door on you.
-                check(plasma.burn >= 1, "flag ON: nothing left to cremate — burn \(String(format: "%.2f", plasma.burn))")
-                check(plasma.corpses == 0, "flag ON: a plasma kill leaves no corpse anywhere (\(plasma.corpses))")
+                check(plasma.burn >= 1, "…nothing left to cremate — burn \(String(format: "%.2f", plasma.burn))")
+                check(plasma.corpses == 0, "…and no corpse anywhere on the floor (\(plasma.corpses))")
                 check(rocket.gibbed, "a rocket kill still bursts the drone")
                 // THE BUDGET CLAIM, asserted rather than trusted. decalCap is 72 and the rocket
                 // blast spends 22 of them; plasma is the workhorse at ~30 kills a floor, so if it

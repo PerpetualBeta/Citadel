@@ -167,7 +167,6 @@ defaults write cc.jorviksoftware.Citadel OverheadLight -float 1.0    # ceiling-l
 defaults write cc.jorviksoftware.Citadel Headlamp      -bool  false  # strip the helmet lamp (default on — you will not see much)
 defaults write cc.jorviksoftware.Citadel Aftermath     -bool  false  # strip the battle-damage dressing (default on)
 defaults write cc.jorviksoftware.Citadel ScatteredPapers -bool false # strip the spilled-records decals (default on)
-defaults write cc.jorviksoftware.Citadel CleanDroneDeaths -bool false # A/B the collapsing drone corpse (default on)
 ```
 
 ### Headless harnesses

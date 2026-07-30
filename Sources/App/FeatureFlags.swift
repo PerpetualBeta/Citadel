@@ -31,15 +31,6 @@ enum FeatureFlags {
     ///   defaults write cc.jorviksoftware.Citadel Headlamp -bool false
     static var headlamp: Bool { d.object(forKey: "Headlamp") == nil ? true : d.bool(forKey: "Headlamp") }
 
-    /// CLEAN DRONE DEATHS — a drone never crumples. Plasma bursts it apart the way a
-    /// rocket does (smaller, tighter), and with no corpse left there is nothing to walk
-    /// around, nothing to jam a door, and no fuel spent cremating it. The collapse
-    /// posture becomes the Queen's alone — she is one kill a floor and worth the
-    /// trouble, where a drone is thirty and the crumple was the source of most of the
-    /// visual trouble creatures gave us. Default ON; set false to A/B against the
-    /// collapsing corpse:
-    ///   defaults write cc.jorviksoftware.Citadel CleanDroneDeaths -bool false
-    static var cleanDroneDeaths: Bool { d.object(forKey: "CleanDroneDeaths") == nil ? true : d.bool(forKey: "CleanDroneDeaths") }
 
 
     /// THE SEVEN — the last people in the cluster, sealed into fuel stores (one pool of seven for
