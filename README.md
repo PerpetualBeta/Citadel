@@ -26,10 +26,9 @@ canvas and composited on top, then upscaled aspect-correct and letterboxed.
 Four deliberate exceptions earn their place, and they are the only asset files in
 the bundle:
 
-- **The bodies.** The biomechanical aliens — the **DRONE** and the **QUEEN** — and
-  the colony's human dead ship as **3-D meshes with baked base-colour maps**:
-  organic, ridged anatomy reads better sculpted than generated, and a human face
-  cannot be written in code. They are drawn over shared depth with per-pixel
+- **The bodies.** The biomechanical aliens — the **DRONE** and the **QUEEN** — ship
+  as **3-D meshes with baked base-colour maps**: organic, ridged anatomy reads
+  better sculpted than generated. They are drawn over shared depth with per-pixel
   lighting, so they take fire, burn and dissolve like everything else.
 - **Three hero plates.** Cinematic images back the front-end screens — the title
   among them.
@@ -169,7 +168,6 @@ defaults write cc.jorviksoftware.Citadel GPUFire       -bool  false  # A/B the G
 defaults write cc.jorviksoftware.Citadel Headlamp      -bool  false  # strip the helmet lamp (default on — you will not see much)
 defaults write cc.jorviksoftware.Citadel Aftermath     -bool  false  # strip the battle-damage dressing (default on)
 defaults write cc.jorviksoftware.Citadel ScatteredPapers -bool false # strip the spilled-records decals (default on)
-defaults write cc.jorviksoftware.Citadel FallenColonists -bool false # strip the human dead (default on)
 defaults write cc.jorviksoftware.Citadel CleanDroneDeaths -bool false # A/B the collapsing drone corpse (default on)
 ```
 

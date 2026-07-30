@@ -21,10 +21,10 @@ project, under the same terms.
 |---------|-------|-----------------|
 | `queen.usdz` + `queen_basecolor.jpg` | the QUEEN broodmother mesh | FLUX image (Citadel-specific prompt) → Tripo image-to-3D |
 | `drone.usdz` + `drone_basecolor.jpg` | the DRONE mesh | FLUX image (Citadel-specific prompt) → Tripo image-to-3D |
-| `colonist_worker.usdz` + `colonist_worker_basecolor.jpg` | a fallen ARC colonist (worker, navy suit) | FLUX image (Citadel-specific prompt) → Tripo image-to-3D |
-| `colonist_woman.usdz` + `colonist_woman_basecolor.jpg` | a fallen ARC colonist (woman, white suit) | FLUX image (Citadel-specific prompt) → Tripo image-to-3D |
+| `colonist_director`, `colonist_man`, `colonist_marine`, `colonist_woman`, `colonist_worker`, `colonist_civ_a`, `colonist_civ_b` (each `.usdz` + `_basecolor.jpg`) | seven ARC colonists — one distinct person per mesh | FLUX images (Citadel-specific prompts, one per person) → Tripo image-to-3D |
 | `title_bg.png` | title-screen hero plate (the xenomorph) | FLUX image (Citadel-specific prompt) |
 | `highscore_bg.png` | Hall of the Fallen hero plate (the drone) | FLUX image (Citadel-specific prompt) |
+| `ending_bg.png` | the closing ceremony's hero plate | FLUX image (Citadel-specific prompt) |
 
 ### Imported models
 
@@ -43,6 +43,7 @@ surfaces are ours even where the shapes are not.
 | `machine_column.obj` | plant hall centrepiece — process column / scrubber vessel | *Complex N300608*, [archibase.net](https://archibase.net) |
 | `machine_compressor.obj` | compressor set — cabinet, twin receivers, valve manifold | *Compressor N250716*, [archibase.net](https://archibase.net) |
 | `machine_switchgear.obj` | electrical distribution cabinet with lever isolator | *Box electrical panel N250616*, [archibase.net](https://archibase.net) |
+| `bulkhead.usdz` | wall/truss light fixture (3,508 tris) | **SOURCE NOT RECORDED — confirm before release.** It is bundled and drawn, but no note in this repo or the KB says where it came from; it is not one of the archibase set above. Resolve it, or replace the mesh with the procedural fixture it originally was. |
 
 The four machines arrived as `.3ds` (and one `.obj`) at 44k–145k triangles apiece, which
 is one to two orders of magnitude past what this game spends on a prop. They were
