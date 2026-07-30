@@ -50,8 +50,9 @@ enum FeatureFlags {
     ///   defaults write cc.jorviksoftware.Citadel GPUFire -bool false
     static var gpuFire: Bool { d.object(forKey: "GPUFire") == nil ? true : d.bool(forKey: "GPUFire") }
 
-    /// Fallen colonists — the dead ARC workers scattered through the ruined colony
-    /// (human meshes toppled into corpses). Default ON; set false to strip them:
+    /// THE SEVEN — the last people in the cluster, sealed into fuel stores (one pool of seven for
+    /// the whole run, 0–2 per building, no repeat; see Progression.survivors). Not a scatter: seven
+    /// individuals, and that is all a player will ever find. Default ON; set false to strip them:
     ///   defaults write cc.jorviksoftware.Citadel FallenColonists -bool false
     static var fallenColonists: Bool { d.object(forKey: "FallenColonists") == nil ? true : d.bool(forKey: "FallenColonists") }
 

@@ -149,10 +149,13 @@ enum MapGen {
         return !industrialFloor && dormRooms.contains(ri)
     }
 
-    static func generate(level: Int, colonyIndex: Int, seed: UInt64) -> GeneratedLevel {
+    /// `runSeed` identifies the RUN, not the floor — it decides which of the seven survivors this
+    /// floor holds (see `Progression.survivors`). Defaulted, so a harness that builds a floor in
+    /// isolation still gets a reproducible cast without having to know about runs.
+    static func generate(level: Int, colonyIndex: Int, seed: UInt64, runSeed: UInt64 = 0) -> GeneratedLevel {
         for attempt in 0..<16 {
             if let g = attemptGen(level: level, colonyIndex: colonyIndex,
-                                  seed: seed &+ UInt64(attempt) &* 0x100, allowLocks: true) {
+                                  seed: seed &+ UInt64(attempt) &* 0x100, allowLocks: true, runSeed: runSeed) {
                 return g
             }
         }
@@ -165,7 +168,7 @@ enum MapGen {
         // fault probability; emergencyChamber() is the final, can't-fail net.
         for k in 0..<256 {
             if let g = attemptGen(level: level, colonyIndex: colonyIndex,
-                                  seed: seed &+ 0x9E3779B97F4A7C15 &* UInt64(k + 1), allowLocks: false) {
+                                  seed: seed &+ 0x9E3779B97F4A7C15 &* UInt64(k + 1), allowLocks: false, runSeed: runSeed) {
                 return g
             }
         }
@@ -198,7 +201,7 @@ enum MapGen {
                               secretCount: 0)
     }
 
-    private static func attemptGen(level: Int, colonyIndex: Int, seed: UInt64, allowLocks: Bool) -> GeneratedLevel? {
+    private static func attemptGen(level: Int, colonyIndex: Int, seed: UInt64, allowLocks: Bool, runSeed: UInt64 = 0) -> GeneratedLevel? {
         var rng = Rng(seed: seed)
         industrialFloor = Progression.floorInBuilding(level) >= 7   // 7–8: the working plant (no dorms, no display banks)
         let th = theme(colonyIndex, level: level)
@@ -651,6 +654,16 @@ enum MapGen {
                 guard map.wall[i] == 0 else { continue }
                 map.light[i] = max(map.light[i], 0.95)
                 map.lightColor[i] = SIMD3(0.97, 0.98, 1.0)
+                map.medBay.insert(i)                  // …and dwelling here slowly closes wounds
+            } }
+        }
+        // ── ROOMS THE NUKAGE HAS TAKEN ── a room with a pool in it is working on you the whole time
+        // you are in it, not only when you step in the stuff: the air in there is the hazard. Baked
+        // per room (not per pool cell) so crossing the room the long way round is no safer.
+        for r in rooms where roomHasHazardCells(map, r) {
+            for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) {
+                let i = map.idx(xx, yy)
+                if map.wall[i] == 0 { map.toxicRoom.insert(i) }
             } }
         }
         // The canteen is bright but WARM — a mess hall, not a clinic.
@@ -702,8 +715,31 @@ enum MapGen {
         let (monsters, items, drums, sockets, props, colonists) = populate(map: map, rooms: rooms, level: level, theme: th,
                                                 keyCells: keyCells, exitRoomIndex: rooms.count - 1, signalDeck: signalDeckFloor, rng: &rng)
 
+        // ── THE SURVIVOR ── if this floor is one of the seven's, seat her in the fuel store.
+        //
+        // She takes the cell the DRUMS deliberately leave empty: the one straight inside the hazard
+        // door, kept clear because a barrel there is solid and would wall the whole store off. That
+        // makes it exactly where a body CAN go, since the dead carry no collider — you step over
+        // them — so seating her there costs the store nothing and needs no drum moved (the fuel
+        // economy is untouched). She faces the door she sealed behind her and never got up from,
+        // which also means she is face-on to whoever finally opens it.
+        var withSurvivor = colonists
+        if let s = Progression.survivor(building: colonyIndex, level: level, runSeed: runSeed),
+           let seat = fuelStoreCells.first {
+            var face = SIMD2<Float>(0, 1)
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let nx = Int(seat.x) + dx, ny = Int(seat.y) + dy
+                guard map.inBounds(nx, ny), map.doors[map.idx(nx, ny)] != nil else { continue }
+                face = SIMD2(Float(dx), Float(dy)); break
+            }
+            // pose seed off the PERSON, not the floor, so each of the seven is slumped their own way
+            // and stays that way wherever the run puts them
+            let poseSeed = Float((s.variant &* 2_654_435_761) % 1000) / 1000
+            withSurvivor.append(Colonist(pos: seat, yaw: atan2(-face.x, face.y), seed: poseSeed, variant: s.variant))
+        }
+
         return GeneratedLevel(map: map, monsters: monsters, items: items, drums: drums, sockets: sockets, props: props,
-                              colonists: colonists,
+                              colonists: withSurvivor,
                               colonyName: Progression.planets[colonyIndex % Progression.planets.count], secretCount: secretCount)
     }
 
@@ -1107,7 +1143,7 @@ enum MapGen {
         var drums: [SIMD2<Float>] = []
         var sockets: [(pos: SIMD2<Float>, yaw: Float)] = []
         var props: [Prop] = []
-        let colonists: [Colonist] = []       // room-scatter removed; fuel-store survivors are placed separately (TODO)
+        let colonists: [Colonist] = []       // no room-scatter; the fuel-store SURVIVOR is seated in attemptGen
         // dormitories are dedicated sleeping halls: NO pickups, NO fuel drums, NO recharge sockets — just
         // the bunks/lockers/columns furnished above. Gate every scatter pass by this per-room flag.
         let dormRoom = rooms.indices.map { isDormitory(rooms[$0], $0, rooms.count) }
@@ -1221,6 +1257,16 @@ enum MapGen {
                 }
             }
 
+            // A SICK BAY ALWAYS HAS A MEDKIT. It is the one room in the colony whose purpose the
+            // player can read off the walls, and finding it stocked with nothing would make the
+            // room a lie. Guaranteed, not rolled — and once it is taken it is gone, like every
+            // other pickup: the bay is a room you clear, not a well you return to.
+            // Insistent, with a closing gap: a sick bay is often a small room, and `spot`'s default
+            // 1.15-cell clearance gives up in a tight one — which left half the bays empty, i.e. the
+            // guarantee quietly not holding. A medkit is a small object; it can sit closer in.
+            if isMedical(ri), let p = spot(in: r) ?? spot(in: r, gap: 0.7) ?? spot(in: r, gap: 0.45) {
+                items.append(ItemSpawn(kind: .medkit, pos: p))
+            }
             // items — NEVER in a dormitory (dedicated sleeping halls hold no pickups)
             if !dormRoom[ri] {
                 let lootRolls = rng.i(1, 3)
@@ -1826,11 +1872,12 @@ enum MapGen {
             }
         }
 
-        // ── fallen colonists ── the room-scatter is SUPERSEDED: the swarm consumed the
-        // dead (absence IS the story — an emptied, lived-in colony), so there are no
-        // scattered bodies. The only humans are the rare fuel-store SURVIVORS (0–2 per
-        // BUILDING, seated corpses in the sealed fuel stores, each a session-unique
-        // person). That placement + the no-repeat roster is wired separately — TODO.
+        // ── fallen colonists ── deliberately NONE here. The room-scatter was dropped because
+        // absence is the story: the swarm consumed the dead, and an emptied, lived-in colony says
+        // more than a floor strewn with bodies. The only humans in the cluster are THE SEVEN — one
+        // pool of seven people for the whole run, sealed into fuel stores, no repeat, 0–2 per
+        // building. `Progression.survivors` casts them; `attemptGen` seats whichever one belongs
+        // to this floor. Nothing to do in this pass.
 
         // ── pipe routing ── bake which open cells carry a wall pipe. Pipes run along
         // the walls of SELECTED rooms only (≈60%, for variation), and are kept clear

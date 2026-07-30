@@ -65,6 +65,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Game/Prop.swift \
                     Sources/Game/Projectile.swift \
                     Sources/Game/HighScores.swift \
+                    Sources/Game/SaveGame.swift \
                     Sources/Game/Rng.swift \
                     Sources/Render/GPURaymarch.swift \
                     Sources/Render/RasterRenderer.swift \

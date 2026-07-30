@@ -15,14 +15,13 @@ that was the air war; this is the retake on foot.
 
 ## Rendered in code, in real time
 
-Citadel's world is drawn in real time by a **GPU signed-distance-field
-raymarcher** (a Metal compute kernel) — **no textures, no sprites, no level
-files.** The iron-and-steel architecture, the wall-baked pipework and steelwork,
-the fuel drums and recharge panels, and the pickups are all true 3-D SDF geometry,
-lit and colour-graded on the GPU; the flames are volumetric, integrated through the
-same kernel. The HUD and front-end screens are
-drawn into a software 2-D canvas and composited on top, then upscaled
-aspect-correct and letterboxed.
+Citadel's world is drawn in real time by a **Metal rasteriser** whose every
+surface is generated in code — **no textures, no sprites, no level files.** The
+iron-and-steel architecture, the wall-baked pipework and steelwork, the fuel drums
+and recharge panels, and the pickups are all built as geometry at level load and
+shaded procedurally, HDR-lit and colour-graded on the GPU; the fire is a puff-cloud
+of advected impostors. The HUD and front-end screens are drawn into a software 2-D
+canvas and composited on top, then upscaled aspect-correct and letterboxed.
 
 Three deliberate exceptions earn their place:
 
@@ -70,6 +69,18 @@ fight.
   socket** to top up plasma cells — the sockets slowly refill their own reserve,
   so you're never permanently starved. Drop a **proximity mine** for the swarm
   to wander onto.
+- **The rooms act on you.** A **sick bay** is guaranteed to hold a med-kit, and
+  standing in one slowly closes wounds — **10 points every 30 seconds** you stay.
+  A room the **nukage** has reached does the reverse at the same rate, pool or no
+  pool: the air in there is the hazard. Both timers reset the moment you leave, and
+  neither is announced — the only tell is your own health moving.
+- **The seven.** There are **seven people left alive-ish** in the whole cluster,
+  and no more: colonists who sealed themselves into fuel stores and gave out there.
+  One pool for the run, dealt across the six citadels with no repeat, so once
+  you've found them all, that is everyone there was to find.
+- **The finish line.** Forty-eight floors, six citadels. Clear them all and ARC
+  gives you a **ceremony** — a citation read over a hall on its feet, which says
+  rather less than it thinks it does. Then one line on black, and the tally.
 - **The visor HUD.** No status bar — the 3-D view fills the screen, and every
   readout is projected onto the helmet visor: an *Aliens*-style **motion
   tracker** with the **objective caret** on its rim (it points to the living
@@ -117,6 +128,7 @@ open .build/Citadel.app     # descend
 | **P** · **M** | pause · mute |
 | **B** / **I** | briefing / field intel (from the title) |
 | **K** / **C** | keyboard / controller setup |
+| **⌘S** / **⌘O** | save game · load game (ten named slots, from the menu) |
 | **⌘,** | settings (volumes, sensitivity, reset scores) |
 | **Esc** · **⌘Q** | back · quit |
 
@@ -127,6 +139,17 @@ turns, triggers and bumpers fire and switch weapons, and the **d-pad left/right
 fine-aligns the crosshair** (a slow precision yaw for targeting; up/down still
 nudge forward/back) — and is **rebindable** from the controller sheet (**C**).
 Keyboard always works alongside.
+
+### Saving
+
+Save whenever you like (**⌘S**), into any of **ten named slots**. A save records
+the **checkpoint** — the state you *arrived on the current floor with* — and
+loading rides the lift back down to that floor, so you always resume on a clean
+floor start rather than half way through a fought room.
+
+That is why a save is a few hundred bytes: the floor is **regenerated from the
+run's seed**, so nothing about the map, the swarm or the mess you made of them is
+written down. Saves survive death, and finishing the game doesn't clear them.
 
 ### Hidden feature flags
 
@@ -159,12 +182,13 @@ CITADEL_SHOTS=docs/screenshots ./.build/Citadel.app/Contents/MacOS/Citadel
 
 ## Architecture
 
-A real-time GPU signed-distance-field raymarcher (a Metal compute kernel) draws
-the world — the iron-and-steel architecture and the SDF objects (drums, sockets,
-mines, pickups) as one distance field, lit and graded on the GPU — with the alien
-bestiary rasterised in as 3-D meshes over matched depth, and the HUD and
-front-end screens composited over it in a software 2-D canvas, blit-upscaled
-nearest-neighbour. See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the rendering
+A real-time Metal rasteriser draws the world — the iron-and-steel architecture
+and the objects (drums, sockets, mines, pickups) built as geometry at level load
+and shaded procedurally, HDR-lit and graded on the GPU — with the alien bestiary
+drawn as 3-D meshes over shared depth, and the HUD and front-end screens
+composited over it in a software 2-D canvas, blit-upscaled nearest-neighbour.
+(An SDF raymarcher drew the world until 2026-07; the rasteriser replaced it and
+the kernel was deleted.) See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the rendering
 pipeline and a per-file source map.
 
 ## Support
@@ -175,7 +199,9 @@ If you enjoy Citadel, you can [**buy me a coffee**](https://jorviksoftware.cc/do
 
 Code released into the public domain under [The Unlicense](LICENSE) — do whatever
 you like with it. The bundled audio is **CC0 / CC-BY**, with sources and the
-required attributions listed in [CREDITS.md](CREDITS.md).
+required attributions listed in [CREDITS.md](CREDITS.md) — note the ceremony's
+crowd recordings are **CC-BY 4.0** (Gregor Quendel), so that attribution must
+travel with any redistribution.
 
 ---
 

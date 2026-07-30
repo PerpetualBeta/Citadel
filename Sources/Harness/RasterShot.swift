@@ -1113,9 +1113,15 @@ extension RasterRenderer {
         // door set in the room wall = the "fuel store" sign), framed THROUGH the open doorway, and from INSIDE
         // (a tight lit chamber packed with red/blue oil drums, the marine's only refuel).
         do {
+            // A run seed that seats one of THE SEVEN on this floor, so the store frames show her —
+            // she is the whole reason the store is sealed, and a store shot without her tells half
+            // the story. Searched, not hard-coded: the cast is a function of the seed, and a magic
+            // number here would quietly stop showing her the day the deal changes.
+            var runSeed: UInt64 = 1
+            while runSeed < 4096, Progression.survivor(building: 0, level: 1, runSeed: runSeed) == nil { runSeed += 1 }
             var done = false
             for seed in [UInt64(3), 7, 12, 21, 33, 44, 58, 71] where !done {
-                let world = World(level: 1, colonyIndex: 0, seed: seed)
+                let world = World(level: 1, colonyIndex: 0, seed: seed, runSeed: runSeed)
                 let m = world.map
                 guard !m.fuelStore.isEmpty else { continue }
                 var doorI = -1
@@ -1164,7 +1170,8 @@ extension RasterRenderer {
                 world.player.dir = atan2(bh.y - throat.y, bh.x - throat.x)
                 _ = rr.render(world, into: canvas)
                 Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-fuelstore-bulkhead.png"))
-                print("RASTERSHOT: wrote raster-fuelstore-{out,out-dim,open,in,bulkhead}.png (seed \(seed), door \(dcx),\(dcy), chamber+(\(outX),\(outY)), \(m.fuelStore.count) cells, \(storeDrums.count) drums)")
+                let who = world.colonists.first.map { Colonist.modelNames[$0.variant] } ?? "nobody"
+                print("RASTERSHOT: wrote raster-fuelstore-{out,out-dim,open,in,bulkhead}.png (seed \(seed), door \(dcx),\(dcy), chamber+(\(outX),\(outY)), \(m.fuelStore.count) cells, \(storeDrums.count) drums, survivor: \(who) [runSeed \(runSeed)])")
                 done = true
             }
             if !done { print("RASTERSHOT: fuel store check skipped (none carved)") }

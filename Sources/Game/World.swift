@@ -174,6 +174,8 @@ final class World {
 
     private var rng: Rng
     private var hazardTimer: Float = 0
+    private var roomDwell: Float = 0        // seconds held in the current effect room (resets on leaving)
+    private var roomDwellSign = 0           // +1 sick bay, -1 nukage room, 0 neither
     private var monsterHazardTimer: Float = 0
     var blasts: [(pos: SIMD2<Float>, t: Float, col: SIMD3<Float>)] = []   // impact flashes (renderer light), coloured per cause
     private var steamTimer: Float = 0
@@ -358,12 +360,14 @@ final class World {
         self.lastPlayerPos = map.playerStart
     }
 
-    init(level: Int, colonyIndex: Int, seed: UInt64) {
+    /// `runSeed` identifies the RUN: it selects which of the seven survivors each floor holds, and
+    /// it is deliberately the only thing they need — a restored save recomputes the same cast.
+    init(level: Int, colonyIndex: Int, seed: UInt64, runSeed: UInt64 = 0) {
         self.level = level
         self.colonyIndex = colonyIndex
         self.isTeleportFloor = Progression.isLastFloor(level)
         self.arrivalByTeleport = Progression.floorInBuilding(level) == 1 && level > 1
-        let gen = MapGen.generate(level: level, colonyIndex: colonyIndex, seed: seed)
+        let gen = MapGen.generate(level: level, colonyIndex: colonyIndex, seed: seed, runSeed: runSeed)
         self.map = gen.map
         self.colonyName = gen.colonyName
         self.secretTotal = gen.secretCount
@@ -539,6 +543,7 @@ final class World {
         refuelAtDrums(dt: dt, audio: audio)
         rechargeAtSockets(dt: dt, audio: audio)
         hazardTick(dt: dt, audio: audio)
+        roomEffectTick(dt: dt, audio: audio)
         // the corpse-fire bed rides the nearest pyre: full roar beside a mid-burn
         // blaze, silent once everything is ash (smolder whispers)
         var burnIntensity: Float = 0
@@ -2276,6 +2281,7 @@ final class World {
             // exactly the pieces that do this, so instead: find the frontier nodes (lost, but with a
             // reachable neighbour) and cull whatever actually overlaps them.
             var doomed = Set<Int>()
+            var doomedDrums = Set<Int>()
             for n in lost {
                 let ix = n % nx, iy = n / nx
                 let onFrontier = [(ix - 1, iy), (ix + 1, iy), (ix, iy - 1), (ix, iy + 1)].contains {
@@ -2286,9 +2292,27 @@ final class World {
                 for (pi, pr) in props.enumerated() {
                     if let b = World.collider(for: pr), World.boxHits(b, px, py, 0.28) { doomed.insert(pi) }
                 }
+                // A DRUM can sever a floor exactly like a locker can — it is solid, it is round, and
+                // the opportunistic barrels are dropped in room corners where a chokepoint may be.
+                // This pass used to search only the furniture, so when a drum filled the gap it found
+                // nothing to blame and returned, leaving the floor unfinishable. It cost one seed in
+                // 280 to surface, and only then because an unrelated change shifted the rng onto it.
+                //
+                // Fuel-STORE drums are exempt: the store is a dead end, so its stack can wall off
+                // nothing but itself, and thinning it would gut the level's fuel for no gain.
+                for (di, d) in drums.enumerated() where d.health > 0
+                    && !map.fuelStore.contains(map.idx(Int(d.pos.x), Int(d.pos.y))) {
+                    let rr: Float = 0.42 + 0.28
+                    let dx = d.pos.x - px, dy = d.pos.y - py
+                    if dx * dx + dy * dy < rr * rr { doomedDrums.insert(di) }
+                }
             }
-            guard !doomed.isEmpty else { return }
+            guard !doomed.isEmpty || !doomedDrums.isEmpty else { return }
+            // Removed rather than relocated: a barrel is 150 units of fuel on a floor that has more,
+            // where the alternative is a floor that cannot be finished at all. Each pass drops at
+            // least one piece, so the peel terminates.
             props = props.enumerated().filter { !doomed.contains($0.offset) }.map { $0.element }
+            drums = drums.enumerated().filter { !doomedDrums.contains($0.offset) }.map { $0.element }
             propColliders = World.colliders(for: props)
         }
     }
@@ -2596,6 +2620,38 @@ final class World {
         case .keyRed: player.keys.insert(.red); return true
         case .keyBlue: player.keys.insert(.blue); return true
         case .keyYellow: player.keys.insert(.yellow); return true
+        }
+    }
+
+    /// ── ROOMS THAT WORK ON YOU ── a sick bay slowly puts the marine back together; a room the
+    /// nukage has taken slowly takes her apart. Both at the same rate, both silent: nothing is
+    /// announced, no icon, no message — the health number moving is the whole tell, and a player
+    /// who notices it has learned something about the colony rather than been told it.
+    ///
+    /// The dwell timer RESETS on leaving, deliberately. It is a reward for holding a position (or a
+    /// price for lingering), not a bucket you fill in instalments by stepping in and out.
+    static let roomDwellPeriod: Float = 30      // seconds in the room per tick of effect
+    static let roomDwellAmount = 10             // health gained (sick bay) or lost (nukage room)
+
+    private func roomEffectTick(dt: Float, audio: AudioEngine) {
+        // inBounds guard: NoClip can put the marine outside the grid (see update()).
+        guard map.inBounds(Int(player.pos.x), Int(player.pos.y)) else { roomDwell = 0; return }
+        let i = map.idx(Int(player.pos.x), Int(player.pos.y))
+        let healing = map.medBay.contains(i), harming = map.toxicRoom.contains(i)
+        // A sick bay built in a room the nukage reached would be both; the pool wins — nobody
+        // convalesces in that. (Generation bars hazards from a sick bay, so this is a belt.)
+        let sign = harming ? -1 : (healing ? 1 : 0)
+        guard sign != 0 else { roomDwell = 0; roomDwellSign = 0; return }
+        if sign != roomDwellSign { roomDwell = 0; roomDwellSign = sign }   // walked from one into the other
+        roomDwell += dt
+        guard roomDwell >= World.roomDwellPeriod else { return }
+        roomDwell -= World.roomDwellPeriod
+        if sign > 0 {
+            guard player.health < Player.maxHealth else { return }
+            player.health = min(Player.maxHealth, player.health + World.roomDwellAmount)
+            player.pickupFlash = 0.35                     // the same soft flash a stim gives — no new vocabulary
+        } else {
+            damagePlayer(World.roomDwellAmount, audio: audio, armorBypass: true)   // the air, not a hit: armour is no help
         }
     }
 

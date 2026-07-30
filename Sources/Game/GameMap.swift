@@ -41,6 +41,14 @@ final class GameMap {
     var ceilY: [Float]
     static let tallCeiling: Float = 2.0
     var fuelStore: Set<Int> = []   // interior cells of the fuel-storage chamber: its drums are an INTENTIONAL stack (exempt from reachability relocation)
+
+    // ── rooms that act on the marine while she stands in them ────────────────────────────────
+    // Baked as CELL SETS rather than looked up through room indices at runtime, because the room
+    // bookkeeping is per-generation scratch that the NEXT floor overwrites — a live lookup would
+    // read another floor's rooms. Neither effect is announced: the health number moving is the
+    // whole tell, and a colony that explains itself is a colony with a tutorial in it.
+    var medBay: Set<Int> = []      // open cells of a sick bay — dwell here and wounds slowly close
+    var toxicRoom: Set<Int> = []   // open cells of any room holding a nukage pool — dwell here and it works on you
     var pipeFittings: [SIMD4<Float>] = []   // CPU-placed pipe fittings: (x, z, outward-normal angle, kind 0 valve · 1 gauge)
 
     var playerStart = SIMD2<Float>(1.5, 1.5)

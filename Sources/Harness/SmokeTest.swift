@@ -1232,6 +1232,151 @@ enum SmokeTest {
                   "the line is sized to the frame and never touches an edge (x \(left)…\(right) of \(RenderConfig.width))")
         }
 
+        // ── MANUAL SAVES ── ten named slots, written from the macOS menu. The load-bearing property
+        // is that a save holds NO GEOMETRY: the floor is rebuilt from the run seed, so what has to be
+        // proven is that the seed rebuilds the SAME floor — which it did not, until the two seeding
+        // formulas in Renderer were reconciled (`floorSeed`). A save that quietly loads a different
+        // map is the worst outcome available here, and it would look like a generation bug forever.
+        do {
+            let f = tmpURL()
+            let s = SaveGames(fileURL: f)
+            check(s.isEmpty && s.slots.count == SaveGames.slotCount,
+                  "a fresh save file has \(SaveGames.slotCount) empty slots")
+            func slot(_ name: String, level: Int, score: Int) -> SaveSlot {
+                SaveSlot(name: name, stardate: "20260730::1200", runSeed: 8080, level: level,
+                         colonyName: "DEMETER", score: score, health: 62, armor: 25, mines: 3,
+                         current: WeaponKind.rocket.rawValue,
+                         weapons: [true, true, true], ammo: [40, 7, 88])
+            }
+            s.write(slot("DEEP RUN", level: 23, score: 12400), to: 4)
+            check(s.used.count == 1 && s.used[0].index == 4, "a save lands in the slot it was told to")
+            let reread = SaveGames(fileURL: f)
+            let got = reread.slots[4]
+            check(got?.name == "DEEP RUN" && got?.level == 23 && got?.score == 12400
+                  && got?.health == 62 && got?.armor == 25 && got?.mines == 3
+                  && got?.ammo == [40, 7, 88] && got?.runSeed == 8080,
+                  "…and survives a reload intact, vitals and arsenal with it")
+            s.erase(4)
+            check(SaveGames(fileURL: f).isEmpty, "erasing a slot persists too")
+
+            // THE ROUND TRIP: the seed in a save must rebuild the floor she saved on. Same floor,
+            // rebuilt from scratch, must be identical — walls, furniture, the survivor, everything.
+            for level in [1, 12, 23, 48] {
+                let runSeed: UInt64 = 8080
+                let a = MapGen.generate(level: level, colonyIndex: Progression.planetIndex(level),
+                                        seed: Renderer.floorSeed(runSeed, level), runSeed: runSeed)
+                let b = MapGen.generate(level: level, colonyIndex: Progression.planetIndex(level),
+                                        seed: Renderer.floorSeed(runSeed, level), runSeed: runSeed)
+                check(a.map.wall == b.map.wall && a.props.count == b.props.count
+                      && a.items.count == b.items.count && a.monsters.count == b.monsters.count
+                      && a.colonists.map({ $0.variant }) == b.colonists.map({ $0.variant }),
+                      "floor \(level) rebuilds identically from the saved run seed")
+            }
+            // …and floor N of a run is ONE floor, however you arrive at it. The old code seeded the
+            // first floor `base + N` and every descended floor `base + N*1000`, so a restore straight
+            // onto floor N would have built a map the player had never seen.
+            check(Renderer.floorSeed(7, 3) == Renderer.floorSeed(7, 3)
+                  && Renderer.floorSeed(7, 3) != Renderer.floorSeed(7, 4),
+                  "one floor-seed formula: same floor same seed, different floors different seeds")
+        }
+
+        // ── ROOMS THAT ACT ON THE MARINE ── a sick bay slowly heals, a room the nukage reached
+        // slowly poisons, and neither says a word about it. Asserted because there is nothing on
+        // screen to notice a fault by: no icon, no message, just a number that should have moved.
+        do {
+            var baysChecked = 0, staffed = 0
+            for level in 1...6 {
+                let g = MapGen.generate(level: level, colonyIndex: level - 1, seed: UInt64(level) &* 77 &+ 5)
+                guard !g.map.medBay.isEmpty else { continue }
+                baysChecked += 1
+                // a sick bay ALWAYS holds a medkit — the room's purpose, stocked
+                if g.items.contains(where: { $0.kind == .medkit && g.map.medBay.contains(g.map.idx(Int($0.pos.x), Int($0.pos.y))) }) { staffed += 1 }
+                // and no bay is also a nukage room, or the two effects would fight
+                check(g.map.medBay.isDisjoint(with: g.map.toxicRoom),
+                      "L\(level) no sick bay is also a nukage room")
+            }
+            check(baysChecked > 0 && staffed == baysChecked,
+                  "every sick bay is stocked with a medkit (\(staffed)/\(baysChecked) floors)")
+
+            // the dwell effects themselves, driven on a real world
+            func dwell(_ w: World, at cell: Int, seconds: Float) -> Int {
+                w.player.pos = SIMD2(Float(cell % w.map.w) + 0.5, Float(cell / w.map.w) + 0.5)
+                let steps = Int(seconds / (1.0 / 30))
+                for _ in 0..<steps { w.update(dt: 1.0 / 30, input: InputState(), audio: audio) }
+                return w.player.health
+            }
+            for level in 1...8 {
+                let w = World(level: level, colonyIndex: 0, seed: UInt64(level) &* 31 &+ 9)
+                w.monsters = []                                     // nothing else may touch her health
+                guard let bay = w.map.medBay.sorted().first else { continue }
+                w.player.health = 50
+                let short = dwell(w, at: bay, seconds: World.roomDwellPeriod * 0.8)
+                check(short == 50, "a sick bay has done nothing before the \(Int(World.roomDwellPeriod))s mark (\(short))")
+                let long = dwell(w, at: bay, seconds: World.roomDwellPeriod * 0.4)   // …crossing it
+                check(long == 50 + World.roomDwellAmount,
+                      "\(Int(World.roomDwellPeriod))s in a sick bay closes \(World.roomDwellAmount) points (\(short) → \(long))")
+                // leaving RESETS the dwell: it is a reward for holding position, not a bucket
+                if let outside = (0..<(w.map.w * w.map.h)).first(where: {
+                    w.map.wall[$0] == 0 && !w.map.medBay.contains($0) && !w.map.toxicRoom.contains($0) && !w.map.hazard[$0] }) {
+                    _ = dwell(w, at: outside, seconds: 1.0 / 30)
+                    let after = dwell(w, at: bay, seconds: World.roomDwellPeriod * 0.9)
+                    check(after == long, "stepping out resets the timer — no healing in instalments (\(after))")
+                }
+                break
+            }
+            for level in 1...8 {
+                let w = World(level: level, colonyIndex: 0, seed: UInt64(level) &* 31 &+ 9)
+                w.monsters = []
+                guard let toxic = w.map.toxicRoom.sorted().first(where: { !w.map.hazard[$0] }) else { continue }
+                w.player.health = 90
+                let after = dwell(w, at: toxic, seconds: World.roomDwellPeriod * 1.05)
+                check(after == 90 - World.roomDwellAmount,
+                      "\(Int(World.roomDwellPeriod))s in a nukage room costs \(World.roomDwellAmount) points, pool or no pool (90 → \(after))")
+                break
+            }
+        }
+
+        // ── THE SEVEN ── the only people left in the cluster. Seven of them, one pool for the whole
+        // run, dealt across the six buildings with no repeat and 0–2 per building. Asserted rather
+        // than eyeballed because the failure modes are all quiet ones: the same face twice (which
+        // would say the opposite of what their absence says), a body in a store that never got
+        // carved, or a cast that shifts when a floor is rebuilt — and the last of those would break
+        // a restored save, which recomputes them from the run seed rather than storing them.
+        do {
+            for runSeed in [UInt64(1), 99, 0xDEAD_BEEF] {
+                let cast = Progression.survivors(runSeed: runSeed)
+                let all = cast.flatMap { $0 }
+                check(all.count == Colonist.modelCount,
+                      "all \(Colonist.modelCount) of the seven are dealt (runSeed \(runSeed): \(all.count))")
+                check(Set(all.map { $0.variant }).count == all.count,
+                      "no person appears twice in a run — seven people, not seven variants")
+                check(cast.allSatisfy { $0.count <= 2 }, "no building holds more than two (\(cast.map(\.count)))")
+                check(cast.allSatisfy { Set($0.map { $0.floorInBuilding }).count == $0.count },
+                      "two survivors in one building are on different floors")
+                // the cast is a pure function of the run seed — a rebuilt floor, or a restored save,
+                // must find the same person in the same place
+                check(Progression.survivors(runSeed: runSeed).flatMap { $0 }.map { $0.variant } == all.map { $0.variant },
+                      "the cast is reproducible from the run seed alone")
+            }
+            // …and they are actually PLACED, seated in a carved fuel store. A floor whose store
+            // failed to carve simply holds nobody, which is why this counts across a whole run.
+            let runSeed: UInt64 = 4242
+            var seated = 0, outsideStore = 0, seen = Set<Int>()
+            for level in 1...Progression.totalFloors {
+                let g = MapGen.generate(level: level, colonyIndex: Progression.planetIndex(level),
+                                        seed: runSeed &+ UInt64(level) &* 1000, runSeed: runSeed)
+                for c in g.colonists {
+                    seated += 1
+                    seen.insert(c.variant)
+                    if !g.map.fuelStore.contains(g.map.idx(Int(c.pos.x), Int(c.pos.y))) { outsideStore += 1 }
+                }
+            }
+            check(seated >= Colonist.modelCount - 1,
+                  "a full run seats the seven in its fuel stores (\(seated) of \(Colonist.modelCount))")
+            check(outsideStore == 0, "every survivor is inside a fuel store (\(outsideStore) astray)")
+            check(seen.count == seated, "and each is a different person (\(seen.count) faces, \(seated) bodies)")
+        }
+
         // ── THE TALLY, BOTH WAYS ── the score screen had no coverage at all, and it is where BOTH
         // endings now land: 48 floors is the highest-scoring run the game has, so a victory that
         // failed to reach this screen would cost a player the one place in the Hall they had

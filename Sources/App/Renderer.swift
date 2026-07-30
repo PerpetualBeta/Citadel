@@ -38,6 +38,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var level = 1
     private var colonyIndex = 0
     private var carry: Player?
+    private var carryScore = 0             // score the marine arrives on a floor with (a fresh run starts at 0)
+    /// The state she began the CURRENT floor on — what ⌘S writes, whenever it is pressed.
+    private var checkpoint: SaveSlot?
+    let saves = SaveGames()
 
     // ── background level generation ── every floor is built on a background
     // queue while the player is inside a transition the fiction owns: the lift
@@ -318,7 +322,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // until it lands (holdRide keeps the car dropping past its nominal ride).
         if world.elevatorPhase == .descending || world.teleportPhase == .charging {
             let next = world.level + 1
-            beginWorldBuild(level: next, seed: baseSeed &+ UInt64(next) &* 1000)
+            beginWorldBuild(level: next, seed: Renderer.floorSeed(baseSeed, next))
         }
         world.holdRide = pendingWorld == nil
         world.update(dt: dt, input: input, audio: audio)
@@ -517,6 +521,67 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
     }
 
+    // ── manual save / restore ─────────────────────────────────────────────────
+    //
+    // Driven entirely from the macOS menu (⌘S / ⌘O). Nothing about it appears on a game screen: the
+    // front end has been composed to within a pixel and a SAVE prompt bolted onto it would cost more
+    // than it bought. A native menu is also where a Mac player looks first.
+
+    /// Freeze the run before a modal dialog opens. A modal spins its own run loop, and a game left
+    /// advancing behind one can kill the marine while the player types a slot name.
+    func pauseForDialog() {
+        guard state == .playing else { return }
+        state = .paused; pausedDrawn = false
+    }
+
+    /// Is there a run to write down? Only while one is genuinely IN FLIGHT — she has to be standing
+    /// on a floor. Not at the title, not on the ride down (the checkpoint there still belongs to the
+    /// floor she just left), and not after death: a corpse has nothing to save. ⌘S greys out for all
+    /// of those rather than failing with an alert.
+    var savableCheckpoint: SaveSlot? {
+        let live: Set<GameState> = [.playing, .paused, .automap, .terminal]
+        return world != nil && live.contains(state) ? checkpoint : nil
+    }
+
+    /// Write the checkpoint into a slot under the player's own label.
+    @discardableResult
+    func saveRun(named name: String, to slotIndex: Int) -> Bool {
+        guard var c = checkpoint, world != nil else { return false }
+        c.name = name.trimmingCharacters(in: .whitespaces).isEmpty ? "FLOOR \(c.level)" : String(name.prefix(32))
+        c.stardate = Renderer.stardate()          // stamped when SAVED, not when the floor began
+        return saves.write(c, to: slotIndex)
+    }
+
+    /// Resume a saved run: she rides the lift down to the floor she saved on, and play picks up from
+    /// that checkpoint. Deliberately the SAME path a fresh run takes — the descent is the loading
+    /// screen either way, so a restore has no code of its own to go stale.
+    func restoreRun(_ s: SaveSlot) {
+        genEpoch += 1                             // orphan any floor still building for the old run
+        pendingWorld = nil; pendingLevel = 0
+        world = nil                               // …so installWorld does not carry the abandoned run over
+        arrivalStatic = 0
+        audio.elevatorMove(false)
+        transition = nil
+        victory = false
+        baseSeed = s.runSeed                      // the run's identity: every floor, and the seven, follow from it
+        level = max(1, s.level); colonyIndex = Progression.planetIndex(level)
+        carryScore = s.score
+        // A standard-issue marine, then overwritten with what she was carrying. Built this way round
+        // so a save written before a weapon or ammo type existed still lands on a valid player: the
+        // arrays below are only copied as far as they go.
+        var p = Player(at: .zero, dir: 0)
+        p.health = s.health; p.armor = s.armor; p.mines = s.mines
+        p.current = WeaponKind(rawValue: s.current) ?? .plasma
+        for i in 0..<min(p.weapons.count, s.weapons.count) { p.weapons[i] = s.weapons[i] }
+        for i in 0..<min(p.ammo.count, s.ammo.count) { p.ammo[i] = s.ammo[i] }
+        carry = p                                 // applyCarry lands it on the rebuilt floor
+        beginWorldBuild(level: level, seed: Renderer.floorSeed(baseSeed, level))
+        rideWorld = World.liftRideShaft()
+        rideT = 0; rideRumbleT = 0
+        state = .riding; screenT = 0
+        audio.stopMusic()
+    }
+
     /// Show the Hall of the Fallen on demand (the menu item), returning to whatever
     /// screen it was opened from so it never abandons a run in progress.
     func viewHighScores() {
@@ -604,12 +669,20 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // ── flow ─────────────────────────────────────────────────────────────────
 
+    /// The seed a given floor of a given run is built from. ONE formula, because a restored save has
+    /// to rebuild the floor the player actually walked — and it did not: `startGame` seeded floor N
+    /// with `base + N` while every descent seeded it `base + N*1000`, so the same run produced two
+    /// different floor Ns depending on how you arrived. Harmless while you could only ever arrive one
+    /// way; a wrong map the moment a save can drop you straight onto a floor.
+    static func floorSeed(_ base: UInt64, _ level: Int) -> UInt64 { base &+ UInt64(level) &* 1000 }
+
     private func startGame() {
         baseSeed = FeatureFlags.fixedSeed > 0 ? FeatureFlags.fixedSeed : UInt64.random(in: 1...UInt64.max)
         level = max(1, FeatureFlags.startLevel); colonyIndex = Progression.planetIndex(level); carry = nil
+        carryScore = 0; checkpoint = nil          // a fresh run carries no score and no checkpoint
         victory = false                           // …and it has not been won yet
         world = nil                               // a fresh run carries nothing over
-        beginWorldBuild(level: level, seed: baseSeed &+ UInt64(level))
+        beginWorldBuild(level: level, seed: Renderer.floorSeed(baseSeed, level))
         // the descent IS the loading screen: ride the car down while the floor builds
         rideWorld = World.liftRideShaft()
         rideT = 0; rideRumbleT = 0; arrivalStatic = 0
@@ -633,8 +706,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         genEpoch += 1
         let epoch = genEpoch
         let colony = Progression.planetIndex(level)
+        let run = baseSeed                       // the RUN's identity — picks which of the seven this floor holds
         Renderer.genQueue.async { [weak self] in
-            let w = World(level: level, colonyIndex: colony, seed: seed)
+            let w = World(level: level, colonyIndex: colony, seed: seed, runSeed: run)
             DispatchQueue.main.async {
                 guard let self, self.genEpoch == epoch else { return }
                 self.pendingWorld = w
@@ -648,11 +722,21 @@ final class Renderer: NSObject, MTKViewDelegate {
     private func installWorld(_ w: World) {
         if let old = world {                       // floor-to-floor: the run carries over
             carry = old.player
-            w.score = old.score
+            carryScore = old.score
         }
+        w.score = carryScore
         world = w
         level = w.level; colonyIndex = w.colonyIndex
         applyCarry()
+        // ── THE CHECKPOINT ── snapshot the state she STARTS this floor on, before a shot is fired.
+        // This is what a save writes, whenever it is taken: saving in the thick of a fight records
+        // the floor's beginning, not the fight. See SaveGame.swift for why that is the design and
+        // not a limitation.
+        checkpoint = SaveSlot(name: "", stardate: Renderer.stardate(),
+                              runSeed: baseSeed, level: w.level, colonyName: w.colonyName, score: w.score,
+                              health: w.player.health, armor: w.player.armor, mines: w.player.mines,
+                              current: w.player.current.rawValue,
+                              weapons: w.player.weapons, ammo: w.player.ammo)
         pendingWorld = nil; pendingLevel = 0
         input.resetControls()
         deathTimer = 0
@@ -676,7 +760,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // so this only runs if a transition was somehow skipped)
         let next = level + 1
         installWorld(World(level: next, colonyIndex: Progression.planetIndex(next),
-                           seed: baseSeed &+ UInt64(next) &* 1000))
+                           seed: Renderer.floorSeed(baseSeed, next), runSeed: baseSeed))
     }
 
     private func applyCarry() {

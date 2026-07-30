@@ -60,12 +60,13 @@ struct Colonist {
     var pos: SIMD2<Float>
     var yaw: Float
     var seed: Float           // 0…1 → per-body pose variation
-    var variant: Int          // index into Colonist.modelNames (-1 = unassigned; World assigns a session-unique model)
+    var variant: Int          // index into Colonist.modelNames — WHICH of the seven this is (see Progression.survivors)
     var burn: Float = 0        // 0…1 scorched
     var ashed: Float = 0       // 0…2 crumbled → trodden flat
 
-    /// The seven rigged human meshes (see CREDITS). A survivor is assigned ONE of
-    /// these per placement; the World roster guarantees no two are seen in a session.
+    /// The seven rigged human meshes (see CREDITS) — seven PEOPLE, not a variety pool. One is spent
+    /// per placement and never reused: `Progression.survivors` deals all seven across the run's six
+    /// buildings, so meeting the same face twice is impossible by construction.
     static let modelNames = ["colonist_director", "colonist_woman", "colonist_worker",
                              "colonist_marine", "colonist_civ_a", "colonist_civ_b", "colonist_man"]
     static var modelCount: Int { modelNames.count }

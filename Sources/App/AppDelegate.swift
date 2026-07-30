@@ -9,10 +9,13 @@ import Cocoa
 import MetalKit
 import Sparkle
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
     private var window: NSWindow!
     private var view: GameView!
     private var renderer: Renderer!
+    // held so validateMenuItem can grey them out when there is nothing to save or nothing to load
+    private var saveItem: NSMenuItem?
+    private var loadItem: NSMenuItem?
     private var gamepad: Gamepad!
     private let input = InputState()
     private let audio = AudioEngine()
@@ -102,6 +105,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         scores.target = self; appMenu.addItem(scores)
         appMenu.addItem(.separator())
 
+        // SAVE / LOAD live here and ONLY here. The front-end screens are composed to the pixel and a
+        // SAVE prompt bolted onto them would cost more than it bought; a Mac player looks in the menu
+        // first anyway. ⌘S / ⌘O go through the menu, so they can never collide with a movement key.
+        saveItem = NSMenuItem(title: "Save Game…", action: #selector(saveGame), keyEquivalent: "s")
+        saveItem?.target = self; appMenu.addItem(saveItem!)
+        loadItem = NSMenuItem(title: "Load Game…", action: #selector(loadGame), keyEquivalent: "o")
+        loadItem?.target = self; appMenu.addItem(loadItem!)
+        appMenu.addItem(.separator())
+
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self; appMenu.addItem(settings)
         let kb = NSMenuItem(title: "Keyboard Setup…", action: #selector(openKeyboard), keyEquivalent: "")
@@ -154,6 +166,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func viewHighScores() {
         renderer.viewHighScores()
         window?.makeFirstResponder(view)                    // return focus so [FIRE]/[ESC] dismiss it
+    }
+
+    // ── save / load ───────────────────────────────────────────────────────────
+    //
+    // Native sheets, because this is a Mac app and because the game screens are not going to grow a
+    // save browser. Both PAUSE the run first: a modal spins its own run loop, and a game that keeps
+    // advancing behind a dialog is a game that can kill you while you type a slot name.
+
+    /// Grey the items out when they cannot do anything, rather than letting them fail with an alert.
+    /// Conformed to `NSMenuItemValidation` rather than left to the informal protocol, so the call is
+    /// guaranteed: relying on ObjC seeing a Swift method is how a menu item silently stays enabled.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item == saveItem { return renderer?.savableCheckpoint != nil }
+        if item == loadItem { return !(renderer?.saves.isEmpty ?? true) }
+        return true
+    }
+
+    @objc private func saveGame() {
+        guard let renderer, let c = renderer.savableCheckpoint else { return }
+        renderer.pauseForDialog()
+        let a = NSAlert()
+        a.messageText = "Save Game"
+        a.informativeText = "Saving records the start of FLOOR \(c.level), \(c.colonyName) — \(c.score) points. "
+                          + "Restoring rides the lift back down to it."
+        a.addButton(withTitle: "Save"); a.addButton(withTitle: "Cancel")
+
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 56))
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 30, width: 320, height: 24), pullsDown: false)
+        for i in 0..<SaveGames.slotCount {
+            let s = renderer.saves.slots[i]
+            picker.addItem(withTitle: "\(i + 1).  " + (s.map { $0.summary } ?? "— empty —"))
+        }
+        // default to the first empty slot, so the common case never overwrites by accident
+        picker.selectItem(at: renderer.saves.slots.firstIndex(where: { $0 == nil }) ?? 0)
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        field.placeholderString = "Name this save"
+        field.stringValue = "FLOOR \(c.level), \(c.colonyName)"
+        box.addSubview(picker); box.addSubview(field)
+        a.accessoryView = box
+        a.window.initialFirstResponder = field
+
+        if a.runModal() == .alertFirstButtonReturn {
+            renderer.saveRun(named: field.stringValue, to: picker.indexOfSelectedItem)
+        }
+        window?.makeFirstResponder(view)
+    }
+
+    @objc private func loadGame() {
+        guard let renderer, !renderer.saves.isEmpty else { return }
+        renderer.pauseForDialog()
+        let used = renderer.saves.used
+        let a = NSAlert()
+        a.messageText = "Load Game"
+        a.informativeText = renderer.world != nil
+            ? "The run in progress will be abandoned."
+            : "Resume from a saved checkpoint."
+        a.addButton(withTitle: "Load"); a.addButton(withTitle: "Cancel")
+
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 340, height: 24), pullsDown: false)
+        for (i, s) in used { picker.addItem(withTitle: "\(i + 1).  \(s.summary)") }
+        a.accessoryView = picker
+        a.window.initialFirstResponder = picker
+
+        if a.runModal() == .alertFirstButtonReturn {
+            let pick = picker.indexOfSelectedItem
+            if pick >= 0, pick < used.count { renderer.restoreRun(used[pick].slot) }
+        }
+        window?.makeFirstResponder(view)
     }
     @objc private func openKeyboard() {
         guard let win = window, !gamepad.configuring else { return }
