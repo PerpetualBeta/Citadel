@@ -11,7 +11,7 @@ view.
 
 **An SDF raymarcher drew the world until 2026-07.** A Metal compute kernel sphere-traced
 a distance field, and it was retired once the raster path both looked better and cost
-less: the 1,700-line kernel and `GPUWorldRenderer.swift` were deleted, and there is now
+less: the 1,700-line kernel and its `GPUWorldRenderer` were deleted, and there is now
 exactly one renderer with no toggle and no fallback. `GPURaymarch.swift` survives under a
 misleading name as the home of shared types the kernel used to own (light structs,
 furniture footprints, fire emitters).

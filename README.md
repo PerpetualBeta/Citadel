@@ -186,6 +186,11 @@ CITADEL_RASTERSHOT=/tmp/shots ./.build/Citadel.app/Contents/MacOS/Citadel
 # pass/fail: it reports what moved and by how much, against a committed baseline):
 tools/shotcheck.py                # compare
 tools/shotcheck.py --update       # accept the current renders
+
+# …and the same idea for the DOCS: every shipped asset accounted for in CREDITS,
+# every source file in ARCHITECTURE's map, no document pointing at a deleted file,
+# every feature flag either documented or recorded as deliberately not:
+tools/doccheck.py
 ```
 
 Every harness is **hard-muted by construction** — `main.swift` forces
