@@ -33,6 +33,9 @@ extension RasterRenderer {
     constant float  kGridOff   = \(Float(RasterRenderer.lampGridPhase) + 0.5);   // lamp centre = kStride·k + kPhase + 0.5
     constant float3 kLampCol   = float3(\(WorldLight.lampColor.x), \(WorldLight.lampColor.y), \(WorldLight.lampColor.z));
     constant float  kLampInt   = \(RasterRenderer.lampIntensity);
+    // How much of the floor's baked light an UPWARD reflection is allowed to see. Not zero: the
+    // ceiling is lit by the same fixtures, just far more weakly than the floor they point at.
+    constant float  kEnvCeil   = 0.18;
     constant float  kLampInvR2 = \(1 / (RasterRenderer.lampPoolRadius * RasterRenderer.lampPoolRadius));   // 1/radius²
     constant float  kLampY     = \(RasterRenderer.lampLightY);
 
@@ -564,7 +567,15 @@ extension RasterRenderer {
         float3 baked = field.sample(ls, in.wp.xz/float2(C.params.z, C.params.w)).rgb;
         float ao = clamp(0.55+0.45*grime, 0.35, 1.0);
         col += baked * C.amb.w * alb * ao;
-        col += f0 * baked * 0.6 * pow(1.0-ndv,3.0) * (1.0-rough);                    // env-ish spec off the baked field
+        // env-ish spec off the baked field. The field is a FLOOR-PLANE lookup — the light arriving at
+        // this map cell — so it is only a plausible reflection for rays heading DOWN. Applied without
+        // regard to direction it put the floor on TOP of the gun barrel, which is the one place the
+        // floor cannot be; the grazing-angle Fresnel term made it a bright band exactly along the
+        // upper edge. Weight it by the reflection vector instead: the full field below the horizon, a
+        // dim fraction above it, since Citadel's ceilings are dark concrete away from the lamps.
+        float3 Rv = reflect(-Vv, N);
+        float3 envSpec = baked * mix(1.0, kEnvCeil, smoothstep(-0.05, 0.55, Rv.y));
+        col += f0 * envSpec * 0.6 * pow(1.0-ndv,3.0) * (1.0-rough);
         // textured walls carry their emission via the texture (wemis/wallGlow), so drop the flat-material
         // emissive there (it was a uniform amber wash washing the CRT blacks out).
         float3 baseEmis = (in.tid >= 0.0) ? float3(0.0) : in.emis;

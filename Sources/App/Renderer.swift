@@ -280,7 +280,16 @@ final class Renderer: NSObject, MTKViewDelegate {
             // part as it fades in. Only the last floor of a citadel keeps its
             // interstitial: the feed is FULL STATIC now, and .teleport holds it
             // there (story card over the noise) until the next planet is ready.
-            if Progression.isLastFloor(world.level) {
+            // THE RUN ENDS HERE, and this test must come BEFORE the exit-type fork below. The last
+            // floor of every citadel — floor 48 included — leaves by TELEPORTER, which routes through
+            // .teleport and installs the next world directly; it never calls nextLevel(). Gating the
+            // ending in nextLevel() therefore gated the one route that cannot reach it, and finishing
+            // the game rolled quietly back to Demeter. Both exit types converge here, so here is the
+            // only place the decision belongs.
+            if Progression.isFinalFloor(world.level) {
+                audio.stopMusic()
+                beginEnding()
+            } else if Progression.isLastFloor(world.level) {
                 state = .teleport; screenT = 0
                 audio.stopMusic()
             } else {
@@ -350,16 +359,14 @@ final class Renderer: NSObject, MTKViewDelegate {
     private func tickTeleport(_ dt: Float) {
         guard let world = world else { state = .title; return }
         StaticFX.fill(canvas, t: screenT)
-        // When the SIXTH (last) citadel of the cluster falls, the descent rolls back
-        // to DEMETER — the loop payoff: a bigger trilogy-hook beat instead of the
-        // ordinary planet-jump card (see FrontEnd.clusterCard).
-        let clusterFallen = Progression.building(world.level) % Progression.planets.count == Progression.planets.count - 1
-                            && Progression.isLastFloor(world.level)
-        if clusterFallen { FrontEnd.clusterCard(canvas, world: world, t: screenT) }
-        else { FrontEnd.teleportCard(canvas, world: world, t: screenT) }
+        // The cluster-fallen beat that used to live here is gone: it fired when the sixth citadel fell
+        // and the descent rolled back to Demeter, and nothing rolls back any more — floor 48 is caught
+        // by the ending gate above and never reaches this state. So every arrival here is an ordinary
+        // planet jump. (FrontEnd.clusterCard is now unreachable in game.)
+        FrontEnd.teleportCard(canvas, world: world, t: screenT)
         // (the static's sound is the looping noise bed — one volume authority
         // in tick() drives it through charge → hold → burn-off seamlessly)
-        let minHold: Float = clusterFallen ? 5.2 : 2.6   // the cluster beat holds longer
+        let minHold: Float = 2.6
         if screenT >= minHold, let w = pendingWorld {
             arrivalStatic = 1
             // arrival: a quiet falling tone under the fading static
@@ -553,10 +560,6 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     private func nextLevel() {
-        // THE RUN ENDS HERE when there is no next floor: all six citadels retaken. This used to
-        // rotate the marine back to Demeter floor one indefinitely, which gave the player nothing to
-        // reach for. Now it hands off to ARC's ceremony (see EndingArt) and then the tally.
-        if Progression.isFinalFloor(level) { beginEnding(); return }
         if let w = pendingWorld, w.level == level + 1 {
             installWorld(w)
             return

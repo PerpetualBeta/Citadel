@@ -223,6 +223,20 @@ enum SmokeTest {
                 }
             }
         }
+        // ── the ending's TRAP, written down so it cannot be walked into twice ──
+        // The final floor is also the last floor of its citadel, so it leaves by TELEPORTER, not by
+        // lift. The teleport route installs the next world directly and never calls nextLevel() — so
+        // an ending gated inside the lift branch gates the one route that can never reach it, and
+        // finishing the game rolls quietly back to Demeter instead. Which is exactly what happened.
+        // The gate must sit BEFORE the exit-type fork, where both routes still converge.
+        let last = Progression.totalFloors
+        check(Progression.isFinalFloor(last), "floor \(last) is the final floor")
+        check(!Progression.isFinalFloor(last - 1), "floor \(last - 1) is not the final floor")
+        check(Progression.isLastFloor(last),
+              "the final floor exits by TELEPORTER — so the ending gate cannot live in the lift branch")
+        check(Progression.totalFloors == Progression.floorsPerBuilding * Progression.planets.count,
+              "the finish line is derived (\(Progression.planets.count) citadels × \(Progression.floorsPerBuilding) floors = \(last))")
+
         check(cardsSeen > 0, "the keycard sweep actually saw keycards (\(cardsSeen) across \(floorsSwept) floors)")
         check(floorsCulled * 20 <= floorsSwept,
               "the chokepoint cull stays a rescue, not routine (\(floorsCulled)/\(floorsSwept) floors, \(propsCulled) props)")
