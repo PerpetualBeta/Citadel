@@ -30,7 +30,9 @@ project, under the same terms.
 
 A handful of props are **third-party downloaded models** rather than AI-generated or
 code-synthesised: the dormitory bunk, and the plant machinery that fills the machine
-halls on floors 7–8. In every case **only the geometry is imported** — the meshes carry
+halls on floors 7–8. (The bulkhead light fixture sits in the same table but is
+Jonathan's own work — listed there so the table covers every bundled model, not
+because it is third-party.) In every case **only the geometry is imported** — the meshes carry
 no materials or textures into the game. They are re-materialled in code (the bunk by a
 height split into dark-steel frame and pale mattress; the machinery by a carcass/vessel
 split plus procedural rust, oil film and settled dust in the fragment shader), so the
@@ -43,7 +45,7 @@ surfaces are ours even where the shapes are not.
 | `machine_column.obj` | plant hall centrepiece — process column / scrubber vessel | *Complex N300608*, [archibase.net](https://archibase.net) |
 | `machine_compressor.obj` | compressor set — cabinet, twin receivers, valve manifold | *Compressor N250716*, [archibase.net](https://archibase.net) |
 | `machine_switchgear.obj` | electrical distribution cabinet with lever isolator | *Box electrical panel N250616*, [archibase.net](https://archibase.net) |
-| `bulkhead.usdz` | wall/truss light fixture (3,508 tris) | **SOURCE NOT RECORDED — confirm before release.** It is bundled and drawn, but no note in this repo or the KB says where it came from; it is not one of the archibase set above. Resolve it, or replace the mesh with the procedural fixture it originally was. |
+| `bulkhead.usdz` | wall/truss light fixture (3,508 tris) | **Original** — modelled by Jonathan Hollin, assembled from parts. No third-party provenance, no attribution obligation. |
 
 The four machines arrived as `.3ds` (and one `.obj`) at 44k–145k triangles apiece, which
 is one to two orders of magnitude past what this game spends on a prop. They were

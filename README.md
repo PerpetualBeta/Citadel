@@ -32,10 +32,10 @@ the bundle:
   lighting, so they take fire, burn and dissolve like everything else.
 - **Three hero plates.** Cinematic images back the front-end screens — the title
   among them.
-- **Six imported models — geometry only.** The dormitory bunk, a wall lamp and the
-  four plant machines are downloaded meshes, decimated to the house budget. They
-  bring **no materials or textures** into the game: every surface on them is
-  re-materialled in code, so the shapes are borrowed and the surfaces are ours.
+- **Five imported models — geometry only.** The dormitory bunk and the four plant
+  machines are downloaded meshes, decimated to the house budget. They bring **no
+  materials or textures** into the game: every surface on them is re-materialled in
+  code, so the shapes are borrowed and the surfaces are ours.
 - **Audio.** Citadel's atmosphere leans too hard on sound to synthesise
   convincingly, so it ships a small, curated set of **CC0 / CC-BY** samples —
   weapon fire, the aliens' voices, and a reactive ambient bed that thickens as the
