@@ -1232,6 +1232,40 @@ enum SmokeTest {
                   "the line is sized to the frame and never touches an edge (x \(left)…\(right) of \(RenderConfig.width))")
         }
 
+        // ── THE D-PAD PRECISION YAW ── it has to be genuinely FINE, and it was not: the rate was a
+        // fraction of `base`, which carries the player's turn-speed slider, so it ran five times
+        // faster at the top of that slider than the bottom and overshot a drone at any setting.
+        // Asserted numerically because "does it feel precise" cannot be, and because the failure
+        // was invisible in the code — the 30% looked like restraint.
+        do {
+            let w = World(level: 1, colonyIndex: 0, seed: 5)
+            let inp = InputState()
+            func sweep(_ turnSpeed: Float, fine: Bool, stick: Float = 0) -> Float {
+                GameSettings.shared.turnSpeed = turnSpeed
+                w.player.dir = 0
+                inp.kb = InputState.Controls(); inp.gp = InputState.Controls()
+                inp.fineAim = fine ? 1 : 0; inp.lookX = stick
+                for _ in 0..<30 { w.update(dt: 1.0 / 30, input: inp, audio: audio) }   // one second
+                inp.fineAim = 0; inp.lookX = 0
+                return abs(w.player.dir) * 180 / .pi                                    // degrees turned in 1 s
+            }
+            let fineDefault = sweep(1.0, fine: true)
+            let fineFast = sweep(2.0, fine: true)
+            let fineSlow = sweep(0.4, fine: true)
+            check(abs(fineDefault - fineFast) < 0.5 && abs(fineDefault - fineSlow) < 0.5,
+                  "the precision yaw IGNORES the turn-speed slider (0.4/1.0/2.0 → "
+                  + String(format: "%.1f/%.1f/%.1f°/s", fineSlow, fineDefault, fineFast) + ")")
+            // …and it crosses the plasma assist cone in about a second, which is what makes it fine
+            let coneDeg = World.plasmaAimArc * 180 / .pi
+            check(abs(fineDefault - coneDeg) < 1.0,
+                  String(format: "…and crosses the %.1f° assist cone in ~1 s (%.1f°/s)", coneDeg, fineDefault))
+            let stickDefault = sweep(1.0, fine: false, stick: 1.0)
+            check(stickDefault > fineDefault * 8,
+                  String(format: "the stick still does the gross aiming — %.0f°/s against %.1f°/s (%.0f×)",
+                         stickDefault, fineDefault, stickDefault / max(0.01, fineDefault)))
+            GameSettings.shared.turnSpeed = 1.0
+        }
+
         // ── MANUAL SAVES ── ten named slots, written from the macOS menu. The load-bearing property
         // is that a save holds NO GEOMETRY: the floor is rebuilt from the run seed, so what has to be
         // proven is that the seed rebuilds the SAME floor — which it did not, until the two seeding

@@ -134,8 +134,10 @@ Every gameplay key is **reconfigurable** from the Keyboard sheet (**K**); the
 bindings above are the defaults. A connected controller (Xbox / DualShock / any
 Extended Gamepad) is detected automatically — left stick moves, right stick
 turns, triggers and bumpers fire and switch weapons, and the **d-pad left/right
-fine-aligns the crosshair** (a slow precision yaw for targeting; up/down still
-nudge forward/back) — and is **rebindable** from the controller sheet (**C**).
+fine-aligns the crosshair** — a genuine precision yaw at **8°/s**, which crosses the
+plasma assist cone in about a second and ignores the turn-speed slider, because
+delicacy is not the same preference as how fast you spin (up/down still nudge
+forward/back) — and is **rebindable** from the controller sheet (**C**).
 Keyboard always works alongside.
 
 ### Saving

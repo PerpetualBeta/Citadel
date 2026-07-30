@@ -212,6 +212,20 @@ final class World {
     private(set) var plasmaLockPos: SIMD2<Float>? = nil
     private var plasmaLockIndex = -1              // the locked monster's index (stable; monsters are append-only) — the bolt homes to and damages THIS one
     static let plasmaAimArc: Float = 0.14         // ~8° half-angle assist cone around the reticle
+    /// The controller d-pad's PRECISION yaw, in radians/second — and deliberately an ABSOLUTE rate,
+    /// not a fraction of the turn speed.
+    ///
+    /// It used to be 30% of `base`, which carried the player's TURN SPEED slider (0.4–2.0) inside
+    /// it: "fine" was therefore only fine at the default, running five times faster at the top of
+    /// the slider than the bottom, and ~46°/s even at 1.0 — a nudge that overshoots a drone is not
+    /// a precision control at all, which is exactly how it played. Delicacy is not the same
+    /// preference as overall turn speed, so it no longer inherits it.
+    ///
+    /// The rate is DERIVED from the thing the control exists to serve: it crosses the plasma assist
+    /// cone in about one second. That cone is the scale of correction this is for — a drone just
+    /// outside the reticle's help — so moving at one cone per second is the definition of fine here,
+    /// rather than a number picked by feel.
+    static var fineAimRate: Float { plasmaAimArc }
     static let plasmaAimRange: Float = 40         // cells; matches the plasma's projectile reach
     /// How far off a body's centre a shot may pass and still count. Named because the aim tests
     /// derive from them: two positions are only distinguishable by a hit at all once they differ
@@ -594,12 +608,11 @@ final class World {
 
     private func turn(dt: Float, input: InputState) {
         let base: Float = 2.7 * GameSettings.shared.turnSpeed
-        let fineFrac: Float = 0.30            // controller d-pad fine-aim: a slow precision yaw (~30% of base) — perceptible but far gentler than the stick, hand-tuned like `base`
         var d: Float = 0
         if input.turnLeft { d -= base }
         if input.turnRight { d += base }
         d += input.lookX * base
-        d += input.fineAim * base * fineFrac  // d-pad left/right: slow precision yaw for targeting
+        d += input.fineAim * World.fineAimRate    // d-pad left/right: the precision yaw
         player.dir += d * dt                  // turn-right rotates toward the camera plane's +right
         player.dir += input.takeMouseTurn()   // mouse-right turns right
         // keep faceDir for the HUD
