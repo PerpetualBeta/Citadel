@@ -48,6 +48,11 @@ final class AudioEngine {
                                    // machine_hum sample is present — see makeMachineHum()
         case signalDeep          // THE SIGNAL — the intercepted transmission, played from the reel-to-reel deck (one-shot)
         case signalFar           // THE SIGNAL, distant — the sourceless bleed heard from the deep floors (loops, ambient bus)
+        // THE CEREMONY (the endgame) — three stems cut from ONE field recording of a real crowd.
+        // A bed for the hall, and two SWELLS started on the cut they belong to: the big cheer for
+        // the medal, the rhythmic chant for the raised hands. All three LOOP so one authority can
+        // silence them, but each swell's window closes before its stem could ever wrap.
+        case crowdBed, crowdCheer, crowdChant
 
         var base: String {
             switch self {
@@ -84,6 +89,9 @@ final class AudioEngine {
             case .faultCrackle: return "fault_crackle"
             case .signalDeep: return "signal_deep"
             case .signalFar: return "signal_far"
+            case .crowdBed: return "crowd_bed"
+            case .crowdCheer: return "crowd_cheer"
+            case .crowdChant: return "crowd_chant"
             }
         }
         // bus: 0 music, 1 sfx, 2 ambient.
@@ -91,6 +99,7 @@ final class AudioEngine {
             switch self {
             case .musicTitle: return 0
             case .bedDrone, .bedPulse, .bedTension, .bedSwarm, .drip, .fault, .faultHum, .faultBuzz, .faultCrackle, .signalFar: return 2
+            case .crowdBed, .crowdCheer, .crowdChant: return 2
             default: return 1
             }
         }
@@ -99,6 +108,7 @@ final class AudioEngine {
         var loop: Bool {
             switch self {
             case .musicTitle, .bedDrone, .bedPulse, .bedTension, .bedSwarm, .faultHum, .signalFar, .machineHum: return true
+            case .crowdBed, .crowdCheer, .crowdChant: return true
             default: return false
             }
         }
@@ -120,6 +130,9 @@ final class AudioEngine {
             case .faultCrackle: return 0.32   // the spark itself
             case .signalDeep: return 0.9      // the reel-to-reel playback — front and clear
             case .signalFar: return 0.45      // the distant bleed — under the bed
+            case .crowdBed: return 0.55        // a packed hall heard THROUGH the picture, never over it
+            case .crowdCheer: return 1.0       // the medal — the loudest moment of the ceremony
+            case .crowdChant: return 0.8       // deliberately under the medal: the second beat, not the first
             default: return 0.8
             }
         }
@@ -186,6 +199,9 @@ final class AudioEngine {
     var sfxGain: Float     { didSet { applyGains() } }
     var ambientGain: Float { didSet { applyGains() } }
     var muted = false      { didSet { applyGains() } }
+    /// 0…1 master duck for a screen fade — sound leaves with the picture. Applied at the final
+    /// mixer stage (see `applyGains`), on TOP of the player's levels, so a fade cannot lose them.
+    var transitionGain: Float = 1 { didSet { applyGains() } }
 
     /// Backgrounding: fully idle the engine while Citadel is inactive or its window
     /// is hidden — no sound leaks from a window you can't see, and the audio thread
@@ -207,7 +223,7 @@ final class AudioEngine {
     // synth-fallback bed clocks (only used when no bed_* stems are bundled)
     private var padT: Float = 0, pulseT: Float = 0, clankT: Float = 0, dreadT: Float = 0, heartT: Float = 0
 
-    enum MusicMode { case none, title, level }
+    enum MusicMode { case none, title, level, ceremony }
     private var mode: MusicMode = .none
 
     init() {
@@ -390,7 +406,12 @@ final class AudioEngine {
         // mainMixerNode's outputVolume catches everything downstream, so nothing
         // reaches the DAC. It ramps smoothly too, so the mute/unmute itself is
         // click-free. The per-bus zeroing above stays for selective `muteBuses`.
-        engine.mainMixerNode.outputVolume = (muted || allB) ? 0 : 1
+        //
+        // A screen fade rides the SAME final stage, for the same measured reason: ducking the three
+        // group buses left ~-24 dB leaking through, which would have been audible as a ghost of the
+        // ceremony under a screen meant to be silent. It multiplies the player's own levels rather
+        // than replacing them, so a transition can never quietly redefine their settings.
+        engine.mainMixerNode.outputVolume = (muted || allB) ? 0 : max(0, min(1, transitionGain))
     }
 
     // ── sample loading ─────────────────────────────────────────────────────────
@@ -855,6 +876,12 @@ final class AudioEngine {
         case .none: break
         case .title:
             _ = startLoop(.musicTitle, volume: 1)   // synth title sequencer runs if this is absent
+        case .ceremony:
+            // The theme returns for the ceremony — the tune the run OPENED on, playing over the
+            // reward for finishing it. It was written for an abandoned colony, and that is the
+            // point: the hall celebrates, the score does not. The crowd layers over it, driven by
+            // `ceremonyCrowd` from the shot list.
+            _ = startLoop(.musicTitle, volume: 1)
         case .level:
             if hasSampleBeds {
                 usingSampleBed = true
@@ -871,12 +898,31 @@ final class AudioEngine {
     }
     func stopMusic() { mode = .none; stopAllLoops() }
 
+    /// THE CEREMONY'S CROWD — one call per frame, from ONE authority, exactly like the teleport
+    /// static bed. Every gain arrives here together and zero means zero everywhere, so no path out
+    /// of the screen (finishing it, or skipping it) can leave a hall cheering over the tally.
+    ///
+    /// A gain going positive is also what STARTS its stem, which is the trick that lets the swells
+    /// be cued by nothing more than the shot list: the cheer's own attack then lands ON the cut to
+    /// the medal, rather than wherever a continuously-looping stem happened to be. A gain returning
+    /// to zero stops the stem outright, so it can neither wrap nor idle.
+    func ceremonyCrowd(bed: Float, cheer: Float, chant: Float) {
+        for (s, v) in [(Sound.crowdBed, bed), (.crowdCheer, cheer), (.crowdChant, chant)] {
+            guard let n = loopNodes[s] else { continue }
+            if v > 0 {
+                if n.isPlaying { setLoopVol(s, v * s.gain) } else { _ = startLoop(s, volume: v * s.gain) }
+            } else if n.isPlaying {
+                n.stop()
+            }
+        }
+    }
+
     /// Called every frame. Crossfades the reactive bed (sample or synth) and ticks
     /// the synth title sequencer when no title stem is bundled.
     func updateMusic(_ dt: Float) {
         switch mode {
         case .none: return
-        case .title:
+        case .title, .ceremony:
             if bank[.musicTitle] == nil { synthTitleTick(dt) }
         case .level:
             updateBed(dt)

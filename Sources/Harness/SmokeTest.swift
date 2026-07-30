@@ -364,6 +364,58 @@ enum SmokeTest {
         check(missing.isEmpty,
               missing.isEmpty ? "audio bank complete (all \(AudioEngine.Sound.allCases.count) sounds sampled)"
                               : "audio bank missing: \(missing.map(\.base).sorted().joined(separator: ", "))")
+        // ── GENERATION DETERMINISM ── a fixed seed must build a byte-identical floor, in EVERY
+        // process. Swift seeds its hashing per process, so ANY decision that rides the iteration
+        // order of a Set or a Dictionary silently comes out differently run to run — and that is
+        // precisely what made two shot frames flip: a room's walls were ranked by slot count alone
+        // over a dictionary's keys, so tied walls (opposite walls of a rectangle — most rooms)
+        // swapped, the furniture moved with them, and the pipe routing followed the furniture.
+        //
+        // Two guards, because they catch different faults:
+        //   • the CHECK below regenerates the same seed after other floors have been built, which
+        //     catches MapGen's `static var` room sets leaking from one floor into the next.
+        //   • the printed GENHASH is for comparing across separate RUNS of this suite — equal
+        //     within one process proves nothing about hash-order faults. One field per column, so
+        //     a failure names the field that moved instead of being chased through the pictures.
+        do {
+            func fnv(_ vs: [Int]) -> UInt64 {
+                var h: UInt64 = 0xcbf29ce484222325
+                for v in vs { h = (h ^ UInt64(bitPattern: Int64(v))) &* 0x100000001b3 }
+                return h
+            }
+            func q(_ vs: [Float]) -> [Int] { vs.map { Int(($0 * 1024).rounded()) } }
+            func fields(_ g: GeneratedLevel) -> [(String, UInt64)] {
+                let m = g.map
+                return [("wall", fnv(m.wall)), ("pipe", fnv(q(m.pipe))), ("ceilY", fnv(q(m.ceilY))),
+                        ("light", fnv(q(m.light))), ("hazard", fnv(m.hazard.map { $0 ? 1 : 0 })),
+                        ("doors", fnv(m.doors.keys.sorted())),
+                        ("props", fnv(g.props.flatMap { [$0.kind.rawValue] + q([$0.pos.x, $0.pos.y, $0.yaw]) })),
+                        ("items", fnv(g.items.flatMap { [$0.kind.rawValue] + q([$0.pos.x, $0.pos.y]) })),
+                        ("mobs", fnv(g.monsters.flatMap { [$0.kind.rawValue] + q([$0.pos.x, $0.pos.y]) })),
+                        ("drums", fnv(q(g.drums.flatMap { [$0.x, $0.y] }))),
+                        ("sockets", fnv(q(g.sockets.flatMap { [$0.pos.x, $0.pos.y] }))),
+                        ("fittings", fnv(q(m.pipeFittings.flatMap { [$0.x, $0.y, $0.z, $0.w] })))]
+            }
+            let cases: [(Int, Int, UInt64)] = [(1, 0, 3), (3, 2, 11), (7, 0, 3), (8, 5, 99)]
+            var first: [String: [(String, UInt64)]] = [:]
+            for (lvl, ci, sd) in cases {
+                let f = fields(MapGen.generate(level: lvl, colonyIndex: ci, seed: sd))
+                first["\(lvl)/\(ci)/\(sd)"] = f
+                print("GENHASH L\(lvl)/\(ci)/\(sd) " + f.map { "\($0.0)=\(String($0.1 % 100_000_000, radix: 36))" }.joined(separator: " "))
+            }
+            // …now build them all AGAIN, in the same order, after every other floor has been through
+            // the generator. Anything held in a `static var` between calls shows up here.
+            var drifted: [String] = []
+            for (lvl, ci, sd) in cases {
+                let key = "\(lvl)/\(ci)/\(sd)"
+                let f = fields(MapGen.generate(level: lvl, colonyIndex: ci, seed: sd))
+                for (i, entry) in f.enumerated() where entry.1 != first[key]?[i].1 { drifted.append("\(key):\(entry.0)") }
+            }
+            check(drifted.isEmpty, drifted.isEmpty
+                  ? "a seed rebuilds the identical floor after other floors have been generated (\(cases.count) floors, \(fields(MapGen.generate(level: 1, colonyIndex: 0, seed: 3)).count) fields each)"
+                  : "generation drifted on regeneration: \(drifted.joined(separator: ", "))")
+        }
+
         let input = InputState()
         let world = World(level: 2, colonyIndex: 0, seed: 4242)
         input.kb.forward = true
@@ -529,6 +581,127 @@ enum SmokeTest {
                 }
             }
         }
+        // ── YOU HIT WHAT YOU SEE ────────────────────────────────────────────────────────────────
+        //
+        // A creature's mesh is far larger than its 0.4-cell collision radius, so the body is DRAWN
+        // settled clear of walls and furniture — up to a footprint-radius off its logical `pos`.
+        // That offset was render-only while combat still tested `pos`, and the two disagreed: you
+        // aimed at the drone you could SEE and the shot went through empty air beside the one the
+        // sim held. Plasma was worse still, because its lock needs line-of-sight and `pos` can be
+        // INSIDE a wall — the very case the resolve exists to hide — so the test failed outright
+        // and a drone in plain view got no reticle at all.
+        //
+        // These install a STUB resolve rather than a real mesh (the smoke suite is headless, and a
+        // real resolve only bites near a wall). The plumbing is what has to hold, and the offset is
+        // deliberately larger than any real resolve so the drawn and logical positions cannot be
+        // confused by a test that only just passes.
+        do {
+            let slack = MonsterKind.alien.def.radius + World.hitscanPerpSlack   // how far a pellet may miss by
+            let offset = slack * 2                                             // clear of it, so a hit names ONE position
+            // an open cell with a clear straight run to stand a drone in
+            func aimStand(_ w: World) -> (eye: SIMD2<Float>, at: SIMD2<Float>, ahead: SIMD2<Float>)? {
+                let m = w.map
+                func open(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && !m.blocksSight(x, y) }
+                for y in 1..<(m.h - 1) { for x in 1..<(m.w - 1) where open(x, y) {
+                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                        var n = 1
+                        while open(x + dx * n, y + dy * n) { n += 1 }
+                        guard n >= 4 else { continue }
+                        let eye = SIMD2<Float>(Float(x) + 0.5, Float(y) + 0.5)
+                        let ahead = SIMD2<Float>(Float(dx), Float(dy))
+                        // Close enough that the offset falls OUTSIDE the assist cone: past
+                        // offset/tan(arc) the cone is wide enough to swallow both positions and the
+                        // test could no longer tell which one the lock had used.
+                        return (eye, eye + ahead * (offset / tanf(World.plasmaAimArc) * 0.5), ahead)
+                    }
+                } }
+                return nil
+            }
+            // (a) the reticle, and the shot, follow the DRAWN body
+            let w = World(level: 1, colonyIndex: 0, seed: 909)
+            if let g = aimStand(w) {
+                let lateral = SIMD2<Float>(-g.ahead.y, g.ahead.x)
+                var drone = w.monsters.first(where: { $0.kind == .alien }) ?? Monster(kind: .alien, pos: g.at)
+                drone.pos = g.at; drone.state = .idle; drone.health = drone.def.maxHealth
+                w.monsters = [drone]
+                w.meshPoseResolve = { _, pos, _, _, _, _ in pos + lateral * offset }
+                w.refreshDrawnPositions()
+                let drawn = w.monsters[0].drawnPos
+                check(vlen(drawn - (g.at + lateral * offset)) < 0.001,
+                      String(format: "the sim publishes the DRAWN position (%.2f,%.2f vs logical %.2f,%.2f)",
+                             drawn.x, drawn.y, g.at.x, g.at.y))
+
+                w.player.pos = g.eye; w.player.current = .plasma
+                w.player.dir = atan2(drawn.y - g.eye.y, drawn.x - g.eye.x)      // aim at the body ON SCREEN
+                w.acquirePlasmaTargetForTest()
+                let lock = w.plasmaLockPos
+                check(lock != nil && vlen(lock! - drawn) < 0.001,
+                      "aiming at the drawn body LOCKS it, and locks onto where it is drawn")
+
+                w.player.dir = atan2(g.at.y - g.eye.y, g.at.x - g.eye.x)        // aim at the logical centre
+                w.acquirePlasmaTargetForTest()
+                check(w.plasmaLockPos == nil,
+                      "aiming at the invisible logical centre does NOT lock — the assist follows the mesh")
+
+                let hitDrawn = w.hitscanForTest(angle: atan2(drawn.y - g.eye.y, drawn.x - g.eye.x),
+                                                range: 20, audio: audio)
+                let hitLogical = w.hitscanForTest(angle: atan2(g.at.y - g.eye.y, g.at.x - g.eye.x),
+                                                  range: 20, audio: audio)
+                check(hitDrawn == 0 && hitLogical < 0,
+                      "pellets land on the drawn body and pass by the logical one (\(hitDrawn) / \(hitLogical))")
+            }
+            // (b) THE REPORTED BUG: a drone whose logical centre is buried in a wall. The resolve
+            // exists to eject the mesh into the open, so the player sees it plainly — and until the
+            // sim owned that position, the lock's sight line ran to a point inside the wall and
+            // failed, which is why aiming straight at a drone sometimes gave no reticle at all.
+            for resolved in [true, false] {
+                let bw = World(level: 1, colonyIndex: 0, seed: 909)
+                guard let g = aimStand(bw) else { break }
+                let m = bw.map
+                // a solid cell beside the run, for the drone's centre to sit inside
+                let cell = SIMD2<Int>(Int(g.at.x), Int(g.at.y))
+                var buried: SIMD2<Float>? = nil
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let bx = cell.x + dx, by = cell.y + dy
+                    if m.inBounds(bx, by), m.blocksSight(bx, by) { buried = SIMD2(Float(bx) + 0.5, Float(by) + 0.5); break }
+                }
+                guard let inWall = buried else { break }
+                var drone = bw.monsters.first(where: { $0.kind == .alien }) ?? Monster(kind: .alien, pos: inWall)
+                drone.pos = inWall; drone.state = .idle; drone.health = drone.def.maxHealth
+                bw.monsters = [drone]
+                // resolved: the mesh is settled out into the open cell, as a real resolve would.
+                // unresolved: no hook at all — drawnPos stays equal to pos, which is the old behaviour.
+                if resolved { bw.meshPoseResolve = { _, _, _, _, _, _ in g.at } }
+                bw.refreshDrawnPositions()
+                bw.player.pos = g.eye; bw.player.current = .plasma
+                bw.player.dir = atan2(g.at.y - g.eye.y, g.at.x - g.eye.x)
+                bw.acquirePlasmaTargetForTest()
+                check((bw.plasmaLockPos != nil) == resolved,
+                      resolved ? "a drone whose centre is INSIDE a wall still locks, because the mesh you see is in the open"
+                               : "...and with no resolve it does not — the sight line ends in the wall (the bug, reproduced)")
+            }
+            // (c) a settled CORPSE resolves ONCE and stays. It never moves again and its resolve
+            // ignores doors, so re-resolving it can only make a body twitch across the room; a LIVE
+            // drone must keep tracking, because it walks and doors swing shut beside it.
+            let cw = World(level: 1, colonyIndex: 0, seed: 909)
+            if let g = aimStand(cw) {
+                var live = cw.monsters.first(where: { $0.kind == .alien }) ?? Monster(kind: .alien, pos: g.at)
+                live.pos = g.at; live.state = .idle
+                var dead = live; dead.state = .dead
+                cw.monsters = [live, dead]
+                var nudge: Float = 1
+                cw.meshPoseResolve = { _, pos, _, _, _, _ in pos + SIMD2(nudge, 0) }
+                cw.refreshDrawnPositions()
+                let settled = cw.monsters[1].drawnPos
+                nudge = 5                                    // the resolve now answers differently
+                cw.refreshDrawnPositions()
+                check(vlen(cw.monsters[1].drawnPos - settled) < 0.001,
+                      "a settled corpse is resolved once and stays put")
+                check(vlen(cw.monsters[0].drawnPos - settled) > 0.001,
+                      "a live drone keeps re-resolving as it moves")
+            }
+        }
+
         // ── PLANT MACHINERY HUM ── the compressors' proximity bed on floors 7–8. Asserted rather than
         // listened to: it has to be SILENT where there is no machinery, and it has to SWELL as you
         // close on a machine, which is the whole point of a positional bed over an ambient one.
@@ -994,6 +1167,102 @@ enum SmokeTest {
         }
         for page in 0..<FrontEnd.intelPages { FrontEnd.intel(canvas, t: 1.0, page: page) }
         check(true, "front-end screens drew (all \(FrontEnd.intelPages) intel pages)")
+
+        // ── THE CEREMONY'S CROWD ── the mix cannot be listened to from here, so its shape is
+        // asserted instead. The load-bearing one is the FIRST: the citation is read, not heard,
+        // and a cheer landing under it would take the words with it. That is also the reason the
+        // crowd is cut into segments at all rather than played as one continuous take.
+        do {
+            let cite = EndingArt.citationTime
+            var loudestUnderText: Float = 0, lastCheer: Float = 0, lastChant: Float = 0
+            var minBed = Float.greatestFiniteMagnitude
+            var t: Float = 0
+            while t < EndingArt.duration {
+                let c = EndingArt.crowd(at: t)
+                if t < cite - EndingArt.dissolve { loudestUnderText = max(loudestUnderText, max(c.cheer, c.chant)) }
+                lastCheer = c.cheer; lastChant = c.chant
+                minBed = min(minBed, c.bed)
+                t += 1.0 / 30
+            }
+            check(loudestUnderText == 0, "no cheer fires under the citation — the words have to read")
+            check(minBed > 0, "the hall is never silent inside the ceremony (quietest bed \(String(format: "%.2f", minBed)))")
+            check(EndingArt.crowd(at: 0).bed == EndingArt.crowdQuiet, "the hall opens quiet, at the bed's floor")
+            // each swell peaks on the cut it belongs to, and the medal outranks the raised hands
+            let medal = EndingArt.crowd(at: cite + 1.0), hands = EndingArt.crowd(at: cite + 5.0)
+            check(medal.cheer > 0.9, "the cheer is at full on the medal (\(String(format: "%.2f", medal.cheer)))")
+            check(medal.bed > EndingArt.crowdQuiet, "the bed has lifted for the release")
+            check(hands.chant > 0.9, "the chant is at full on the raised hands (\(String(format: "%.2f", hands.chant)))")
+            check(lastCheer == 0 && lastChant == 0, "both swells have released before the ceremony ends")
+            // The hall must still be there when the fade to black starts, so the fade is what takes
+            // it out. Zeroing at `duration` instead would cut a packed auditorium off mid-breath one
+            // frame before the picture began to go.
+            let tail = EndingArt.crowd(at: EndingArt.duration + 5)
+            check(tail.bed > 0 && abs(tail.bed - EndingArt.crowd(at: EndingArt.duration - 0.01).bed) < 0.001,
+                  "the hall is HELD through the run to black for the fade to carry out (\(String(format: "%.2f", tail.bed)))")
+            // a swell that outlasted its stem would wrap and audibly restart the crowd mid-cheer
+            check(EndingArt.swellHolds.allSatisfy { $0 <= EndingArt.crowdSwellSeconds },
+                  "no swell outlasts its \(EndingArt.crowdSwellSeconds)s stem (holds \(EndingArt.swellHolds))")
+        }
+
+        // ── THE CODA ── the last card, and the last thing the game ever shows. It is reached only
+        // by finishing all 48 floors, so nobody will stumble over a fault in it; assert it instead.
+        do {
+            func ink(_ t: Float) -> Int {
+                canvas.clear()
+                FrontEnd.coda(canvas, t: t)
+                return (0..<(RenderConfig.width * RenderConfig.height))
+                    .lazy.filter { (canvas.framebuffer[$0] & 0x00FF_FFFF) != 0 }.count
+            }
+            let black = ink(0), arriving = ink(FrontEnd.codaIn * 0.4), arrived = ink(FrontEnd.codaIn + 1)
+            check(black == 0, "the coda opens on pure black (\(black) lit px)")
+            check(arrived > 400, "the line is there once it has risen (\(arrived) lit px)")
+            check(arriving > 0 && arriving < arrived, "it FADES up rather than switching on (\(arriving) → \(arrived))")
+            // "nothing else on the screen" is a design instruction, so it is enforced rather than
+            // trusted: the card carries the sentence and no prompt, no seal, no score.
+            canvas.clear()
+            FrontEnd.coda(canvas, t: FrontEnd.codaIn + 1)
+            var top = RenderConfig.height, bot = 0, left = RenderConfig.width, right = 0
+            for y in 0..<RenderConfig.height { for x in 0..<RenderConfig.width
+                where (canvas.framebuffer[y * RenderConfig.width + x] & 0x00FF_FFFF) != 0 {
+                top = min(top, y); bot = max(bot, y); left = min(left, x); right = max(right, x)
+            } }
+            check(bot - top < RenderConfig.height / 4,
+                  "everything on the card sits in ONE band — one line, nothing else (\(bot - top) px tall)")
+            check(left > 0 && right < RenderConfig.width - 1,
+                  "the line is sized to the frame and never touches an edge (x \(left)…\(right) of \(RenderConfig.width))")
+        }
+
+        // ── THE TALLY, BOTH WAYS ── the score screen had no coverage at all, and it is where BOTH
+        // endings now land: 48 floors is the highest-scoring run the game has, so a victory that
+        // failed to reach this screen would cost a player the one place in the Hall they had
+        // actually earned. The victory variant in particular was unreachable for a while, which is
+        // exactly how a screen rots unnoticed.
+        do {
+            let tw = World(level: Progression.totalFloors, colonyIndex: 5, seed: 77)
+            let ti = InputState()
+            for (victory, name) in [(false, "death"), (true, "victory")] {
+                canvas.clear()
+                FrontEnd.gameOver(canvas, world: tw, input: ti, qualifies: true, t: 0.1, victory: victory)
+                let lit = (0..<(RenderConfig.width * RenderConfig.height))
+                    .lazy.filter { (canvas.framebuffer[$0] & 0x00FF_FFFF) != 0 }.count
+                check(lit > 100_000, "the \(name) tally draws (\(lit) lit px)")
+                // The heading MUST NOT touch a frame edge. "CLUSTER RETAKEN" did exactly that —
+                // clipped at both sides — and stayed that way because nothing ever drew it. The
+                // backdrop is a gradient, so measure the heading's own band rather than the frame.
+                let band = uiS(40)..<uiS(150)
+                var left = RenderConfig.width, right = 0
+                for y in band { for x in 0..<RenderConfig.width {
+                    let p = canvas.framebuffer[y * RenderConfig.width + x]
+                    let lum = Int(p & 0xFF) + Int((p >> 8) & 0xFF) + Int((p >> 16) & 0xFF)
+                    if lum > 300 { left = min(left, x); right = max(right, x) }     // the heading, not the gradient
+                } }
+                check(left > 0 && right < RenderConfig.width - 1,
+                      "the \(name) heading is fitted to the frame, never clipped (x \(left)…\(right) of \(RenderConfig.width))")
+            }
+            // the run that reaches the ending is the one that must qualify — assert the wiring the
+            // tally depends on, since a score of 0 would silently skip name entry
+            check(tw.level == Progression.totalFloors, "a finished run reports all \(Progression.totalFloors) floors")
+        }
 
         // automap overlay (world ran above, so cells are visited → fog reveals)
         let visitedCells = world.map.visited.lazy.enumerated().filter { $0.element && world.map.wall[$0.offset] == 0 }.count

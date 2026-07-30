@@ -83,7 +83,14 @@ def main():
                     help="ignore peak cell shifts below this (luminance 0-1; ~3/255 over a 40x40 px cell)")
     ap.add_argument("--app", default=".build/Citadel.app/Contents/MacOS/Citadel")
     ap.add_argument("--baseline", default="tools/shot-baseline.json")
-    ap.add_argument("--flaky", default="raster-tee.png,raster-industrial.png",
+    # The quarantine is EMPTY, and should stay that way. raster-tee and raster-industrial lived here
+    # because they came out one of two ways from the same seed; the cause was a room's walls being
+    # ranked by slot count alone, over a dictionary whose key order Swift randomises per process, so
+    # tied walls (opposite walls of a rectangle, i.e. most rooms) swapped between runs and the
+    # furniture — then the pipe routing that follows it — moved. Fixed at source in MapGen with a
+    # total ordering; both frames have been byte-identical across repeated runs since. Quarantining a
+    # frame hides regressions in it, so add one here only to triage, never as a resting place.
+    ap.add_argument("--flaky", default="",
                     help="frames known to differ between identical runs; reported separately, never failed on")
     a = ap.parse_args()
 

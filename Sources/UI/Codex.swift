@@ -45,6 +45,46 @@ enum FrontEnd {
     /// NOT confirm the title — saying "press fire" there sent people clicking).
     static func confirmName(pad: Bool) -> String { pad ? "FIRE" : "[ENTER]" }
 
+    // ── the coda ────────────────────────────────────────────────────────────────────────────
+    //
+    // The very last thing the game shows: one line, on black, in the CITADEL wordmark's own
+    // treatment — the same face, weight, amber core, halo and chromatic fringe, because this is
+    // the trilogy's signature and not a UI string. Nothing else is on the screen. No prompt, no
+    // seal, no score: the sentence is the whole frame, and anything set beside it would argue
+    // with it. FIRE moves on, undocumented, the way the last card of a film does.
+    static let codaLine = "The story does not end here..."
+    /// How long the line takes to rise out of the black. Also how long it is protected for —
+    /// nothing may cut the card away before it has finished arriving.
+    static let codaIn: Float = 2.6
+
+    static func coda(_ c: Canvas2D, t: Float) {
+        c.fillRect(0, 0, RenderConfig.width, RenderConfig.height, packRGBA(0, 0, 0))
+        let up = t / codaIn
+        let a = up >= 1 ? 1 : max(0, up * up * (3 - 2 * up))       // eased, so it emerges rather than switches on
+        guard a > 0.004 else { return }
+        // Sized from the MEASURED line so it can never crowd the frame edge, whatever the string
+        // or the render scale — the margins are the composition here.
+        let margin = uiS(70)
+        let room = RenderConfig.width - margin * 2
+        var size = uiSf(40)
+        while size > uiSf(13), c.labelWidth(codaLine, size: CGFloat(size), weight: .heavy) > room { size -= 1 }
+        let y = (RenderConfig.height - Int(size)) / 2 - uiS(10)    // a shade above centre: optically centred, not measured
+        let black = packRGBA(0, 0, 0)
+        // A barely-there phosphor breath on the halo only. Not an element — the amber on a CRT
+        // never sat perfectly still, and a wholly frozen frame reads as a hung game.
+        let breath = 1 + 0.035 * sinf(t * 0.9)
+        let halo = mixRGBA(black, amber, 0.22 * a * breath)
+        let w = c.labelWidth(codaLine, size: CGFloat(size), weight: .heavy)
+        let x = (RenderConfig.width - w) / 2
+        for (ox, oy) in [(-uiS(1), 0), (uiS(1), 0), (0, -uiS(1)), (0, uiS(1)), (-uiS(2), 0), (uiS(2), 0), (0, -uiS(2)), (0, uiS(2))] {
+            c.label(codaLine, x + ox, y + oy, size: CGFloat(size), color: halo, weight: .heavy, shadow: false)
+        }
+        c.label(codaLine, x + uiS(1), y, size: CGFloat(size), color: mixRGBA(black, red, a),     weight: .heavy, shadow: false)
+        c.label(codaLine, x - uiS(1), y, size: CGFloat(size), color: mixRGBA(black, cold, a),    weight: .heavy, shadow: false)
+        c.label(codaLine, x,          y, size: CGFloat(size), color: mixRGBA(black, amberHi, a), weight: .heavy, shadow: false,
+                glow: mixRGBA(black, packRGBA(110, 80, 28), a))
+    }
+
     /// The title is an ARC subsurface terminal. Most of it is glyph-rain; the brand
     /// lives in the corner seal and the boot-log, never explained.
     static func title(_ c: Canvas2D, t: Float, hs: HighScores, pad: Bool = false) {
@@ -639,17 +679,27 @@ enum FrontEnd {
     /// The tally. `victory` is set only when the ceremony brought us here, and it swaps the heading,
     /// the subtitle and the palette — the stats and the name-entry path below are deliberately shared,
     /// so the player who finishes the game records a score by exactly the same route as everyone else.
+    /// A centred heading, shrunk if its words would otherwise run off the frame. A heading is sized
+    /// for the string it was written with, and a fixed size clips the moment that string changes —
+    /// which is exactly what "CLUSTER RETAKEN" was doing, its C and N cut off at both edges, unseen
+    /// for as long as the victory screen was unreachable. Measure, don't assume.
+    private static func fittedHeading(_ c: Canvas2D, _ s: String, _ y: Int, size: CGFloat, color: UInt32, glow: UInt32) {
+        let room = RenderConfig.width - uiS(26) * 2
+        var sz = size
+        while sz > uiSf(20), c.labelWidth(s, size: sz, weight: .heavy) > room { sz -= 1 }
+        c.labelCentered(s, y, size: sz, color: color, weight: .heavy, shadow: true, glow: glow)
+    }
+
     static func gameOver(_ c: Canvas2D, world: World, input: InputState, qualifies: Bool, t: Float,
                          pad: Bool = false, victory: Bool = false) {
         backdrop(c, t, top: victory ? packRGBA(8, 16, 22) : packRGBA(22, 4, 4),
                        bottom: victory ? packRGBA(14, 30, 38) : packRGBA(44, 8, 8))
         if victory {
-            c.labelCentered("CLUSTER RETAKEN", uiS(64), size: uiSf(72), color: cold, weight: .heavy,
-                            shadow: true, glow: packRGBA(10, 44, 58))
+            fittedHeading(c, "CLUSTER RETAKEN", uiS(64), size: uiSf(72), color: cold, glow: packRGBA(10, 44, 58))
             c.labelCentered("All \(Progression.totalFloors) floors. Every citadel. You walked out.",
                             uiS(168), size: uiSf(22), color: packRGBA(170, 205, 218), weight: .medium)
         } else {
-            c.labelCentered("YOU DIED", uiS(64), size: uiSf(88), color: red, weight: .heavy, shadow: true, glow: redGlow)
+            fittedHeading(c, "YOU DIED", uiS(64), size: uiSf(88), color: red, glow: redGlow)
             c.labelCentered("The \(world.colonyName) citadel holds.", uiS(168), size: uiSf(22), color: packRGBA(210, 160, 160), weight: .medium)
         }
         statRow(c, victory ? "FLOORS CLEARED" : "DEPTH REACHED", "\(world.level)", uiS(208))

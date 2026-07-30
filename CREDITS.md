@@ -63,11 +63,13 @@ and the front-end — is generated in code (see [ARCHITECTURE.md](ARCHITECTURE.m
 
 All audio assets are **CC0** (public domain), **CC-BY** (attribution), under the **Pixabay Content License** (royalty-free, no attribution required), or **original work synthesised in-house** (the electrical-fault trio). This file
 records every asset, its source, author, and licence. CC0 requires no attribution
-but is listed here as a courtesy and for provenance.
+but is listed here as a courtesy and for provenance — **the ceremony crowd is CC-BY 4.0
+and its attribution below is REQUIRED**, the one asset in the bundle whose licence
+depends on this file.
 
 ## Audio
 
-**Full sound set in place** — assets below are **CC0 1.0 / public domain** (bar one Pixabay-licensed ambience and the original in-house-synthesised fault trio, both noted in the table)
+**Full sound set in place** — assets below are **CC0 1.0 / public domain** (bar the CC-BY 4.0 ceremony crowd, one Pixabay-licensed ambience, and the original in-house-synthesised fault trio, all noted in the table)
 (<https://creativecommons.org/publicdomain/zero/1.0/>), so no attribution is
 required; sources are credited here as a courtesy and for provenance. They're
 placeholders that prove the pipeline and set the tone — swap any for a final using
@@ -110,7 +112,32 @@ Ogrebane — *Monster Sound Effects 2* (<https://opengameart.org/content/monster
 | bed_pulse | ambient bed: slow machinery throb (grows with threat) | SRG774 Dark Sci-Fi Audio Pack | pulse |
 | bed_tension | ambient bed: eerie floating dissonance (high threat) | SRG774 Dark Sci-Fi Audio Pack | airy |
 | bed_swarm | ambient bed: peak layer (swarm near / Queen present) | SRG774 Dark Sci-Fi Audio Pack | urgent |
-| music_title | title-screen theme (seamless loop) | OpenGameArt CC0 - Dark Music | Derelict |
+| music_title | title-screen theme (seamless loop) — and the ENDGAME ceremony's score, deliberately: a theme written for an abandoned colony, played over the medal | OpenGameArt CC0 - Dark Music | Derelict |
+| crowd_bed | the ceremony's hall — a packed auditorium, low under the whole screen (seamless loop) | **Gregor Quendel — _Free Crowd Cheering Sounds_ (<https://opengameart.org/content/free-crowd-cheering-sounds>), CC-BY 4.0** | *10 - Ambience*, 18.0–29.0 s (the flattest 11 s in the pack, within 1.4 dB) |
+| crowd_cheer | the swell on the MEDAL close-up — the loudest moment of the ending | **Gregor Quendel — _Free Crowd Cheering Sounds_, CC-BY 4.0** | *01 - Strong cheering and strong rhythmic cheering*, 4.00–9.75 s (the take's loudest passage, peak −9.5 dB) |
+| crowd_chant | the swell on the RAISED HANDS — rhythmic chanting, held under the medal | **Gregor Quendel — _Free Crowd Cheering Sounds_, CC-BY 4.0** | *01 - Strong cheering and strong rhythmic cheering*, 14.75–20.50 s (the second swell, peak −13.1 dB) |
+
+### Attribution — required (CC-BY 4.0)
+
+> Crowd recordings by **Gregor Quendel**, from *Free Crowd Cheering Sounds*
+> (<https://opengameart.org/content/free-crowd-cheering-sounds>), licensed
+> **CC BY 4.0** (<https://creativecommons.org/licenses/by/4.0/>). Cut into segments
+> and loop-conditioned for Citadel; not otherwise altered.
+
+This is the only bundled asset whose licence **requires** attribution, and it must travel
+with any redistribution of the game. Everything else here is CC0, Pixabay-licensed, or
+original in-house work. Deliberately **CC-BY and not CC-BY-SA**: share-alike would reach
+the whole bundle.
+
+The three ceremony stems are cut from **two takes of one session**, and the recording's own
+shape chose the cuts rather than the clock: the bed comes from the pack's pure ambience take
+because eleven seconds of it hold within 1.4 dB and its applause is dense enough that no
+single event can betray the loop, while the two swells come from the strong-cheering take
+because that is where the peaks are. Playing a take whole was the tempting option and the
+wrong one — its loudest cheer would have landed under the citation, which is the one place a
+peak must not go, because the text has to be read. `EndingArt.crowd(at:)` keys the swells to
+the SHOT LIST rather than to typed seconds, so a cheer stays welded to its cut if the edit
+is ever retimed.
 
 The reactive bed is the full **four-layer** design (drone / pulse / tension / swarm,
 crossfaded by live threat). All four stems and the title theme are **loop-conditioned**

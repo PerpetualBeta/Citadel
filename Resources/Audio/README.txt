@@ -62,7 +62,24 @@ and seamless-loopable. They layer on top of each other:
 
 TITLE MUSIC (bus: MUSIC) — loops
 --------------------------------
-  music_title       title-screen theme (dark industrial; loops)
+  music_title       title-screen theme (dark industrial; loops). Also the ENDGAME
+                    ceremony's score — the theme the run opened on, returning over
+                    the medal.
+
+THE CEREMONY'S CROWD (bus: AMBIENT) — these LOOP
+------------------------------------------------
+The endgame's hall, over the title theme. Cut from ONE crowd session (CC-BY 4.0 —
+attribution in ../../CREDITS.md is REQUIRED, unlike everything else here).
+
+  crowd_bed         a packed auditorium, low under the whole screen. Wants FLAT,
+                    dense applause: any single recognisable shout or whistle will
+                    give the loop away over 40 seconds.
+  crowd_cheer       the swell on the MEDAL close-up — the ending's loudest moment
+  crowd_chant       the swell on the RAISED HANDS, held under the medal
+
+Each swell must be LONGER than the shot it plays over (see EndingArt.crowdSwellSeconds,
+which the smoke suite holds the shot list against) or its loop wraps mid-cheer. Their
+gains are driven from the shot list, so they stay welded to their cuts through a retime.
 
 LICENSING
 ---------

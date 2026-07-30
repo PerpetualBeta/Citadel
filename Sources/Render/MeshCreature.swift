@@ -747,6 +747,35 @@ final class MeshCreature {
         return pos
     }
 
+    /// Where a DRONE actually stands once its whole mesh has been settled clear of walls and
+    /// furniture — the position it is drawn at, and therefore the position the player aims at
+    /// (see `Monster.drawnPos`). The sim calls this through `World.meshPoseResolve` and the draw
+    /// call consumes the answer, so there is exactly ONE definition of where the body is: the
+    /// two cannot drift apart again.
+    ///
+    /// `corpse` swaps in the FATTER capsule: the death collapse sprawls the body, so a live
+    /// drone's slim snout taper under-covers it — and a corpse never moves again, so one that
+    /// settles inside a wall stays there for the rest of the level. A corpse also ignores doors,
+    /// so opening one cannot shove a settled body across the room.
+    func drawnDronePosition(pos: SIMD2<Float>, dir: Float, corpse: Bool,
+                            map: GameMap, props: [World.PropBox]) -> SIMD2<Float> {
+        let height = Self.f("MeshDroneHeight", 0.90)
+        let scale = height / localHeight
+        let rot = Self.Ry(front0 - dir) * Self.S(scale) * Self.Rx(-Float.pi / 2)   // orientation only (translation-free)
+        let aimW = SIMD2<Float>(rot.columns.0.x, rot.columns.0.z)                  // world snout axis
+        return Self.resolvePoseOutOfSolids(pos, fwd: aimW, r: footprintRadius(height: height),
+                                          back: bbMin.x * scale, front: bbMax.x * scale,
+                                          map: map, props: props,
+                                          taperMin: corpse ? 0.8 : 0.4, doorsBlock: !corpse)
+    }
+
+    /// Where the QUEEN actually stands. Her bulk is cleared LATERALLY (a circle, not the drone's
+    /// tail-to-snout capsule) — she is drawn facing into the room, so her long axis never drives
+    /// into a wall the way a hunting drone's does.
+    func drawnQueenPosition(pos: SIMD2<Float>, map: GameMap) -> SIMD2<Float> {
+        Self.resolveOutOfWalls(pos, footprintRadius(height: Self.f("MeshQueenHeight", 0.92)), map)
+    }
+
     /// Build a LOCAL-space wall plane for the vertex conform from an EXACT map.wall face.
     /// The exact WORLD plane of the wall face the creature's snout is driving into, for a CLEAN planar
     /// fragment clip (cull the flesh behind it → the head is cut flat at the wall surface, reading as the
@@ -922,7 +951,10 @@ final class MeshCreature {
         let sway = time * 1.1 * animSpeed
 
         let scale = height / localHeight
-        let rpos = Self.resolveOutOfWalls(pos, footprintRadius(height: height), map)   // clear her body laterally
+        // Clear her body laterally. Through the SAME call the sim aims at, so the two agree —
+        // and from the LOGICAL pos, because her fixed body yaw is cached against it (feeding the
+        // resolved position in would re-roll which way she faces).
+        let rpos = drawnQueenPosition(pos: pos, map: map)
         let model = Self.T(rpos.x, 0, rpos.y) * Self.Ry(front0 - body) * Self.S(scale) * Self.Rx(-Float.pi / 2)
         let V = Self.view(eye, right, up, fwd)
         let P = Self.proj(plane: RenderConfig.cameraPlane, horizon: Float(RenderConfig.horizon),
@@ -1068,16 +1100,16 @@ final class MeshCreature {
     /// would be brutal, and under `.readback` a read-back each would be worse). The
     /// shared depth buffer resolves inter-drone occlusion; each drone writes its
     /// perp-depth so the merge occludes correctly against the world + particles.
+    /// `inst.pos` is the DRAWN position — already settled clear of walls and furniture by
+    /// `drawnDronePosition` in the sim, so the body on screen is the body a shot tests against.
     func compositeDrones(into sink: Sink,
                          eye: SIMD3<Float>, camDir: Float, instances: [DroneInst],
                          lights: [GPURaymarch.GPULight] = [],
-                         wallField: MTLTexture?, mapW: Float, mapH: Float, map: GameMap? = nil,
-                         props: [World.PropBox] = []) {
+                         wallField: MTLTexture?, mapW: Float, mapH: Float) {
         guard !instances.isEmpty else { return }
         let height = Self.f("MeshDroneHeight", 0.90)
         let lightGain = Self.f("MeshDroneLight", 1.9)
         let scale = height / localHeight
-        let clr = footprintRadius(height: height)   // keep the drone's bulk out of walls (render-only)
         let fwd = SIMD3<Float>(cos(camDir), 0, sin(camDir))
         let right = SIMD3<Float>(-sin(camDir), 0, cos(camDir))
         let up = SIMD3<Float>(0, 1, 0)
@@ -1090,28 +1122,8 @@ final class MeshCreature {
         encode(sink, wallField: wallField, lights: lights) { enc in
             for inst in instances {
                 let rot = Self.Ry(front0 - inst.dir) * Self.S(scale) * Self.Rx(-Float.pi / 2)   // orientation only (translation-free)
-                let aimW = SIMD2<Float>(rot.columns.0.x, rot.columns.0.z)                        // world snout axis
-                let alive = inst.death < 0.5 && inst.dissolve < 0.5
-                var rpos = inst.pos
-                let wall = SIMD4<Float>.zero, on: Float = 0    // no wall-clip: both live drones and corpses now resolve WHOLE out of solids
-                if let m = map {
-                    if alive {
-                        // LIVE drone: settle the WHOLE mesh (capsule tail→snout) clear of walls + furniture, so it
-                        // noses up to an obstruction whole — NO clip (flesh must never just vanish at a wall).
-                        rpos = Self.resolvePoseOutOfSolids(inst.pos, fwd: aimW, r: clr,
-                                                           back: bbMin.x * scale, front: bbMax.x * scale, map: m, props: props)
-                    } else {
-                        // corpse / dissolving: settle the WHOLE fallen body clear of walls + furniture too — the same
-                        // capsule resolve as a live drone, NO clip, so a dead drone is never left buried in a wall.
-                        // A corpse gets a FATTER capsule: the death collapse sprawls it, so the live drone's slim
-                        // snout taper leaves real flesh outside the capsule — and a corpse never moves again, so a
-                        // body that settles inside a wall stays there for the rest of the level.
-                        rpos = Self.resolvePoseOutOfSolids(inst.pos, fwd: aimW, r: clr,
-                                                           back: bbMin.x * scale, front: bbMax.x * scale, map: m, props: props,
-                                                           taperMin: 0.8, doorsBlock: false)
-                    }
-                }
-                let model = Self.T(rpos.x, 0, rpos.y) * rot
+                let wall = SIMD4<Float>.zero, on: Float = 0    // no wall-clip: live drones and corpses alike resolve WHOLE out of solids
+                let model = Self.T(inst.pos.x, 0, inst.pos.y) * rot
                 let mvp = P * V * model
                 var cam = Cam(model: model, mvp: mvp,
                               eye: SIMD4(eye, mapW), fwd: SIMD4(fwd, mapH), sector: SIMD4(inst.sector, nLights),

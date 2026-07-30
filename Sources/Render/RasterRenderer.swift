@@ -339,6 +339,12 @@ final class RasterRenderer {
     func render(_ world: World, into canvas: Canvas2D) -> Bool {
         fpMark("start")
         if lastWorld !== world { prepareLevel(world); lastWorld = world }
+        installMeshPoseResolve(world)
+        // Settle every body clear of solids BEFORE anything is drawn. It happens here, at the one
+        // gate every render passes through, rather than inside the update tick — so a caller that
+        // builds a world and draws it without ticking (the shot harnesses) still gets bodies that
+        // agree with what a shot would hit.
+        world.refreshDrawnPositions()
         fpMark("prepareLevel")
         guard let vbuf, nVerts > 0, let fieldTex, let lampMaskTex, let floorIdTex else {
             fpStamps.removeAll(keepingCapacity: true); return false      // a bailed frame must not leak its marks
@@ -864,32 +870,40 @@ final class RasterRenderer {
         // the mesh Queen(s)
         if let mc = meshQueen {
             for q in vis.queens {
-                let death: Float
-                if q.state == .dead { death = 1 }
-                else if q.state == .dying { let f = min(1, (q.stateTime / World.queenDeathTime) / World.queenImpactT); death = f * f }
-                else { death = 0 }
                 mc.composite(into: frame(), eye: eye, dir: dir, pos: q.pos, faceTarget: p.pos,
                              sector: WorldLight.lightAt(world.map, q.pos.x, q.pos.y), time: world.elapsed, map: world.map,
-                             death: death, burn: q.burn, ashed: q.ashed, lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
+                             death: q.deathProgress, burn: q.burn, ashed: q.ashed, lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
             }
         }
         // the drone pack, one batched pass
         if let md = meshDrone, !vis.drones.isEmpty {
             let insts: [MeshCreature.DroneInst] = vis.drones.map { m in
-                let death: Float
-                if m.state == .dead { death = 1 }
-                else if m.state == .dying { death = min(1, m.stateTime / World.droneDeathTime) }
-                else { death = 0 }
                 let move: Float
                 switch m.state { case .chase: move = 1; case .pain: move = 0.5; case .attack: move = 0.35; default: move = 0 }
-                let dissolve: Float = m.dissolving ? min(1, m.dissolveT / 1.8) : 0
-                return MeshCreature.DroneInst(pos: m.pos, dir: m.dir, gait: m.animTime * 5.0, move: move, rear: m.rearAmt,
-                                              dissolve: dissolve, seed: m.deathSeed, death: death, burn: m.burn, ashed: m.ashed,
+                // drawn at the SETTLED position (what a shot tests against); LIT from the logical
+                // cell, which is the cell the alien is actually standing in
+                return MeshCreature.DroneInst(pos: m.drawnPos, dir: m.dir, gait: m.animTime * 5.0, move: move, rear: m.rearAmt,
+                                              dissolve: m.dissolveProgress, seed: m.deathSeed, death: m.deathProgress,
+                                              burn: m.burn, ashed: m.ashed,
                                               sector: WorldLight.lightAt(world.map, m.pos.x, m.pos.y))
             }
             md.compositeDrones(into: frame(), eye: eye, camDir: dir, instances: insts,
-                               lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH), map: world.map,
-                               props: world.propColliders)
+                               lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
+        }
+    }
+
+    /// Hand the sim the mesh pose-resolve, so `Monster.drawnPos` is authoritative for BOTH the
+    /// draw call and every aim and hit test. It has to be installed from here: the resolve needs
+    /// mesh extents and the rig's facing convention, and those only exist once a mesh has loaded.
+    /// A kind with no mesh (or a mesh that failed to load) simply keeps its logical position.
+    private func installMeshPoseResolve(_ world: World) {
+        guard world.meshPoseResolve == nil else { return }
+        let drone = meshDrone, queen = meshQueen        // capture the meshes, NOT self — no cycle through the renderer
+        world.meshPoseResolve = { kind, pos, dir, corpse, map, props in
+            switch kind {
+            case .alien: return drone?.drawnDronePosition(pos: pos, dir: dir, corpse: corpse, map: map, props: props) ?? pos
+            case .queen: return queen?.drawnQueenPosition(pos: pos, map: map) ?? pos
+            }
         }
     }
 

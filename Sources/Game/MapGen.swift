@@ -1176,7 +1176,13 @@ enum MapGen {
         // floor both cards could land stacked on one cell. If the chosen cell is
         // occupied, nudge within the SAME room (any cell there is still on the
         // near side of its lock, which is all solvability needs).
-        for (color, cell) in keyCells {
+        // SORTED by colour, not dictionary order. This loop DECIDES — it nudges a card that would
+        // land on top of something already placed, and the nudge draws from the level's rng — so the
+        // order the cards are considered in changes where they end up and shifts every random draw
+        // after it. Dictionary order is per-process in Swift, so leaving it unsorted is the same
+        // fault that made two shot frames flip between runs (see `wallsByLength`). It has not bitten
+        // a shipped seed only because the collision branch is rare, which is the worst kind of latent.
+        for (color, cell) in keyCells.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
             var p = center(cell)
             if placed.contains(where: { vlen($0 - p) < 0.9 }) {
                 let cx = cell % map.w, cy = cell / map.w
@@ -1394,6 +1400,26 @@ enum MapGen {
             }
             return false
         }
+        /// The room's walls, longest first — and TOTALLY ordered, which is the whole point.
+        ///
+        /// A room's slots get grouped into a dictionary keyed by the wall's inward normal, and the
+        /// obvious next step is `byWall.keys.sorted { count > count }`. That is not deterministic.
+        /// Swift seeds its hashing PER PROCESS, so `keys` arrives in a different order every run,
+        /// and a sort on slot count alone leaves ties unresolved — which is most rooms, because
+        /// opposite walls of a rectangle are the same length. Whichever tied wall happened to come
+        /// out first got the galley line, or the basins, or the bed run, and the floor came out one
+        /// of TWO ways from the same seed. That is what made `raster-tee` and `raster-industrial`
+        /// flip between runs: furniture moved, the pipe routing follows the furniture, and the
+        /// pipework close-up then framed a different junction entirely.
+        ///
+        /// Breaking the tie on geometry makes the order a function of the ROOM, not of the process.
+        func wallsByLength(_ byWall: [SIMD2<Float>: [Slot]]) -> [SIMD2<Float>] {
+            func ordinal(_ n: SIMD2<Float>) -> Int { n.y > 0 ? 0 : (n.y < 0 ? 1 : (n.x > 0 ? 2 : 3)) }   // top, bottom, left, right
+            return byWall.keys.sorted { a, b in
+                let ca = byWall[a]?.count ?? 0, cb = byWall[b]?.count ?? 0
+                return ca != cb ? ca > cb : ordinal(a) < ordinal(b)
+            }
+        }
         @discardableResult
         func placeProp(_ kind: FurnitureKind, _ slot: Slot, faceInward: Bool = true, gap: Float = 0.85) -> Bool {
             guard freeCell(slot.pos, gap) else { return false }
@@ -1567,7 +1593,7 @@ enum MapGen {
                 guard !slots.isEmpty else { continue }
                 var byWall: [SIMD2<Float>: [Slot]] = [:]
                 for s in slots { byWall[s.inward, default: []].append(s) }
-                let walls = byWall.keys.sorted { (byWall[$0]?.count ?? 0) > (byWall[$1]?.count ?? 0) }
+                let walls = wallsByLength(byWall)
                 // one fitting type per wall, in the order a washroom is laid out
                 let plan: [(FurnitureKind, Int)] = [(.washTrough, 3), (.shower, 3), (.cubicle, 3)]
                 for (idx, entry) in plan.enumerated() {
@@ -1595,7 +1621,7 @@ enum MapGen {
                 let slots = wallSlots(r, ri)
                 var byWall: [SIMD2<Float>: [Slot]] = [:]
                 for s in slots { byWall[s.inward, default: []].append(s) }
-                let walls = byWall.keys.sorted { (byWall[$0]?.count ?? 0) > (byWall[$1]?.count ?? 0) }
+                let walls = wallsByLength(byWall)
                 // GALLEY LINE on the longest wall, in service order: range, sink, then prep counters
                 if isGalley, let galley = walls.first, let run = byWall[galley]?.sorted(by: { ($0.x + $0.y) < ($1.x + $1.y) }) {
                     var placedRange = false, placedSink = false, counters = 0
@@ -1642,7 +1668,7 @@ enum MapGen {
                 // group the slots by which wall they sit on, so a bed run reads as a ward rather than a scatter
                 var byWall: [SIMD2<Float>: [Slot]] = [:]
                 for s in slots { byWall[s.inward, default: []].append(s) }
-                let walls = byWall.keys.sorted { (byWall[$0]?.count ?? 0) > (byWall[$1]?.count ?? 0) }
+                let walls = wallsByLength(byWall)
                 var bedsPlaced = 0
                 let bedTarget = max(2, min(4, (r.w * r.h) / 6))
                 // BEDS along the longest wall, spaced so a body can get between them

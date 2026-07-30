@@ -250,15 +250,48 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_ENDINGSHOT"] {
         print("Citadel: no ending plate (Resources/ending_bg.png) — nothing to render")
         exit(1)
     }
-    let total = EndingArt.duration
+    // The WHOLE ending, not just the ceremony: the run to black, and the coda that holds after it.
+    // Those two are the parts nobody can see any other way — the ceremony at least has still frames
+    // in the shot harness, while the fade and the last card only exist in motion.
+    let fadeOut = Renderer.codaFadeOut
+    let codaHold = FrontEnd.codaIn + 3.5          // the line arrives, then sits, as it will in game
+    let total = EndingArt.duration + fadeOut + codaHold
     let frames = Int((total * fps).rounded())
     let c = Canvas2D()
+    // The soundtrack's gain table goes out beside the frames, so a preview cut can be mixed from
+    // the SAME numbers the engine plays rather than from a hand-copy of them — the whole point of a
+    // preview being that it is trustworthy. Every column is already multiplied by its per-sound
+    // trim, its bus, and the transition duck, so the mixer needs no knowledge of any of it.
+    var csv = "t,bed,cheer,chant,music\n"
+    let ambBus = GameSettings.shared.ambientVolume, musBus = GameSettings.shared.musicVolume
     for i in 0..<frames {
-        FrontEnd.ending(c, t: Float(i) / fps)
+        let t = Float(i) / fps
+        let intoFade = t - EndingArt.duration
+        // duck and veil are the same curve the renderer's transition runs
+        let veil: Float = intoFade <= 0 ? 0 : min(1, max(0, intoFade / fadeOut))
+        let eased = veil * veil * (3 - 2 * veil)
+        if intoFade < fadeOut {
+            // the ceremony keeps running under the rising veil — the shot is still travelling when
+            // the black takes it, exactly as it is at every other cut in the sequence
+            FrontEnd.ending(c, t: t)
+            if eased > 0.002 {
+                c.fillRectBlend(0, 0, RenderConfig.width, RenderConfig.height, packRGBA(0, 0, 0), eased)
+            }
+        } else {
+            FrontEnd.coda(c, t: intoFade - fadeOut)
+        }
         Captures.writePNG(c.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: 1,
                           to: URL(fileURLWithPath: dir + String(format: "/f%05d.png", i)))
+        let duck = intoFade < fadeOut ? 1 - eased : 0     // the coda is silent: the stems are stopped
+        let g = EndingArt.crowd(at: t)
+        csv += String(format: "%.4f,%.5f,%.5f,%.5f,%.5f\n", t,
+                      g.bed * AudioEngine.Sound.crowdBed.gain * ambBus * duck,
+                      g.cheer * AudioEngine.Sound.crowdCheer.gain * ambBus * duck,
+                      g.chant * AudioEngine.Sound.crowdChant.gain * ambBus * duck, musBus * duck)
     }
-    print("Citadel: wrote \(frames) ending frames (\(String(format: "%.1f", total))s @ \(Int(fps))fps) to \(dir)")
+    try? csv.write(to: URL(fileURLWithPath: dir + "/crowd.csv"), atomically: true, encoding: .utf8)
+    print("Citadel: wrote \(frames) frames + crowd.csv — ceremony \(String(format: "%.1f", EndingArt.duration))s "
+          + "+ fade \(String(format: "%.1f", fadeOut))s + coda \(String(format: "%.1f", codaHold))s @ \(Int(fps))fps to \(dir)")
     exit(0)
 }
 

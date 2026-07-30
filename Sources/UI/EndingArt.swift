@@ -109,6 +109,64 @@ enum EndingArt {
     /// How long the whole ceremony runs.
     static var duration: Float { (starts.last ?? 0) + (shots.last?.hold ?? 0) }
 
+    // ── the crowd ───────────────────────────────────────────────────────────────────────────
+    //
+    // The hall's own sound, cut from ONE session of field-recorded crowd (Gregor Quendel, CC-BY
+    // 4.0 — see CREDITS.md, without which the licence is void). The recording's OWN shape chose
+    // the cuts: its loudest passage is a five-second cheer, its second a rhythmic chant, and a
+    // separate ambience take holds within 1.4 dB for eleven seconds, which is what a bed wants.
+    // Playing a take whole was the tempting thing and the wrong one — its biggest cheer would
+    // have landed under the citation, the one place a peak must not go, because the text has to
+    // read. So: a low bed throughout, and the two cheers spent on the two beats that earn them.
+    //
+    // The gains are only HALF the score. Under all of this the title theme plays, and it was
+    // written for an abandoned colony: the crowd celebrates, the music does not. The citation
+    // ends on "You will not be debriefed on it" and only THEN does the cheering start.
+    static let crowdQuiet: Float = 0.34      // under the citation — a hall breathing, not a hall shouting
+    static let crowdFull: Float = 0.72       // through the release, once there are no words to read
+    /// Length of the two swell stems on disk. A swell must never outlast its stem, or the loop
+    /// wraps mid-cheer and the crowd audibly restarts; the smoke suite holds the shot list to it.
+    static let crowdSwellSeconds: Float = 5.75
+
+    /// The holds of the two shots a swell is spent on — the medal and the raised hands. Exposed so
+    /// the smoke suite can hold them against the stems' actual length on disk.
+    static var swellHolds: [Float] { [beatB[0].hold, beatB[1].hold] }
+
+    /// The three crowd gains at ceremony time `t`. Keyed off `starts`, not off typed seconds, so a
+    /// cheer stays welded to the cut it belongs to even if a shot's hold is retimed. A swell's
+    /// window opening is also its cue (see `AudioEngine.ceremonyCrowd`), and each closes with a
+    /// release well inside its stem's length, so nothing wraps and nothing clicks off.
+    static func crowd(at t: Float) -> (bed: Float, cheer: Float, chant: Float) {
+        let st = starts, ss = shots
+        guard st.count >= 3 else { return (0, 0, 0) }
+        // CLAMPED past the end, not zeroed. The ceremony's last moments keep running under the fade
+        // to black, and the hall has to be carried out BY that fade — zeroing here instead would
+        // snap a packed auditorium off mid-breath one frame before the picture even starts to go.
+        // Silence outside the ceremony is the renderer's single authority, not this curve's.
+        let t = max(0, min(t, duration - 1e-3))
+        // the bed lifts across the cut out of the citation and into the release
+        let lift = ramp(t, from: st[1] - dissolve, to: st[1] + dissolve)
+        let bed = crowdQuiet + (crowdFull - crowdQuiet) * lift
+        return (bed, swell(t, cue: st[1], hold: ss[1].hold), swell(t, cue: st[2], hold: ss[2].hold))
+    }
+
+    /// A swell's envelope: nothing before its cut, a fast rise so the cheer arrives WITH the edit,
+    /// full for the shot, then a release that starts before the shot ends so the hall is already
+    /// settling as the camera moves on.
+    private static func swell(_ t: Float, cue: Float, hold: Float) -> Float {
+        guard t >= cue else { return 0 }
+        let attack: Float = 0.25, release = hold * 0.45
+        return min(ramp(t, from: cue, to: cue + attack),
+                   1 - ramp(t, from: cue + hold - release, to: cue + hold))
+    }
+
+    /// Smoothstep from 0 at `from` to 1 at `to`.
+    private static func ramp(_ t: Float, from a: Float, to b: Float) -> Float {
+        guard b > a else { return t >= b ? 1 : 0 }
+        let x = max(0, min(1, (t - a) / (b - a)))
+        return x * x * (3 - 2 * x)
+    }
+
     // ── drawing ─────────────────────────────────────────────────────────────────────────────
 
     static func draw(_ c: Canvas2D, t: Float) {

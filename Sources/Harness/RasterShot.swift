@@ -923,6 +923,24 @@ extension RasterRenderer {
             } }
             print(String(format: "RASTERSHOT: pose-resolve %d corner cases · TRUNK penetration before %.3f → after %.3f (%d buried) · worst extremity overlap %.3f",
                          cases, trunkBefore, trunkAfter, trunkFail, tipAfter))
+
+            // ...and what a frame PAYS for it. The resolve used to run in the render pass over the
+            // visible drones; it is the sim's now, so it covers every creature — and combat reads
+            // the answer, which is the whole point (you hit what you see). That makes it CPU work
+            // inside a 16.7 ms budget, so the cost is printed rather than assumed. A settled corpse
+            // resolves ONCE and is free from then on, which is what makes a late, body-strewn floor
+            // cheaper here than it was in the render pass.
+            let pw = World(level: 3, colonyIndex: 2, seed: 11)
+            _ = rr.render(pw, into: canvas)                       // installs the pose resolve
+            for i in pw.monsters.indices where i % 2 == 0 { pw.monsters[i].state = .dead }
+            pw.refreshDrawnPositions()                            // settle the fallen once, as a played floor would
+            let live = pw.monsters.filter { $0.alive }.count, fallen = pw.monsters.count - live
+            let passes = 200
+            let t0 = Date()
+            for _ in 0..<passes { pw.refreshDrawnPositions() }
+            let ms = -t0.timeIntervalSinceNow / Double(passes) * 1000
+            print(String(format: "RASTERSHOT: pose-resolve costs %.3f ms per pass (%d live + %d settled, %d prop colliders)",
+                         ms, live, fallen, pw.propColliders.count))
         }
 
         // INDUSTRIAL FLOORS check (7–8): the working plant. Frame the longest clear run in a floor-7 level and
@@ -1204,7 +1222,20 @@ extension RasterRenderer {
                 Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.height,
                                   scale: 1, to: dir.appendingPathComponent("ending-\(name).png"))
             }
-            print("RASTERSHOT: wrote 3 ending frames (ceremony runs \(String(format: "%.1f", EndingArt.duration))s)")
+            // …and the CODA, the very last thing the game shows. Guarded here for the same reason,
+            // doubly so: it has no plate behind it, so a change to the wordmark treatment or the
+            // canvas text path could empty the frame with nothing else to reveal it.
+            FrontEnd.coda(canvas, t: FrontEnd.codaIn + 1)
+            Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.height,
+                              scale: 1, to: dir.appendingPathComponent("ending-coda.png"))
+            // …and the VICTORY TALLY, where the ending lands. It carries the score a completed run
+            // is recorded on, and it had no coverage of any kind until it became the ending's
+            // destination — the one screen whose breaking would cost a player something real.
+            let tw = World(level: Progression.totalFloors, colonyIndex: 5, seed: 77)
+            FrontEnd.gameOver(canvas, world: tw, input: InputState(), qualifies: false, t: 0.1, victory: true)
+            Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.height,
+                              scale: 1, to: dir.appendingPathComponent("ending-tally.png"))
+            print("RASTERSHOT: wrote 3 ending frames + the coda + the victory tally (ceremony runs \(String(format: "%.1f", EndingArt.duration))s)")
         } else {
             print("RASTERSHOT: no ending plate — ceremony frames skipped")
         }

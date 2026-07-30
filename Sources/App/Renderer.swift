@@ -11,7 +11,7 @@ import Cocoa
 import MetalKit
 import QuartzCore
 
-enum GameState { case title, briefing, intel, riding, playing, paused, automap, teleport, gameOver, ending, highScores, terminal }
+enum GameState { case title, briefing, intel, riding, playing, paused, automap, teleport, gameOver, ending, coda, highScores, terminal }
 
 final class Renderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
@@ -176,9 +176,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         case .teleport: tickTeleport(dt)
         case .gameOver: tickGameOver(dt)
         case .ending: tickEnding(dt)
+        case .coda: tickCoda(dt)
         case .highScores: tickHighScores(dt)
         case .terminal: tickTerminal(dt)
         }
+        tickTransition(dt)
 
         // ── the teleport static bed ── ONE authority drives the loop's volume
         // every frame, wherever the story is: swelling with the pad charge,
@@ -191,11 +193,91 @@ final class Renderer: NSObject, MTKViewDelegate {
         else { staticLevel = 0 }
         audio.staticBed(staticLevel)
 
+        // ── the ceremony's crowd ── same single-authority rule as the static bed above: the gains
+        // are computed from the shot list and arrive every frame, so leaving the screen (finished
+        // or skipped) silences the hall by construction rather than by remembering to.
+        let crowd = state == .ending ? EndingArt.crowd(at: screenT) : (bed: 0, cheer: 0, chant: 0)
+        audio.ceremonyCrowd(bed: crowd.bed, cheer: crowd.cheer, chant: crowd.chant)
+
         updateEdges()
         present(view)
     }
 
     private func rising(_ now: Bool, _ prev: Bool) -> Bool { now && !prev }
+
+    // ── faded screen changes ──────────────────────────────────────────────────
+    //
+    // The outgoing screen keeps drawing under a rising black veil while every sound ducks with it;
+    // at full black the new screen takes over, and the veil falls away again. ONE mechanism, because
+    // the ending needs three of these — skipped ceremony → title, ceremony → coda, coda → title —
+    // and three hand-rolled fades would drift apart in feel.
+    private struct Transition {
+        var t: Float = 0
+        let out: Float          // seconds down to black
+        let into: Float         // seconds back up on the new screen (0 = arrive already black)
+        let next: GameState
+        var switched = false
+    }
+    private var transition: Transition?
+
+    /// Begin a faded change of screen. Ignored if one is already running, so a held key or a
+    /// coincidence of timings cannot stack two fades and double-duck the sound.
+    private func beginTransition(to next: GameState, out: Float, into: Float) {
+        guard transition == nil else { return }
+        transition = Transition(out: out, into: into, next: next)
+    }
+
+    /// Drive the veil and the duck. Runs AFTER the state's own draw, so it lays over whatever was
+    /// drawn — and the frame the switch happens on is at full black, where nothing shows anyway.
+    private func tickTransition(_ dt: Float) {
+        guard var tr = transition else { return }
+        tr.t += dt
+        if !tr.switched && tr.t >= tr.out {
+            tr.switched = true
+            tr.t = tr.out                       // the fall starts from full black, never part way down
+            enterFaded(tr.next)
+        }
+        let a: Float = tr.switched
+            ? (tr.into > 0 ? 1 - smoothstep01((tr.t - tr.out) / tr.into) : 0)
+            : smoothstep01(tr.t / tr.out)
+        if a > 0.002 { canvas.fillRectBlend(0, 0, RenderConfig.width, RenderConfig.height, packRGBA(0, 0, 0), a) }
+        audio.transitionGain = 1 - a
+        if tr.switched && tr.t >= tr.out + tr.into {
+            audio.transitionGain = 1
+            transition = nil
+        } else {
+            transition = tr
+        }
+    }
+
+    /// The state change at the bottom of a fade, with whatever each destination expects set up.
+    private func enterFaded(_ next: GameState) {
+        switch next {
+        case .coda:
+            state = next; screenT = 0
+            // The coda is silent by construction rather than by a held-down gain — stopping the
+            // stems means no path can leave the hall running under the last card.
+            audio.stopMusic()
+        case .gameOver:
+            // Through enterGameOver, NEVER by setting the state: that call is what arms name entry,
+            // and a bare state change would land on the tally and quietly fail to record the run.
+            enterGameOver()
+            // The theme back from silence, rising with the picture. The alternative is a dead
+            // screen: the coda has just stopped everything, and the tally has a job to do.
+            audio.startMusic(.title)
+        case .title:
+            state = next; screenT = 0
+            // The theme from its top, rising with the picture: the title screen always opens on
+            // its first bar, never half way through a track the ceremony had been playing.
+            audio.startMusic(.title)
+        default:
+            state = next; screenT = 0
+        }
+    }
+
+    @inline(__always) private func smoothstep01(_ x: Float) -> Float {
+        let t = max(0, min(1, x)); return t * t * (3 - 2 * t)
+    }
 
     private func updateEdges() {
         pConfirm = input.restart; pEsc = input.esc; pBrief = input.briefing
@@ -382,21 +464,47 @@ final class Renderer: NSObject, MTKViewDelegate {
         rideWorld = nil
         arrivalStatic = 0
         audio.elevatorMove(false)        // the car is still ringing; quench it before the hall
-        audio.startMusic(.title)
+        audio.startMusic(.ceremony)      // the theme returns, and the crowd layers over it
         state = .ending; screenT = 0
     }
 
-    /// The ceremony runs itself and then hands to the tally. Skippable, but not in the first second —
+    /// The ceremony runs itself and then hands to the coda. Skippable, but not in the first second —
     /// the marine has just pressed fire to leave the last floor, and a held key must not eat the one
     /// screen she spent 48 floors earning.
+    ///
+    /// Both exits fade, and both end at the TALLY, because the score is the point: 48 floors is the
+    /// highest-scoring run the game has, and neither watching the ceremony nor skipping it may cost
+    /// a player their place in the Hall. What skipping forfeits is the coda, nothing more.
     private func tickEnding(_ dt: Float) {
         guard world != nil else { state = .title; return }
         FrontEnd.ending(canvas, t: screenT, pad: gamepad.connected)
-        if screenT >= EndingArt.duration || (rising(input.restart, pConfirm) && screenT > 1.0) {
+        guard transition == nil else { return }
+        if rising(input.restart, pConfirm) && screenT > 1.0 {
+            victory = true                  // the run was finished either way — skipping the cinematic doesn't undo it
+            beginTransition(to: .gameOver, out: Renderer.skipFade, into: Renderer.fadeUp)
+        } else if screenT >= EndingArt.duration {
             victory = true
-            state = .gameOver; screenT = 0
+            // Down to black over a longer beat than a skip, and the sound goes with it: the coda
+            // has to arrive in silence for its line to land.
+            beginTransition(to: .coda, out: Renderer.codaFadeOut, into: 0)
         }
     }
+
+    /// The last card. It holds indefinitely — there is no prompt, and nothing to read but the line
+    /// — and it cannot be cut away until the words have finished arriving.
+    private func tickCoda(_ dt: Float) {
+        FrontEnd.coda(canvas, t: screenT)
+        guard transition == nil, screenT > FrontEnd.codaIn else { return }
+        if rising(input.restart, pConfirm) {
+            beginTransition(to: .gameOver, out: Renderer.codaFadeOut, into: Renderer.fadeUp)
+        }
+    }
+
+    /// Fade lengths for the ending. A skip is brisk — the player has asked to move on — while the
+    /// run to black at the end of the ceremony is slow enough to read as an ending.
+    static let skipFade: Float = 0.9
+    static let codaFadeOut: Float = 1.8
+    static let fadeUp: Float = 1.2
 
     private func tickGameOver(_ dt: Float) {
         guard let world = world else { state = .title; return }
@@ -594,6 +702,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         audio.startMusic(.title)
     }
 
+    /// THE ONLY WAY INTO THE TALLY — do not set `state = .gameOver` anywhere else. Arming name
+    /// entry is what makes a qualifying run record at all, so a bare state change would land on the
+    /// screen, show the score, take no name, and lose it. Both endings come through here (death,
+    /// and the ceremony) precisely so neither can drift away from that.
     private func enterGameOver() {
         guard let world = world else { state = .title; return }
         genEpoch += 1                    // orphan any in-flight background build

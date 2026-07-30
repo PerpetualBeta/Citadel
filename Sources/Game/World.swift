@@ -155,6 +155,8 @@ final class World {
     /// Fraction of the Queen's death timeline at which her mass hits the deck —
     /// the floor-shake / thud and the mesh crash are keyed to this.
     static let queenImpactT: Float = 0.78
+    /// A body that fell on a toxic pool sinks and is gone in this long.
+    static let dissolveTime: Float = 1.8
 
     // ── the teleporter ── the LAST floor of a citadel has no deeper floor to
     // ride to: its exit is a pad. Step on (Queen dead + burned), FIRE commits,
@@ -207,8 +209,13 @@ final class World {
     // Plasma ONLY — the flamethrower (cone) and rocket (splash) don't assist.
     private(set) var plasmaLockPos: SIMD2<Float>? = nil
     private var plasmaLockIndex = -1              // the locked monster's index (stable; monsters are append-only) — the bolt homes to and damages THIS one
-    private let plasmaAimArc: Float = 0.14        // ~8° half-angle assist cone around the reticle
-    private let plasmaAimRange: Float = 40        // cells; matches the plasma's projectile reach
+    static let plasmaAimArc: Float = 0.14         // ~8° half-angle assist cone around the reticle
+    static let plasmaAimRange: Float = 40         // cells; matches the plasma's projectile reach
+    /// How far off a body's centre a shot may pass and still count. Named because the aim tests
+    /// derive from them: two positions are only distinguishable by a hit at all once they differ
+    /// by more than the slack.
+    static let hitscanPerpSlack: Float = 0.12     // pellets: perpendicular miss distance forgiven
+    static let projectileHitSlack: Float = 0.18   // bolts/rockets: overlap margin on the body radius
     private let queenBreedInterval: Float = 60   // she births a drone about once a minute
     private let queenReviveWindow: Float = 8     // a downed Queen has this long to be burned before she rises
     private let queenDroneCap = 14               // most simultaneous live drones she'll grow the brood to
@@ -236,6 +243,27 @@ final class World {
     // rebuild and nothing on the GPU, so collision never touches the thermal budget.
     struct PropBox { let c: SIMD2<Float>; let hw, hd, boundR: Float; let tangent, inward: SIMD2<Float> }
     private(set) var propColliders: [PropBox] = []   // exposed read-only: the mesh-creature pose-resolve clears drones off furniture too
+
+    /// Settles a creature's WHOLE mesh clear of walls and furniture and hands back the position it
+    /// is DRAWN at (see `Monster.drawnPos`). The renderer installs it, because the resolve needs
+    /// mesh extents and the rig's facing convention and both of those live in MeshCreature.
+    /// Left nil — no renderer, or meshes that failed to load — every drawnPos stays equal to pos.
+    var meshPoseResolve: ((_ kind: MonsterKind, _ pos: SIMD2<Float>, _ dir: Float, _ corpse: Bool,
+                           _ map: GameMap, _ props: [PropBox]) -> SIMD2<Float>)?
+
+    /// Bring every `drawnPos` up to date. Called once per tick, after everything that moves has
+    /// moved — and again at the top of the render pass, which is the one place guaranteed to run
+    /// before anything is drawn, so a caller that builds a world and draws it without ticking still
+    /// gets bodies that agree with what a shot would hit. The second call is nearly free: a settled
+    /// corpse is skipped outright, and nothing else has moved in between.
+    func refreshDrawnPositions() {
+        guard let resolve = meshPoseResolve else { return }
+        let m = map, boxes = propColliders
+        for i in monsters.indices {
+            let kind = monsters[i].kind
+            monsters[i].refreshDrawn { p, d, corpse in resolve(kind, p, d, corpse, m, boxes) }
+        }
+    }
 
     // resource-prop tuning — one table so balancing lives in one place
     private let drumFuel = 150               // flamethrower fuel a full drum holds
@@ -500,6 +528,9 @@ final class World {
         updateMonsters(dt: dt, audio: audio)
         droneProwl(dt: dt, audio: audio)
         breedQueen(dt: dt, audio: audio)
+        // Everything that moves has moved: re-settle the bodies, so the projectiles resolved below
+        // test against the same positions the frame is about to be drawn at.
+        refreshDrawnPositions()
         updateProjectiles(dt: dt, audio: audio)
         updateMines(dt: dt, audio: audio)
         updateDrums(dt: dt, audio: audio)
@@ -1007,24 +1038,31 @@ final class World {
     /// Plasma auto-target: the nearest live, visible alien within a small arc of
     /// the aim. Recomputed each frame before firing, so the reticle lock, the bolt
     /// direction and what actually takes damage all agree. Plasma only.
+    ///
+    /// Every test here is against `drawnPos` — the body as DRAWN. The assist cone has to agree
+    /// with what the player is looking at, and the sight line has to end where the mesh actually
+    /// stands: a wall-hugging drone's `pos` sits right up against the face its mesh was pushed off,
+    /// so the ray to it grazes that wall and the lock is refused — or, for a body that slid or had
+    /// a door shut on it, `pos` is inside the wall outright. Either way a drone in plain view got
+    /// no reticle at all, which is the loudest symptom of the two positions disagreeing.
     private func acquirePlasmaTarget() {
         plasmaLockPos = nil
         plasmaLockIndex = -1
         guard player.current == .plasma, !player.dead else { return }
         let ahead = SIMD2<Float>(cos(player.dir), sin(player.dir))
-        let cosArc = cos(plasmaAimArc)
+        let cosArc = cos(World.plasmaAimArc)
         var bestD = Float.greatestFiniteMagnitude
         var best = -1
         for i in monsters.indices where monsters[i].alive {
-            let rel = monsters[i].pos - player.pos
+            let rel = monsters[i].drawnPos - player.pos
             let d = vlen(rel)
-            if d < 0.0001 || d > plasmaAimRange { continue }
+            if d < 0.0001 || d > World.plasmaAimRange { continue }
             let nd = rel / d
             if nd.x * ahead.x + nd.y * ahead.y < cosArc { continue }   // outside the assist cone
-            if !lineOfSight(player.pos, monsters[i].pos) { continue }   // never lock through a wall
+            if !lineOfSight(player.pos, monsters[i].drawnPos) { continue }   // never lock through a wall
             if d < bestD { bestD = d; best = i }
         }
-        if best >= 0 { plasmaLockPos = monsters[best].pos; plasmaLockIndex = best }
+        if best >= 0 { plasmaLockPos = monsters[best].drawnPos; plasmaLockIndex = best }
     }
 
     private func handleFire(dt: Float, input: InputState, audio: AudioEngine) {
@@ -1085,12 +1123,12 @@ final class World {
         let dir = SIMD2<Float>(cos(player.dir), sin(player.dir))
         let cosHalf = cos(def.spread)
         for i in monsters.indices {
-            let rel = monsters[i].pos - player.pos
+            let rel = monsters[i].drawnPos - player.pos          // the body as DRAWN — you burn what you see
             let d = vlen(rel)
             if d > def.range || d < 0.0001 { continue }
             let nd = rel / d
             if nd.x * dir.x + nd.y * dir.y < cosHalf { continue }   // outside the cone
-            guard lineOfSight(player.pos, monsters[i].pos) else { continue }   // fire doesn't cook through walls
+            guard lineOfSight(player.pos, monsters[i].drawnPos) else { continue }   // fire doesn't cook through walls
             if monsters[i].alive { damageMonster(i, def.damage, audio: audio, kind: .fire) }
             else if monsters[i].state == .dead && !monsters[i].gibbed && !monsters[i].dissolving { monsters[i].burn = max(monsters[i].burn, 0.06) }   // light it up (and commits a downed Queen to ash)
             else if monsters[i].state == .dying && monsters[i].kind == .queen { monsters[i].burn = max(monsters[i].burn, 0.06) }   // flames during her topple PRIME the pyre — it catches as she lands
@@ -1200,11 +1238,11 @@ final class World {
         var bestT = min(range, wallDist)
         var hitIndex = -1
         for (i, m) in monsters.enumerated() where m.alive {
-            let rel = m.pos - player.pos
+            let rel = m.drawnPos - player.pos                // the body as DRAWN — pellets strike what's on screen
             let t = rel.x * dir.x + rel.y * dir.y            // distance along ray
             if t <= 0 || t > bestT { continue }
             let perp = abs(rel.x * dir.y - rel.y * dir.x)    // perpendicular distance
-            if perp <= m.def.radius + 0.12 { bestT = t; hitIndex = i }
+            if perp <= m.def.radius + World.hitscanPerpSlack { bestT = t; hitIndex = i }
         }
         if hitIndex >= 0 {
             let hp = player.pos + dir * bestT
@@ -1254,6 +1292,18 @@ final class World {
     /// Smoke-test hook: deliver a typed hit without a projectile round-trip.
     func damageMonsterForTest(_ i: Int, _ amt: Int, audio: AudioEngine, kind: DamageKind) {
         damageMonster(i, amt, audio: audio, kind: kind)
+    }
+
+    /// Smoke-test hook: run the plasma lock on its own, without ticking the world (a tick would
+    /// walk the aliens out of the arranged position before the lock could be read).
+    func acquirePlasmaTargetForTest() { acquirePlasmaTarget() }
+
+    /// Smoke-test hook: fire one hitscan pellet down `angle` and report whether it landed.
+    func hitscanForTest(angle: Float, range: Float, audio: AudioEngine) -> Int {
+        let before = monsters.map(\.health)
+        hitscan(angle: angle, damage: 1, range: range, audio: audio)
+        for i in monsters.indices where monsters[i].health != before[i] { return i }
+        return -1
     }
 
     /// A drone torn apart: chunks arcing out, blood sheeting, offal strewn on the deck — and
@@ -1494,7 +1544,7 @@ final class World {
                 }
                 if m.dissolving {                                    // the pool eats the body
                     m.dissolveT += dt
-                    if m.dissolveT >= 1.8 { m.burn = 1 }             // gone — nothing blocks, nothing to burn
+                    if m.dissolveT >= World.dissolveTime { m.burn = 1 }   // gone — nothing blocks, nothing to burn
                     else if rng.chance(0.5) {                        // caustic boil around the sinking corpse
                         particles.append(Particle(pos: m.pos + SIMD2(rng.f(-0.3, 0.3), rng.f(-0.3, 0.3)),
                                                   vel: SIMD2(rng.f(-0.05, 0.05), rng.f(-0.05, 0.05)),
@@ -1905,15 +1955,15 @@ final class World {
                         // by everything else — so a targeted drone is hit even with the
                         // Queen (radius 1.1 vs 0.4) right beside it. Lands once reached.
                         let t = p.targetIndex
-                        if vlen(monsters[t].pos - p.pos) < monsters[t].def.radius + 0.18 { hit = t }
+                        if vlen(monsters[t].drawnPos - p.pos) < monsters[t].def.radius + World.projectileHitSlack { hit = t }
                     } else {
                         // unlocked (rocket, or plasma with no lock): the NEAREST monster
                         // centre in range — not merely the first in array order, which
                         // let the Queen's huge radius poach a bolt meant for a drone
                         var bd = Float.greatestFiniteMagnitude
                         for (mi, m) in monsters.enumerated() where m.alive {
-                            let dc = vlen(m.pos - p.pos)
-                            if dc < m.def.radius + 0.18, dc < bd { bd = dc; hit = mi }
+                            let dc = vlen(m.drawnPos - p.pos)
+                            if dc < m.def.radius + World.projectileHitSlack, dc < bd { bd = dc; hit = mi }
                         }
                     }
                     if hit >= 0 {
@@ -1996,7 +2046,7 @@ final class World {
         impactShake = max(impactShake, min(1, max(0, 1 - dpc / (radius * 2.2)) * (0.35 + 0.45 * k)))
         audio.explosion()
         for i in monsters.indices where monsters[i].alive {
-            let d = vlen(monsters[i].pos - pos)
+            let d = vlen(monsters[i].drawnPos - pos)          // the blast engulfs the body as DRAWN
             if d < radius {
                 var dmg = Int(Float(damage) * (1 - d / radius))
                 // ordnance is absolute: nothing caught inside the ring survives.
@@ -2065,7 +2115,7 @@ final class World {
             }
         }
         for j in monsters.indices where monsters[j].state == .dead {
-            if vlen(monsters[j].pos - d.pos) < radius { monsters[j].burn = max(monsters[j].burn, 0.1) }
+            if vlen(monsters[j].drawnPos - d.pos) < radius { monsters[j].burn = max(monsters[j].burn, 0.1) }
         }
     }
 

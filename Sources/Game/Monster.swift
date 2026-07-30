@@ -89,12 +89,74 @@ struct Monster {
     var wallHold: Float = 0              // seconds left on that commitment
     var snarlCD: Float = 0               // QUEEN: cooldown between snarls/hisses at a nearby player
 
+    // ── where the body is DRAWN, and therefore where it can be HIT ────────────
+    //
+    // The mesh is far larger than the 0.4-cell collision radius, so a creature standing
+    // legitimately close to a wall has its BULK lapping into it. Before drawing, the whole
+    // mesh is settled clear of walls and furniture (MeshCreature's pose resolve) — which
+    // means the body on screen sits up to a footprint-radius off `pos`.
+    //
+    // That offset was render-only while combat still tested `pos`, and the two disagreed:
+    // you aimed at the drone you could SEE and the shot went through empty air beside the
+    // one the sim held. Worse for plasma, whose lock needs line-of-sight to the target — and
+    // `pos` sits hard against the wall face the mesh was pushed off, so the ray grazes it and
+    // the lock is refused (and for a body that slid, or had a door shut on it, `pos` is inside
+    // the wall outright). No reticle at all on a drone in plain view.
+    //
+    // So the resolve is the SIM's now, published here, and every aim and hit test reads it.
+    // Movement and AI keep using `pos`: the resolve is deliberately unsatisfiable in a
+    // one-cell corridor, and must never be allowed to gate a step.
+    //
+    // It falls back to `pos` unless the settled answer belongs to exactly where the body stands
+    // now, because `pos` is assigned all over the AI and a stored answer can easily outlive the
+    // position it was settled from. A stale drawn position is worse than none — it names somewhere
+    // the body has already left — whereas the fallback is merely the old, imprecise behaviour, and
+    // the next refresh (once per tick, and at the top of every render) restores the precision.
+    var drawnPos: SIMD2<Float> { drawnFrom == pos ? drawnSettled : pos }
+    private var drawnSettled: SIMD2<Float>    // the resolve's output...
+    private var drawnFrom: SIMD2<Float>       // ...and the `pos` it was settled from — the cache key
+    private var drawnAsCorpse = false         // ...and which capsule it used, since live and fallen differ
+
     init(kind: MonsterKind, pos: SIMD2<Float>) {
         self.kind = kind
         self.pos = pos
         self.health = kind.def.maxHealth
+        self.drawnSettled = pos
+        self.drawnFrom = pos
     }
 
     var alive: Bool { state != .dying && state != .dead }
     var def: MonsterDef { kind.def }
+
+    /// 0…1 through the death collapse — the shape the renderer slumps and topples the mesh by.
+    /// Lives here so the sim's pose resolve and the draw call cannot fall out of step over it.
+    var deathProgress: Float {
+        switch state {
+        case .dead: return 1
+        case .dying:
+            guard kind == .queen else { return min(1, stateTime / World.droneDeathTime) }
+            let f = min(1, (stateTime / World.queenDeathTime) / World.queenImpactT)
+            return f * f                              // eased — she accelerates into the floor
+        default: return 0
+        }
+    }
+
+    /// 0…1 sinking into a toxic pool.
+    var dissolveProgress: Float { dissolving ? min(1, dissolveT / World.dissolveTime) : 0 }
+
+    /// The mesh has collapsed far enough that the sprawled-corpse capsule fits it better than a
+    /// live drone's slim snout taper.
+    var corpsePose: Bool { deathProgress >= 0.5 || dissolveProgress >= 0.5 }
+
+    /// Re-settle `drawnPos` if anything about the pose has moved since the last resolve.
+    /// A CORPSE resolves exactly ONCE: it never moves again, and its resolve ignores doors, so
+    /// the answer cannot change. A live creature re-resolves every time — it walks, and a door
+    /// swinging shut beside it changes what its mesh has to clear.
+    mutating func refreshDrawn(_ resolve: (_ pos: SIMD2<Float>, _ dir: Float, _ corpse: Bool) -> SIMD2<Float>) {
+        let corpse = corpsePose
+        if corpse, drawnAsCorpse, drawnFrom == pos { return }
+        drawnSettled = resolve(pos, dir, corpse)
+        drawnFrom = pos
+        drawnAsCorpse = corpse
+    }
 }
