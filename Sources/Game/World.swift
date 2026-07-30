@@ -413,16 +413,7 @@ final class World {
         buildDebris()
         buildAftermath(seed: seed)
         buildDripSites()
-        if FeatureFlags.allWeapons { grantAllWeapons() }
         message("RETAKE \(colonyName) — FLOOR \(Progression.floorInBuilding(level))")
-    }
-
-    private func grantAllWeapons() {
-        for w in WeaponKind.allCases { player.weapons[w.rawValue] = true }
-        player.ammo[AmmoType.cells.rawValue] = 400
-        player.ammo[AmmoType.rockets.rawValue] = 50
-        player.ammo[AmmoType.fuel.rawValue] = 300
-        player.mines = Player.maxMines
     }
 
     func message(_ s: String) {
@@ -590,7 +581,9 @@ final class World {
             let f = 0.5 + 0.5 * sinf(elapsed * 52), g = 0.5 + 0.5 * sinf(elapsed * 33 + 1.3)
             powerDim = env * (0.22 + 0.6 * f * g)                                   // a deep, ragged sag + fast stutter, like a failing circuit
         } else { powerDim = 0 }
-        // inBounds guard: the NoClip cheat can walk the marine off the grid — a raw
+        // inBounds guard. It guarded the NoClip cheat until that was retired, and it stays:
+        // indexing the map with an out-of-range coordinate CRASHES, so the cheap check turns any
+        // future way of getting off the grid into a no-op instead of a trap. A raw
         // idx() would then index out of the visited array and crash.
         if map.inBounds(Int(player.pos.x), Int(player.pos.y)) {
             map.visited[map.idx(Int(player.pos.x), Int(player.pos.y))] = true
@@ -637,11 +630,10 @@ final class World {
         let mag = (vx * vx + vy * vy).squareRoot()
         if mag > speed { vx = vx / mag * speed; vy = vy / mag * speed }
 
-        let noClip = FeatureFlags.noClip
         let nx = player.pos.x + vx * dt
-        if noClip || canStand(nx, player.pos.y) { player.pos.x = nx }
+        if canStand(nx, player.pos.y) { player.pos.x = nx }
         let ny = player.pos.y + vy * dt
-        if noClip || canStand(player.pos.x, ny) { player.pos.y = ny }
+        if canStand(player.pos.x, ny) { player.pos.y = ny }
 
         player.bobPhase += dt * (running ? 11 : 8)
         player.bob = min(1, player.bob + dt * 5)
@@ -1166,31 +1158,12 @@ final class World {
         // volumetric tongue straight down this aim (flameJet.t persists past the
         // 0.06 s ticks so the stream reads continuous and tails off naturally).
         flameJet = FlameJet(t: 0.10, nozzle: nozzle, dir: dir, reach: wallD)
-        let gpuFlame = FeatureFlags.gpuFire
-        // the soft additive flame ORBS — the old CPU flame body. This was the
-        // compositor's heaviest additive load (close-range O(r²) blends — the
-        // fan-spinner); retire it entirely when the GPU renders the jet. Kept
-        // behind the flag purely to A/B against the new path.
-        if !gpuFlame {
-            for _ in 0..<9 {
-                let a = player.dir + rng.f(-def.spread * 0.35, def.spread * 0.35)
-                let fdir = SIMD2<Float>(cos(a), sin(a))
-                let speed = rng.f(8.5, 12.0)
-                let life = min((wallD - 0.1) / speed, rng.f(0.30, 0.46))
-                particles.append(Particle(pos: nozzle + SIMD2(rng.f(-0.04, 0.04), rng.f(-0.04, 0.04)),
-                                          vel: fdir * speed,
-                                          life: life, maxLife: 0.46, color: 0,
-                                          size: rng.f(5, 10), height: 0.32 + rng.f(-0.03, 0.03),
-                                          rise: rng.f(-0.22, 0.06),
-                                          maxAlpha: 0.55, fire: true))
-            }
-        }
         particles.append(Particle(pos: nozzle, vel: dir * rng.f(2, 4) + SIMD2(rng.f(-0.5, 0.5), rng.f(-0.5, 0.5)),
                                   life: rng.f(0.05, 0.12), maxLife: 0.12, color: packRGBA(255, 240, 190),
                                   size: 1.5, height: 0.32, rise: 0, maxAlpha: 1, fire: true))   // nozzle ignition glint (spark)
         // burning embers flung down the stream — sharp sparks (color ≠ 0), cheap,
         // texturing the GPU flame body with flying detail it can't produce
-        if gpuFlame {
+        do {
             for _ in 0..<2 {
                 let a = player.dir + rng.f(-def.spread * 0.55, def.spread * 0.55)
                 let fdir = SIMD2<Float>(cos(a), sin(a))
@@ -1204,24 +1177,14 @@ final class World {
         }
         if wallD < def.range {   // fuel splashing and climbing the wall it hits
             let hit = nozzle + dir * (wallD - 0.2)
-            // GPU path: a couple of bright embers bouncing off the wall (sparks);
-            // legacy path: the old soft splash orbs.
-            if gpuFlame {
-                for _ in 0..<2 {
-                    particles.append(Particle(pos: hit + SIMD2(rng.f(-0.1, 0.1), rng.f(-0.1, 0.1)),
-                                              vel: SIMD2(rng.f(-1.1, 1.1), rng.f(-1.1, 1.1)) - dir * rng.f(0.3, 0.9),
-                                              life: rng.f(0.2, 0.42), maxLife: 0.42, color: packRGBA(255, 170, 80),
-                                              size: 1.3, height: rng.f(0.15, 0.5), rise: rng.f(0.6, 1.3),
-                                              maxAlpha: 1, fire: true))
-                }
-            } else {
-                for _ in 0..<3 {
-                    particles.append(Particle(pos: hit + SIMD2(rng.f(-0.15, 0.15), rng.f(-0.15, 0.15)),
-                                              vel: SIMD2(rng.f(-0.9, 0.9), rng.f(-0.9, 0.9)) - dir * rng.f(0.4, 1.2),
-                                              life: rng.f(0.25, 0.5), maxLife: 0.5, color: 0,
-                                              size: rng.f(8, 13), height: rng.f(0.1, 0.5), rise: rng.f(0.5, 1.1),
-                                              maxAlpha: 0.5, fire: true))
-                }
+            // a couple of bright embers bouncing off the wall (sparks) — the GPU body
+            // draws the splash itself, so the CPU only adds the flying detail it can't
+            for _ in 0..<2 {
+                particles.append(Particle(pos: hit + SIMD2(rng.f(-0.1, 0.1), rng.f(-0.1, 0.1)),
+                                          vel: SIMD2(rng.f(-1.1, 1.1), rng.f(-1.1, 1.1)) - dir * rng.f(0.3, 0.9),
+                                          life: rng.f(0.2, 0.42), maxLife: 0.42, color: packRGBA(255, 170, 80),
+                                          size: 1.3, height: rng.f(0.15, 0.5), rise: rng.f(0.6, 1.3),
+                                          maxAlpha: 1, fire: true))
             }
         }
         if particles.count > 700 { particles.removeFirst(particles.count - 700) }
@@ -1583,33 +1546,11 @@ final class World {
                     // so the burn-away is never visible through a thin flame
                     let flare = powf(sinf(m.burn * .pi), 0.6)
                     let rad = m.def.radius
-                    // the soft flame ORBS — the CPU pyre body. Retired when the GPU
-                    // renders the pyre as a rising volumetric column (see
-                    // gatherFireEmitters); the smoke + embers below stay on the CPU
-                    // (they composite over/in-front-of the mesh corpse, which the
-                    // kernel-drawn column cannot). Kept behind the flag to A/B.
-                    if !FeatureFlags.gpuFire {
-                        var nFire = Int(flare * 5); if rng.chance(0.4 + flare) { nFire += 1 }
-                        for _ in 0..<nFire {
-                            let jit = SIMD2<Float>(rng.f(-rad, rad), rng.f(-rad, rad)) * 0.9
-                            particles.append(Particle(pos: m.pos + jit, vel: SIMD2(rng.f(-0.15, 0.15), rng.f(-0.15, 0.15)),
-                                                      life: rng.f(0.3, 0.7), maxLife: 0.7, color: 0,
-                                                      size: rng.f(10, 15 + 14 * flare), height: rng.f(0.02, 0.3 + 0.5 * flare),
-                                                      rise: rng.f(0.5, 1.2), maxAlpha: 0.85, fire: true))
-                        }
-                        if m.burn > 0.3 && m.burn < 0.95 {
-                            for _ in 0..<2 {
-                                let jit = SIMD2<Float>(rng.f(-rad, rad), rng.f(-rad, rad)) * 0.4
-                                particles.append(Particle(pos: m.pos + jit, vel: SIMD2(rng.f(-0.1, 0.1), rng.f(-0.1, 0.1)),
-                                                          life: rng.f(0.35, 0.7), maxLife: 0.7, color: 0,
-                                                          size: rng.f(14, 26), height: rng.f(0.05, 0.55),
-                                                          rise: rng.f(0.4, 1.0), maxAlpha: 0.9, fire: true))
-                            }
-                        }
-                    }
-                    // a couple of extra embers when the GPU body carries the flame,
-                    // so the near-body region reads live in front of the mesh corpse
-                    if FeatureFlags.gpuFire && rng.chance(0.35 * (0.4 + flare)) {
+                    // The pyre BODY is a rising volumetric column on the GPU (see
+                    // gatherFireEmitters). Smoke and embers stay on the CPU because they
+                    // composite in FRONT of the mesh corpse, which the GPU column cannot.
+                    // A couple of extra embers near the body, so that region reads live.
+                    if rng.chance(0.35 * (0.4 + flare)) {
                         particles.append(Particle(pos: m.pos + SIMD2(rng.f(-rad, rad), rng.f(-rad, rad)) * 0.6,
                                                   vel: SIMD2(rng.f(-0.4, 0.4), rng.f(-0.4, 0.4)),
                                                   life: rng.f(0.25, 0.6), maxLife: 0.6, color: packRGBA(255, 190, 90),
@@ -2024,19 +1965,8 @@ final class World {
         // outlives it, and a flash of light thrown across the room (gatherDynLights)
         blasts.append((pos, 0.3, SIMD3(1.0, 0.62, 0.28) * k))
         // the GPU puff-fire renders the fireball (expands fast → sooty smoke); a fuel
-        // drum burns sootier. Legacy soft-orb fireball kept only for the GPUFire A/B.
-        if FeatureFlags.gpuFire {
-            fireballs.append(Fireball(pos: pos, life: sooty ? 0.75 : 0.55, size: radius * 0.55, soot: sooty ? 1.0 : 0.55))
-        } else {
-            for _ in 0..<Int(14 * k) {
-                let a = rng.f(0, 6.2832), sp = rng.f(0.8, 3.0) * k
-                particles.append(Particle(pos: pos + SIMD2(rng.f(-0.25, 0.25), rng.f(-0.25, 0.25)),
-                                          vel: SIMD2(cos(a) * sp, sin(a) * sp),
-                                          life: rng.f(0.25, 0.55), maxLife: 0.55, color: 0,
-                                          size: rng.f(12, 26) * (0.7 + 0.3 * k), height: rng.f(0.1, 0.6), rise: rng.f(0.4, 1.1),
-                                          maxAlpha: 0.9, fire: true))
-            }
-        }
+        // drum burns sootier
+        fireballs.append(Fireball(pos: pos, life: sooty ? 0.75 : 0.55, size: radius * 0.55, soot: sooty ? 1.0 : 0.55))
         for _ in 0..<Int(8 * k) {
             particles.append(Particle(pos: pos + SIMD2(rng.f(-0.3, 0.3), rng.f(-0.3, 0.3)),
                                       vel: SIMD2(rng.f(-0.2, 0.2), rng.f(-0.2, 0.2)),
@@ -2110,15 +2040,6 @@ final class World {
         let dmg = Int(Float(drumBlastDamage) * (0.6 + 0.4 * frac))
         explode(at: d.pos, radius: radius, damage: dmg, fromPlayer: true, sooty: true, audio: audio)
         addDecal(d.pos, radius: radius * 0.8, w: 0.95)
-        if !FeatureFlags.gpuFire {                                 // legacy soft-orb gout (GPU path uses the puff fireball)
-            for _ in 0..<22 {
-                let a = rng.f(0, 6.2832), s = rng.f(1.5, 5.5)
-                particles.append(Particle(pos: d.pos, vel: SIMD2(cos(a) * s, sin(a) * s),
-                                          life: rng.f(0.4, 0.95), maxLife: 0.95, color: 0,
-                                          size: rng.f(11, 22), height: rng.f(0.1, 0.65), rise: rng.f(0.5, 1.3),
-                                          maxAlpha: 0.9, fire: true))
-            }
-        }
         for j in monsters.indices where monsters[j].state == .dead {
             if vlen(monsters[j].drawnPos - d.pos) < radius { monsters[j].burn = max(monsters[j].burn, 0.1) }
         }
@@ -2634,7 +2555,8 @@ final class World {
     static let roomDwellAmount = 10             // health gained (sick bay) or lost (nukage room)
 
     private func roomEffectTick(dt: Float, audio: AudioEngine) {
-        // inBounds guard: NoClip can put the marine outside the grid (see update()).
+        // inBounds guard: cheap insurance — indexing the map out of range crashes, so an
+        // off-grid coordinate must read as "no effect here", never as a trap.
         guard map.inBounds(Int(player.pos.x), Int(player.pos.y)) else { roomDwell = 0; return }
         let i = map.idx(Int(player.pos.x), Int(player.pos.y))
         let healing = map.medBay.contains(i), harming = map.toxicRoom.contains(i)
@@ -2657,7 +2579,8 @@ final class World {
 
     private func hazardTick(dt: Float, audio: AudioEngine) {
         hazardTimer -= dt
-        // inBounds guard: NoClip can put the marine outside the grid (see update()).
+        // inBounds guard: cheap insurance — indexing the map out of range crashes, so an
+        // off-grid coordinate must read as "no effect here", never as a trap.
         let onHazard = map.inBounds(Int(player.pos.x), Int(player.pos.y))
             && map.hazard[map.idx(Int(player.pos.x), Int(player.pos.y))]
         if onHazard && hazardTimer <= 0 {

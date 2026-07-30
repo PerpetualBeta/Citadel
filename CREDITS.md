@@ -72,7 +72,7 @@ depends on this file.
 
 ## Audio
 
-**Full sound set in place** — assets below are **CC0 1.0 / public domain** (bar the CC-BY 4.0 ceremony crowd, one Pixabay-licensed ambience, and the original in-house-synthesised fault trio, all noted in the table)
+**Full sound set in place** — assets below are **CC0 1.0 / public domain** (bar the CC-BY 4.0 crowd recordings, one Pixabay-licensed ambience, and the two original in-house-synthesised sets — the electrical-fault trio and THE SIGNAL — all noted in the table)
 (<https://creativecommons.org/publicdomain/zero/1.0/>), so no attribution is
 required; sources are credited here as a courtesy and for provenance. They're
 placeholders that prove the pipeline and set the tone — swap any for a final using
@@ -109,6 +109,7 @@ Ogrebane — *Monster Sound Effects 2* (<https://opengameart.org/content/monster
 | drip, drip1–drip5 (random, pitch-varied per plink in-engine) | ceiling water plinking into the deep floors' pools (panned per site) | freesound.org, all CC0: beskhu #273870, qubodup #792927, florianreichelt #683102, Ev-Dawg #337525, arseniiv #257349 (two plinks sliced) | trimmed + peak-normalised |
 | fault | distant electric-shock — the occasional far-off crack of a shorting circuit (damaged-building ambience; pitch/level tweaked + reverb-drenched in-engine so it reads as far off) | freesound_community — *Electric shock*, via Pixabay (<https://pixabay.com/users/freesound_community-46691455/>, Pixabay Content License) | Electric shock #33018 |
 | fault_hum, fault_buzz, fault_crackle | localised electrical fault — persistent mains hum (fades up within ~2–3 m, line-of-sight gated), a warning buzz, then the crackle as sparks emit | **Original** — synthesised from scratch (Python additive + noise synthesis), no third-party source | n/a — original work, effectively public domain |
+| signal_deep, signal_far | THE SIGNAL — the intercepted first-contact transmission: played from the reel-to-reel deck (`signal_deep`), and its sourceless bleed heard in the depths (`signal_far`). A sub-bass breathing drone, an inharmonic detuning pad, metallic FM message bursts that degrade, drifting whine and swelling static | **Original** — synthesised from scratch (`docs/signal-synth.py`), no third-party source | n/a — original work, effectively public domain |
 | elevator_move | freight elevator descent — low winch hum (loops, stops with the car) | Kenney Sci-Fi Sounds | spaceEngineLow_000 |
 | elevator_door, elevator_shut | elevator leaves part / seal | Kenney Sci-Fi Sounds | doorOpen_002 / doorClose_002 |
 | bed_drone | ambient bed: room tone (always on) | SRG774 Dark Sci-Fi Audio Pack | sector |
@@ -151,8 +152,9 @@ the raw tracks expect an engine-side crossfade, which Citadel deliberately doesn
 Shipped as AAC (.m4a): unlike bare MP3, CoreAudio decodes it gapless to the exact frame
 count. Method + script: `docs/audio-sourcing.md` / `docs/condition-loop.py`.
 
-_Every sound above is a real sample (CC0 unless the table notes otherwise), bar the
-in-house-synthesised electrical-fault trio; the synth in AudioEngine.swift is only a safety
+_Every sound above is a real sample (CC0 unless the table notes otherwise), bar the two
+sets synthesised in-house from scratch — the electrical-fault trio and THE SIGNAL, both
+with their generator scripts in `docs/`; the synth in AudioEngine.swift is only a safety
 fallback for a missing file. Drones HISS; the Queen SNARLS — a CC0 creature roar pitched
 DOWN and randomly varied (pitch + tempo) in-engine, so she reads enormous and never repeats,
 and only when she has line of sight to you — and she dies with a squeal. The drone dies with

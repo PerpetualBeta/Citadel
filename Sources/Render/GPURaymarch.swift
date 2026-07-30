@@ -179,7 +179,6 @@ enum GPURaymarch {
     /// p0 = base.xyz + envelope radius · p1 = flow dir.xyz(unit) + length · p2 = vigor, seed, kind
     /// (1 = jet, 0 = pyre/ball), soot. Budget-capped to the jet + the 16 nearest columns.
     static func gatherFireEmitters(_ world: World) -> [FireEmitter] {
-        guard FeatureFlags.gpuFire else { return [] }
         var out: [FireEmitter] = []
         // ── the flamethrower jet ── flow horizontal down the aim; kind = 1
         let j = world.flameJet

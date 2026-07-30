@@ -23,8 +23,6 @@ enum FeatureFlags {
     // Cheats — undocumented by design; the curious can find them in the source
     // (or via `strings` on the binary). Read live.
     static var godMode: Bool    { d.bool(forKey: "Godmode") }     // no damage
-    static var allWeapons: Bool { d.bool(forKey: "AllWeapons") }  // full arsenal + ammo at spawn
-    static var noClip: Bool     { d.bool(forKey: "NoClip") }      // walk through walls
     static var revealMap: Bool  { d.bool(forKey: "RevealMap") }   // automap fully revealed
     static var fastMonsters: Bool { d.bool(forKey: "FastMonsters") } // -nightmare- speed
 
@@ -43,12 +41,6 @@ enum FeatureFlags {
     ///   defaults write cc.jorviksoftware.Citadel CleanDroneDeaths -bool false
     static var cleanDroneDeaths: Bool { d.object(forKey: "CleanDroneDeaths") == nil ? true : d.bool(forKey: "CleanDroneDeaths") }
 
-    /// Volumetric GPU fire — the flamethrower jet and corpse pyres rendered as
-    /// procedural, domain-warped flame tongues in the raymarch kernel (plus their
-    /// flickering firelight), instead of the old CPU additive-orb billboards.
-    /// Default ON; set false to A/B against the legacy CPU flame:
-    ///   defaults write cc.jorviksoftware.Citadel GPUFire -bool false
-    static var gpuFire: Bool { d.object(forKey: "GPUFire") == nil ? true : d.bool(forKey: "GPUFire") }
 
     /// THE SEVEN — the last people in the cluster, sealed into fuel stores (one pool of seven for
     /// the whole run, 0–2 per building, no repeat; see Progression.survivors). Not a scatter: seven

@@ -156,15 +156,12 @@ change lands on the next frame — no relaunch):
 
 ```sh
 defaults write cc.jorviksoftware.Citadel Godmode       -bool  true   # no damage
-defaults write cc.jorviksoftware.Citadel AllWeapons    -bool  true   # full arsenal + ammo at spawn
-defaults write cc.jorviksoftware.Citadel NoClip        -bool  true   # walk through walls
 defaults write cc.jorviksoftware.Citadel FastMonsters  -bool  true   # nightmare speed
 defaults write cc.jorviksoftware.Citadel RevealMap     -bool  true   # automap fully revealed
 defaults write cc.jorviksoftware.Citadel ScreenshotKey -bool  true   # F saves a 1920×1080 PNG to the Desktop
 defaults write cc.jorviksoftware.Citadel FixedSeed     -int   1234   # pin the level seed for testing
 defaults write cc.jorviksoftware.Citadel StartLevel    -int   9      # warp new runs to a floor (1-indexed; testing)
 defaults write cc.jorviksoftware.Citadel OverheadLight -float 1.0    # ceiling-lamp brightness (default 0.5 — the tuned, moody look)
-defaults write cc.jorviksoftware.Citadel GPUFire       -bool  false  # A/B the GPU flame vs the legacy CPU billboards (default on)
 defaults write cc.jorviksoftware.Citadel Headlamp      -bool  false  # strip the helmet lamp (default on — you will not see much)
 defaults write cc.jorviksoftware.Citadel Aftermath     -bool  false  # strip the battle-damage dressing (default on)
 defaults write cc.jorviksoftware.Citadel ScatteredPapers -bool false # strip the spilled-records decals (default on)
