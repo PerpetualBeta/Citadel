@@ -1232,6 +1232,79 @@ enum SmokeTest {
                   "the line is sized to the frame and never touches an edge (x \(left)…\(right) of \(RenderConfig.width))")
         }
 
+        // ── A LIVE DRONE IS ALWAYS DRAWN ── found in play: drones went INVISIBLE while the plasma lock
+        // still found them, killed them and left the gore. The drawn set is capped at the nearest
+        // `creatureBudget`, and the cap was being spent on monsters that are never drawn: gibbed
+        // corpses were gathered, sorted, counted, and only then filtered out. With CleanDroneDeaths on
+        // (the default, where every kill gibs) each body held a slot for the rest of the level, so
+        // clearing a room made that room unable to draw a live drone at all.
+        do {
+            let w = World(level: 1, colonyIndex: 0, seed: 33)
+            let here = w.player.pos
+            // bury the player in gore: three times the budget in gibbed corpses, all closer than the
+            // live drone, which is what a fought-over room actually looks like
+            var mobs: [Monster] = []
+            for k in 0..<(RasterRenderer.creatureBudget * 3) {
+                var d = Monster(kind: .alien, pos: here + SIMD2(0.4 + Float(k) * 0.05, 0))
+                d.state = .dead; d.gibbed = true
+                mobs.append(d)
+            }
+            var live = Monster(kind: .alien, pos: here + SIMD2(4, 0))
+            live.state = .chase; live.awake = true
+            mobs.append(live)
+            w.monsters = mobs
+            let vis = RasterRenderer.creatureCull(w, dir: 0)
+            check(vis.drones.contains { $0.alive },
+                  "a live drone is drawn through \(RasterRenderer.creatureBudget * 3) gibbed corpses (\(vis.drones.count) drawn)")
+            check(!vis.drones.contains { $0.gibbed }, "and no gibbed corpse is in the drawn set at all")
+
+            // …and the living outrank intact corpses, which ARE drawn and do accumulate
+            let w2 = World(level: 1, colonyIndex: 0, seed: 33)
+            var mobs2: [Monster] = []
+            for k in 0..<(RasterRenderer.creatureBudget * 2) {
+                var d = Monster(kind: .alien, pos: w2.player.pos + SIMD2(0.4 + Float(k) * 0.05, 0))
+                d.state = .dead                                  // intact body: drawn, and nearer than the live one
+                mobs2.append(d)
+            }
+            var live2 = Monster(kind: .alien, pos: w2.player.pos + SIMD2(6, 0))
+            live2.state = .chase; live2.awake = true
+            mobs2.append(live2)
+            w2.monsters = mobs2
+            check(RasterRenderer.creatureCull(w2, dir: 0).drones.contains { $0.alive },
+                  "…and a distant LIVE drone outranks a pile of nearer corpses")
+        }
+
+        // ── THE CHARGE LEDs MEAN SOMETHING ── three lamps on the plasma rail, labelled "charge
+        // status" in the source and hardcoded all-on at a fixed brightness, so they reported the same
+        // full charge at 400 cells and at 4. An instrument that lies is worse than no instrument.
+        // Counted here rather than eyeballed: they are 7 mm glows in the corner of the frame.
+        do {
+            func litSegments(_ cells: Int) -> Int {
+                var p = Player(at: .zero, dir: 0)
+                p.ammo[AmmoType.cells.rawValue] = cells
+                p.current = .plasma
+                // emissive glow shapes carry b.w == -5; a spent segment is a plain dark sphere
+                return Viewmodel.pack(player: p, time: 0).shapes.filter {
+                    $0.b.w == -5 && $0.a.w < 0.008 && $0.col.y > 0.9      // the small cyan rail LEDs
+                }.count
+            }
+            let issue = Player.issueCells
+            check(litSegments(0) == 0, "empty: no segment lit (\(litSegments(0)))")
+            check(litSegments(issue) == 3, "a full ISSUE LOAD of \(issue) lights all three (\(litSegments(issue)))")
+            check(litSegments(AmmoType.cells.capacity) == 3, "and a scavenged full cap still reads three")
+            check(litSegments(issue * 2 / 3) == 2, "two thirds lights two (\(litSegments(issue * 2 / 3)))")
+            check(litSegments(issue / 4) == 1, "a quarter lights one (\(litSegments(issue / 4)))")
+            check(litSegments(1) == 1, "one cell still lights one — never dark while she can fire")
+            // …and the gauge is monotone, which is the property that makes it readable at a glance
+            var last = 0, monotone = true
+            for c in stride(from: 0, through: issue, by: 4) {
+                let n = litSegments(c)
+                if n < last { monotone = false }
+                last = n
+            }
+            check(monotone, "the gauge only ever rises with the reserve")
+        }
+
         // ── NOTHING PARKED IN FRONT OF A LAMP ── the renderer hangs the plant floors' bulkhead
         // fixtures and MapGen furnishes the same walls; each used to choose independently, so a locker
         // could stand in front of the one light in the room. Both now read one shared walk.

@@ -795,19 +795,34 @@ final class RasterRenderer {
     /// The creatures that will be drawn this frame. Pure selection, no GPU work — the frame needs
     /// the answer before it opens a command buffer, because an empty set means the tonemap can go
     /// straight to colTex and skip both snapshot copies.
-    private struct VisibleCreatures {
+    /// The creature set a frame will draw. Internal (not private) so the smoke suite can assert the
+    /// cull without standing up a GPU.
+    struct VisibleCreatures {
         var queens: [Monster] = []
         var drones: [Monster] = []
         var colonists: [Colonist] = []
         var isEmpty: Bool { queens.isEmpty && drones.isEmpty && colonists.isEmpty }
     }
 
-    private func visibleCreatures(_ world: World, dir: Float) -> VisibleCreatures {
+    /// The drawn creature set: nearest `creatureBudget`, Queen floated to front, behind-camera dropped.
+    /// A pure function of the world so the smoke suite can test it without a GPU.
+    ///
+    /// TWO RULES here were paid for by a play-test where drones went INVISIBLE while the plasma lock
+    /// still found them, killed them, and left the gore:
+    ///
+    ///  1. A monster that will not be DRAWN must not consume a budget slot. Gibbed drones were
+    ///     gathered, sorted, counted against the cap, and only then filtered out — so with
+    ///     `CleanDroneDeaths` on (the default, where every kill gibs) each corpse permanently held a
+    ///     slot while drawing nothing. Clear a room and no live drone in it could be drawn again.
+    ///  2. The LIVING outrank the dead. Corpses are drawn too and they accumulate, so on distance
+    ///     alone a body behind you could still displace a drone about to bite you. Nothing that can
+    ///     kill the marine may lose its slot to something that cannot.
+    static func creatureCull(_ world: World, dir: Float, budget: Int = creatureBudget) -> VisibleCreatures {
         let p = world.player
         let fwd = SIMD2<Float>(cosf(dir), sinf(dir))
-        // visible + capped creature set (nearest 10, Queen floated to front, behind-camera dropped)
         var cand: [(Monster, Float)] = []
         for m in world.monsters {
+            if m.kind == .alien && m.gibbed { continue }     // never drawn — must never cost a slot
             let rel = m.pos - p.pos, d = simd_length(rel)
             if d > 32 { continue }
             if d > 2 && simd_dot(rel, fwd) < -0.5 { continue }
@@ -816,18 +831,27 @@ final class RasterRenderer {
         cand.sort { a, b in
             let qa = (a.0.kind == .queen), qb = (b.0.kind == .queen)
             if qa != qb { return qa }
+            if a.0.alive != b.0.alive { return a.0.alive }    // the living first — see rule 2
             return a.1 < b.1
         }
-        let near = cand.prefix(10).map { $0.0 }
+        let near = cand.prefix(budget).map { $0.0 }
         var v = VisibleCreatures()
         v.queens = near.filter { $0.kind == .queen }
-        v.drones = near.filter { $0.kind == .alien && !$0.gibbed }
+        v.drones = near.filter { $0.kind == .alien }
         v.colonists = FeatureFlags.fallenColonists ? world.colonists.filter { c in
             guard c.variant >= 0 else { return false }
             let rel = c.pos - p.pos, ahead = rel.x * fwd.x + rel.y * fwd.y
             return ahead > -1.5 && (rel.x * rel.x + rel.y * rel.y) < 24 * 24
         } : []
         return v
+    }
+
+    /// How many creatures a frame will draw. The cap is a FRAME-BUDGET number, not a gameplay one:
+    /// raise it only with a measurement in hand (see the raster frame-cost note).
+    static let creatureBudget = 10
+
+    private func visibleCreatures(_ world: World, dir: Float) -> VisibleCreatures {
+        RasterRenderer.creatureCull(world, dir: dir)
     }
 
     /// Encode the mesh creatures (fallen colonists, then the queen, then the drone pack) into the

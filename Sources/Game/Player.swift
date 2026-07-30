@@ -28,6 +28,13 @@ struct Player {
 
     var mines = 0                // proximity explosives carried (deploy with the mine key)
     static let maxMines = 8
+    /// THE ISSUE LOAD — what she is handed for the retake, as distinct from the carry CAP she may
+    /// scavenge up to. Named because the gun's own charge gauge measures against it: a gauge scaled to
+    /// the 400-cell cap would read one segment of three from the very first frame of a new game, which
+    /// tells the player she is nearly dry when she is fully equipped. The issue load is the honest
+    /// frame of reference — "a full load" is what you started with, not what you could theoretically hoard.
+    static let issueCells = 120
+    static let issueFuel = 120
 
     // view / feedback state
     var bobPhase: Float = 0
@@ -49,8 +56,8 @@ struct Player {
         weapons[WeaponKind.plasma.rawValue] = true         // issued for the retake
         weapons[WeaponKind.flamethrower.rawValue] = true   // standard issue, never leaves the kit
         ammo = Array(repeating: 0, count: AmmoType.allCases.count)
-        ammo[AmmoType.cells.rawValue] = 120
-        ammo[AmmoType.fuel.rawValue] = 120
+        ammo[AmmoType.cells.rawValue] = Player.issueCells
+        ammo[AmmoType.fuel.rawValue] = Player.issueFuel
     }
 
     func has(_ w: WeaponKind) -> Bool { weapons[w.rawValue] }

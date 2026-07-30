@@ -62,10 +62,20 @@ enum Viewmodel {
     // coils around the barrel shroud, and the cyan energy cell glowing on the
     // left flank (the side the marine sees). fire = recoil-normalised 0…1,
     // flash = muzzle-flash 0…1.
-    static func plasma(fire: Float, flash: Float) -> [GShape] {
+    /// `charge` 0…1 = cells in reserve against the ISSUE LOAD (`Player.issueCells`), not the carry cap —
+    /// see that constant for why. `time` drives the low-charge pulse.
+    static func plasma(fire: Float, flash: Float, charge: Float = 1, time: Float = 0) -> [GShape] {
         var s: [GShape] = []
         s.append(box(SIMD3(0, 0, -0.04), SIMD3(0.052, 0.048, 0.15), 0.014, gunBlack))          // receiver
-        s.append(box(SIMD3(0, 0.058, -0.02), SIMD3(0.020, 0.010, 0.17), 0.006, darkSteel))     // top spine rail
+        // The spine rail is in the BODY's parkerised black, not darkSteel. It is the topmost face of
+        // the gun and it runs the whole length of it, so at 0.24 albedo against a 0.09 body it read as
+        // a long pale strip exactly where a reflection would sit — and that is what it was taken for,
+        // twice. Chasing it through the lighting was wrong three times over: the baked-field specular,
+        // the field ambient and the two eye-anchored terms together account for about a quarter of that
+        // strip's brightness, and this one number for the rest. An integral rail in the same finish as
+        // the receiver is also what a real parkerised rifle looks like; it reads by its edge, not by
+        // being a lighter colour.
+        s.append(box(SIMD3(0, 0.058, -0.02), SIMD3(0.020, 0.010, 0.17), 0.006, gunBlack))      // top spine rail
         s.append(zcyl(SIMD3(0, 0.006, 0.17), r: 0.042, half: 0.10, edge: 0.008, gunBlack))     // barrel shroud
         for z in [Float(0.10), 0.15, 0.20] {                                                   // induction coils
             s.append(zcyl(SIMD3(0, 0.006, z), r: 0.050, half: 0.008, edge: 0.004, copper))
@@ -74,8 +84,27 @@ enum Viewmodel {
         s.append(zcyl(SIMD3(0, 0.006, 0.30), r: 0.020, half: 0.045, edge: 0.004, nearBlack))   // inner barrel
         s.append(ycyl(SIMD3(-0.055, 0.01, -0.02), r: 0.020, half: 0.035, edge: 0.004, darkSteel))   // cell housing
         s.append(glow(SIMD3(-0.070, 0.012, -0.02), r: 0.016, plasmaCyan, em: 2.4))             // the energy cell window
-        for z in [Float(-0.10), -0.04, 0.02] {                                                 // charge status LEDs, half-buried in the rail
-            s.append(glow(SIMD3(0.012, 0.066, z), r: 0.007, plasmaCyan, em: 1.8))
+        // ── CHARGE STATUS LEDs ── three of them, and they now MEAN it: a segment per third of the
+        // cell reserve, filling from the rear of the rail forward. They were hardcoded all-on at a
+        // fixed brightness, so a gauge labelled "charge status" reported the same full charge whether
+        // you were carrying 400 cells or 4 — an instrument that lies is worse than no instrument.
+        //
+        // Diegetic on purpose: the visor already prints CELLS as a number, and this is the gun saying
+        // the same thing in the corner of your eye, so a glance down the sights is enough. A spent
+        // segment goes DARK rather than dim-cyan — a dark LED reads as off at a glance, where a dim
+        // one just reads as a dirty lens. The last live segment PULSES once you are into the final
+        // third, which is the one moment the number is worth looking up for.
+        let lit = charge <= 0 ? 0 : max(1, Int((charge * 3).rounded(.up)))       // any charge at all lights one
+        let pulse = 0.5 + 0.5 * sinf(time * 6.0)                                // ~1 Hz, the cadence of a warning lamp
+        for (k, z) in [Float(-0.10), -0.04, 0.02].enumerated() {
+            if k < lit {
+                // the LAST live segment pulses once she is into the final third — the one moment the
+                // number on the visor is worth looking up for
+                let warn = (k == lit - 1) && charge <= 1.0 / 3.0
+                s.append(glow(SIMD3(0.012, 0.066, z), r: 0.007, plasmaCyan, em: warn ? 0.7 + 1.6 * pulse : 1.8))
+            } else {
+                s.append(sph(SIMD3(0.012, 0.066, z), r: 0.006, nearBlack))       // spent: a dead lens, not a dim one
+            }
         }
         s.append(box(SIMD3(0, -0.10, -0.13), SIMD3(0.026, 0.065, 0.030), 0.010, darkSteel))    // grip
         s.append(box(SIMD3(0, -0.01, -0.21), SIMD3(0.036, 0.042, 0.045), 0.012, gunBlack))     // stock block
@@ -150,7 +179,9 @@ enum Viewmodel {
         let flashN = p.muzzle / 0.07
         var shapes: [GShape]
         switch p.current {
-        case .plasma:       shapes = plasma(fire: fireN, flash: flashN)
+        case .plasma:
+            let charge = min(1, Float(p.ammo[AmmoType.cells.rawValue]) / Float(Player.issueCells))
+            shapes = plasma(fire: fireN, flash: flashN, charge: charge, time: time)
         case .flamethrower: shapes = flamethrower(fire: fireN, flash: flashN, time: time)
         case .rocket:       shapes = rocket(fire: fireN, flash: flashN)
         }
