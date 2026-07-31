@@ -578,7 +578,9 @@ final class RasterRenderer {
         // ── BLOOM + TONEMAP ── bright-pass the WHOLE HDR frame (emissive fixtures, plasma, LEDs + fire cores),
         // separable blur, then add the bloom and ACES-grade/gamma/vignette down to the 8-bit colTex.
         var bx = Fx(a: SIMD4(0, 0, Float(W), Float(H)))
-        fullscreen(brightPS, to: bloomA) { e in e.setFragmentBytes(&bx, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(frame, index: 0) }
+        fullscreen(brightPS, to: bloomA) { e in e.setFragmentBytes(&bx, length: MemoryLayout<Fx>.stride, index: 0)
+                                              e.setFragmentTexture(frame, index: 0)
+                                              e.setFragmentTexture(perpTex, index: 1) }   // …and WHOSE emission it is
         var bh = Fx(a: SIMD4(1.0 / Float(W), 0, Float(W), Float(H)))
         fullscreen(blurPS, to: bloomB) { e in e.setFragmentBytes(&bh, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(bloomA, index: 0) }
         var bv = Fx(a: SIMD4(0, 1.0 / Float(H), Float(W), Float(H)))

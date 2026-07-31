@@ -109,6 +109,14 @@ vector so a floor's light cannot land on the top of a barrel. Bloom is extracted
 composited, the result tonemapped and graded, and the creatures, fire and particles are
 drawn into the same buffer against the shared depth. Read-backs are down to one.
 
+**Bloom is separated by ORIGIN, not by brightness.** The held weapon shares the screen with
+the room behind it, so a single blurred glow layer either lets the floor's light wash over
+the gun or forbids the gun's own emitters from glowing at all. The bright pass therefore
+writes the *viewmodel's share* of each bright pixel into the alpha channel; the blur carries
+that share along with the colour, and the composite reconstructs it to allow the gun's own
+bloom everywhere while still blocking the world's over the gun. Same passes, same textures —
+the origin rides in a channel that was already there.
+
 **Solid furniture, drums and machinery carry lightweight CPU collider boxes** so neither
 the player nor the swarm walks through them — pure CPU, no cost to the render. Creature
 meshes are far larger than a collision radius, so before drawing, each creature's whole

@@ -749,11 +749,23 @@ extension RasterRenderer {
 
     // BRIGHT-PASS — bloom the EMITTERS only, via the emission mask in alpha (fixtures, plasma cells, LEDs,
     // lit screens, fire cores). A bright-LIT wall has alpha 0 and never blooms — no headlamp white-out.
-    fragment float4 bright_frag(FSOut in [[stage_in]], constant Fx& X [[buffer(0)]], texture2d<float> src [[texture(0)]]) {
+    fragment float4 bright_frag(FSOut in [[stage_in]], constant Fx& X [[buffer(0)]],
+                                texture2d<float> src [[texture(0)]], texture2d<float> perp [[texture(1)]]) {
         float2 uv = in.clip.xy / X.a.zw;
         constexpr sampler s(filter::linear, address::clamp_to_edge);
         float4 c = src.sample(s, uv);
-        return float4(c.rgb * clamp(c.a, 0.0, 1.0), 1.0);
+        float3 b = c.rgb * clamp(c.a, 0.0, 1.0);
+        // ── WHOSE BLOOM IS THIS? ── alpha carries the share of this pixel's bright energy that came from
+        // the HELD WEAPON (perp < 0 marks it). The blur is linear, so after blurring, alpha still holds
+        // the gun's contribution to whatever landed on each pixel, and the composite can honour the two
+        // origins differently instead of masking their sum.
+        //
+        // This is what lets the gun be genuinely emissive without giving up the mask. The mask exists to
+        // stop a lamp BEHIND the gun haloing across its silhouette and making it read as semi-transparent
+        // — a real problem, and one that has nothing to do with the gun's own LEDs, cell window, pilot
+        // flame or muzzle flash, which were being suppressed purely for sharing the same pixels.
+        float vm = perp.sample(s, uv).r < 0.0 ? dot(b, float3(0.299, 0.587, 0.114)) : 0.0;
+        return float4(b, vm);
     }
 
     // separable Gaussian blur (a.xy = texel step)
@@ -761,12 +773,14 @@ extension RasterRenderer {
         float2 uv = in.clip.xy / X.a.zw;
         constexpr sampler s(filter::linear, address::clamp_to_edge);
         float w[5] = { 0.227027, 0.194595, 0.121622, 0.054054, 0.016216 };
-        float3 acc = src.sample(s, uv).rgb * w[0];
+        // FOUR channels, not three: alpha carries the viewmodel's share of the bright energy (see
+        // bright_frag) and has to survive the blur alongside the colour it belongs to.
+        float4 acc = src.sample(s, uv) * w[0];
         for (int i = 1; i < 5; i++) {
-            acc += src.sample(s, uv + X.a.xy * float(i)).rgb * w[i];
-            acc += src.sample(s, uv - X.a.xy * float(i)).rgb * w[i];
+            acc += src.sample(s, uv + X.a.xy * float(i)) * w[i];
+            acc += src.sample(s, uv - X.a.xy * float(i)) * w[i];
         }
-        return float4(acc, 1.0);
+        return acc;
     }
 
     // FINAL TONEMAP — HDR frame + bloom → the headlamp grade (dim + warm/cool luma tint), ACES filmic
@@ -776,8 +790,17 @@ extension RasterRenderer {
                                    texture2d<float> perp [[texture(2)]]) {
         float2 uv = in.clip.xy / X.a.zw;
         constexpr sampler s(filter::linear, address::clamp_to_edge);
-        float bloomMask = perp.sample(s, uv).r < 0.0 ? 0.0 : 1.0;             // no bloom bleed over the viewmodel (perp<0) — keeps the gun opaque
-        float3 c = hdr.sample(s, uv).rgb + X.a.x * bloom.sample(s, uv).rgb * bloomMask;    // HDR world/fire + bloom
+        // ── BLOOM, BY ORIGIN ── the WORLD's bloom is still kept off the gun (perp < 0), because a lamp
+        // behind it haloing across its silhouette makes the gun read as semi-transparent. The GUN's OWN
+        // bloom is allowed everywhere, so its LEDs, cell window, pilot flame and muzzle flash finally
+        // glow — they have always been emissive, and were suppressed only for sharing the gun's pixels.
+        // alpha is the gun's share of the blurred energy (bright_frag), so the two are separated by
+        // ORIGIN rather than by a mask over their sum, and it costs no extra pass.
+        float4 bl = bloom.sample(s, uv);
+        float bLum = dot(bl.rgb, float3(0.299, 0.587, 0.114));
+        float vmShare = clamp(bl.a / max(bLum, 1e-4), 0.0, 1.0);
+        float worldMask = perp.sample(s, uv).r < 0.0 ? 0.0 : 1.0;
+        float3 c = hdr.sample(s, uv).rgb + X.a.x * bl.rgb * mix(worldMask, 1.0, vmShare);
         c *= 0.9;                                                             // headlamp dim
         float lum = dot(c, float3(0.299, 0.587, 0.114));
         c = mix(c * float3(0.84, 0.96, 1.16), c * float3(1.14, 1.0, 0.80), clamp(lum, 0.0, 1.0));   // cool shadows, warm highs
