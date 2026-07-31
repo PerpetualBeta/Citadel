@@ -169,6 +169,13 @@ if let v = ProcessInfo.processInfo.environment["CITADEL_CREATUREPROBE"] {
     exit(0)
 }
 
+// CITADEL_SETTLEPROBE → sweep the mesh-settle solver's inputs finely and report the largest
+// jump its output takes, i.e. whether a drawn body can teleport. No GUI.
+if ProcessInfo.processInfo.environment["CITADEL_SETTLEPROBE"] != nil {
+    SettleProbe.run()
+    exit(0)
+}
+
 // CITADEL_DORMDEBUG → dump a few generated levels as ASCII (walls #, doors +, floor ·,
 // bunk B, locker L, column I, desk d, chair c, tape T, papers p, pipe =) to eyeball the
 // dormitory layout algorithm (row alternation, centre rows, columns, clear aisles). No GUI.

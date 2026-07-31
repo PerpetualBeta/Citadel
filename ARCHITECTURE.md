@@ -90,6 +90,7 @@ fallback for a missing sample. See [CREDITS.md](CREDITS.md).
 | `RasterShot.swift` | ~65 frames covering every environment feature — the shotcheck input |
 | `Captures.swift` / `RoomShots.swift` / `MaterialPreview.swift` / `ProofRoom.swift` | Screenshot + room / material / proof captures |
 | `AudioProbe.swift` | Offline audio-graph render; per-path RMS + the mix asserted as ratios |
+| `SettleProbe.swift` | Sweeps the mesh-settle solver's inputs; asserts a drawn body never teleports |
 | `GPUProbe.swift` / `CreatureMergeProbe.swift` / `QueenMeshTest.swift` / `RigProbe.swift` | Frame-cost and mesh/rig probes |
 | `generate_icon.swift` | Build-time app-icon generator (not compiled in) |
 
@@ -124,6 +125,39 @@ mesh is settled clear of walls and furniture; that settled position is the **sim
 (`Monster.drawnPos`), and every aim and hit test uses it, because the body you can see has
 to be the body you can hit.
 
+**That settling is stored as an OFFSET, and rate-limited.** The solver behind it is not
+continuous — it is iterative on a fixed budget, it picks the strongest violation each round
+(an argmax, which flips when two samples tie), and a door's open fraction crossing its pass
+threshold flips a boolean it chooses a push direction from. Measured with
+`CITADEL_SETTLEPROBE`: half a degree of turn could move the drawn body 0.37 m, and a door
+opening beside a waiting drone moved it 0.39 m in the single frame the threshold was crossed
+— a drone *appearing* in a doorway rather than walking into one. Making the solver continuous
+case by case is whack-a-mole; capping how fast the correction may travel is not, and it covers
+the next such flip too. The cap is the creature's **own speed**, because a body drawn moving
+faster than it could move has stopped reading as movement. Keeping the correction as an offset
+rather than an absolute position is what lets it ride along with the walk, so only the
+correction is ever a frame behind and never the body itself.
+
+A cap bounds how far the correction moves but not how often it *reverses*, and the solver's
+facing input used to swing as fast as the marine could move, so it answered by alternating
+between competing solutions — a shimmer rather than a slide. So the correction also **holds once
+it is within one frame's travel** of the answer. That band needs no constant of its own: it is the slew limit, on the grounds that a
+target closer than one frame cannot be reached in less than a frame, so chasing it yields a
+twitch and a twitch back. It also makes the approach strictly monotonic — slew toward, stop on
+arrival, never overshoot — so oscillation has no mechanism left. The body then sits up to ~2.6 cm
+from the solver's answer, against a ~39 cm footprint radius, which cannot lap the mesh back into
+a wall. `CITADEL_SETTLEPROBE` walks a player past a waiting drone and counts direction
+reversals; the pass condition is none.
+
+**Facing is rate-limited at the source as well.** A creature's `dir` was assigned straight to the
+bearing of the marine, so its whole mesh yawed as fast as he could move — a long snout swinging
+between frames, which reads as a twitch at the neck rather than a head turn, and which fed the
+settle solver an input that could jump. It now turns at `MonsterDef.turnRate`, **derived** from
+the creature's own speed and radius on the rule that a body reorients in about the time it takes
+to cover its own length: 349°/s for a drone, 37°/s for the Queen, who is meant to be
+out-manoeuvrable. Nothing about the hunt changes, and the smoke suite pins why — a drone's rate
+still exceeds the angular rate a *sprinting* marine subtends at biting range, and neither caste's
+attacks depend on facing (melee is distance plus a clear line).
 
 ## Audio levels
 

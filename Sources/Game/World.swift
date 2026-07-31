@@ -232,6 +232,20 @@ final class World {
     /// by more than the slack.
     static let hitscanPerpSlack: Float = 0.12     // pellets: perpendicular miss distance forgiven
     static let projectileHitSlack: Float = 0.18   // bolts/rockets: overlap margin on the body radius
+
+    /// Rotate `from` toward `to` by at most `limit` radians, taking the SHORT way round, and
+    /// return an angle in (-π, π]. Turning the short way is the whole point: the naive
+    /// `to - from` sends a body the long way round whenever the pair straddles ±π, so a creature
+    /// facing just west of north would spin 350° to look just east of north.
+    static func turn(_ from: Float, toward to: Float, by limit: Float) -> Float {
+        func wrap(_ a: Float) -> Float {
+            var a = a.truncatingRemainder(dividingBy: 2 * .pi)
+            if a > .pi { a -= 2 * .pi } else if a <= -.pi { a += 2 * .pi }
+            return a
+        }
+        let delta = wrap(to - from)
+        return wrap(from + max(-limit, min(limit, delta)))
+    }
     private let queenBreedInterval: Float = 60   // she births a drone about once a minute
     private let queenReviveWindow: Float = 8     // a downed Queen has this long to be burned before she rises
     private let queenDroneCap = 14               // most simultaneous live drones she'll grow the brood to
@@ -267,17 +281,18 @@ final class World {
     var meshPoseResolve: ((_ kind: MonsterKind, _ pos: SIMD2<Float>, _ dir: Float, _ corpse: Bool,
                            _ map: GameMap, _ props: [PropBox]) -> SIMD2<Float>)?
 
-    /// Bring every `drawnPos` up to date. Called once per tick, after everything that moves has
-    /// moved — and again at the top of the render pass, which is the one place guaranteed to run
-    /// before anything is drawn, so a caller that builds a world and draws it without ticking still
-    /// gets bodies that agree with what a shot would hit. The second call is nearly free: a settled
-    /// corpse is skipped outright, and nothing else has moved in between.
-    func refreshDrawnPositions() {
+    /// Bring every `drawnPos` up to date, advancing each body's settle correction by `dt`. Called
+    /// once per tick with the frame's `dt`, after everything that moves has moved — and again at
+    /// the top of the render pass with `dt: 0`, which is the one place guaranteed to run before
+    /// anything is drawn, so a caller that builds a world and draws it without ticking still gets
+    /// bodies that agree with what a shot would hit. Passing 0 there is what keeps the correction's
+    /// slide keyed to elapsed time rather than to however many times a frame happens to refresh.
+    func refreshDrawnPositions(dt: Float = 0) {
         guard let resolve = meshPoseResolve else { return }
         let m = map, boxes = propColliders
         for i in monsters.indices {
             let kind = monsters[i].kind
-            monsters[i].refreshDrawn { p, d, corpse in resolve(kind, p, d, corpse, m, boxes) }
+            monsters[i].refreshDrawn(dt: dt) { p, d, corpse in resolve(kind, p, d, corpse, m, boxes) }
         }
     }
 
@@ -538,8 +553,9 @@ final class World {
         droneProwl(dt: dt, audio: audio)
         breedQueen(dt: dt, audio: audio)
         // Everything that moves has moved: re-settle the bodies, so the projectiles resolved below
-        // test against the same positions the frame is about to be drawn at.
-        refreshDrawnPositions()
+        // test against the same positions the frame is about to be drawn at. This is the ONE call
+        // that advances each body's settle correction — hence the dt.
+        refreshDrawnPositions(dt: dt)
         updateProjectiles(dt: dt, audio: audio)
         updateMines(dt: dt, audio: audio)
         updateDrums(dt: dt, audio: audio)
@@ -1654,7 +1670,9 @@ final class World {
             }
             if player.dead { monsters[i] = m; continue }
             m.attackCD = max(0, m.attackCD - dt)
-            m.dir = atan2(toP.y, toP.x)
+            // TURN toward the marine, at this creature's own rate — never snap to face them. See
+            // `MonsterDef.turnRate` for why, and for why it costs the hunt nothing.
+            m.dir = World.turn(m.dir, toward: atan2(toP.y, toP.x), by: m.def.turnRate * dt)
 
             if m.state == .pain {
                 m.stateTime -= dt

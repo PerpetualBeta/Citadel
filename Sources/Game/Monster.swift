@@ -44,6 +44,22 @@ struct MonsterDef {
     let painChance: Float
     let flying: Bool
     let sight: Float          // wake range, cells
+
+    /// How fast this creature may swing its facing, radians/second — DERIVED, not tuned, so it
+    /// cannot drift out of step with the body it belongs to. The rule: a creature reorients in
+    /// about the time it takes to cover its own length, so a long slow body turns like one.
+    ///
+    /// Facing used to be assigned straight to the bearing of the player, which meant the whole
+    /// mesh yawed as fast as the marine could move — a drone's long snout swinging between frames,
+    /// which reads as a twitch at the neck rather than a head turn. It also fed a jumping facing
+    /// into the mesh settle solver, and that solver is not continuous in `dir` (see
+    /// `Monster.drawnPos`), so the twitch came with a lurch.
+    ///
+    /// It works out at 349°/s for a drone — which still tracks a SPRINTING marine circling at
+    /// bite range, so nothing about closing and biting changes — and 37°/s for the Queen, who is
+    /// meant to be vast and ponderous and who you are supposed to be able to out-manoeuvre.
+    /// Neither caste's attacks depend on facing: melee is distance plus a clear line.
+    var turnRate: Float { .pi * speed / (2 * radius) }
 }
 
 enum MonsterTable {
@@ -107,22 +123,35 @@ struct Monster {
     // Movement and AI keep using `pos`: the resolve is deliberately unsatisfiable in a
     // one-cell corridor, and must never be allowed to gate a step.
     //
-    // It falls back to `pos` unless the settled answer belongs to exactly where the body stands
-    // now, because `pos` is assigned all over the AI and a stored answer can easily outlive the
-    // position it was settled from. A stale drawn position is worse than none — it names somewhere
-    // the body has already left — whereas the fallback is merely the old, imprecise behaviour, and
-    // the next refresh (once per tick, and at the top of every render) restores the precision.
-    var drawnPos: SIMD2<Float> { drawnFrom == pos ? drawnSettled : pos }
-    private var drawnSettled: SIMD2<Float>    // the resolve's output...
-    private var drawnFrom: SIMD2<Float>       // ...and the `pos` it was settled from — the cache key
-    private var drawnAsCorpse = false         // ...and which capsule it used, since live and fallen differ
+    // What is stored is the OFFSET from `pos`, not an absolute position, and that is deliberate.
+    // An absolute answer goes stale the instant the AI moves the body — it names somewhere the
+    // creature has already left — so it needed a cache key and a fallback to `pos` when the key
+    // missed, and the fallback itself was a jump. An offset cannot go stale: it rides along with
+    // the walk, so only the CORRECTION is ever a frame behind, never the body.
+    //
+    // The offset is also RATE-LIMITED, because the solver it comes from is not continuous. It is
+    // iterative on a fixed budget, it picks the strongest violation each round (an argmax, which
+    // flips when two samples tie), and a door's `open` fraction crossing `passThreshold` flips a
+    // boolean it chooses a push direction from. Measured with `CITADEL_SETTLEPROBE`: half a degree
+    // of turn could move the drawn body 0.37 m, and a door opening beside a waiting drone moved it
+    // 0.39 m in the single frame the threshold was crossed — a body appearing in the doorway rather
+    // than walking into it, which is exactly what it looked like. Fixing the solver's continuity
+    // case by case is whack-a-mole; capping how fast the correction may travel is not, and it also
+    // covers whatever the next such flip turns out to be.
+    //
+    // The cap is the creature's OWN speed: a body may never be drawn moving faster than it could
+    // actually move, because past that it stops reading as movement at all. So a correction that
+    // used to teleport now slides in about a quarter of a second, and every aim and hit test still
+    // reads exactly the position on screen.
+    var drawnPos: SIMD2<Float> { pos + drawnOffset }
+    private var drawnOffset = SIMD2<Float>(0, 0)   // the settle correction, eased toward the solver's answer
+    private var drawnEverSettled = false           // …snap on the first resolve; slide from then on
+    private var drawnAsCorpse = false              // a corpse settles once and then holds, however the world moves
 
     init(kind: MonsterKind, pos: SIMD2<Float>) {
         self.kind = kind
         self.pos = pos
         self.health = kind.def.maxHealth
-        self.drawnSettled = pos
-        self.drawnFrom = pos
     }
 
     var alive: Bool { state != .dying && state != .dead }
@@ -148,15 +177,43 @@ struct Monster {
     /// live drone's slim snout taper.
     var corpsePose: Bool { deathProgress >= 0.5 || dissolveProgress >= 0.5 }
 
-    /// Re-settle `drawnPos` if anything about the pose has moved since the last resolve.
-    /// A CORPSE resolves exactly ONCE: it never moves again, and its resolve ignores doors, so
-    /// the answer cannot change. A live creature re-resolves every time — it walks, and a door
-    /// swinging shut beside it changes what its mesh has to clear.
-    mutating func refreshDrawn(_ resolve: (_ pos: SIMD2<Float>, _ dir: Float, _ corpse: Bool) -> SIMD2<Float>) {
+    /// Re-resolve where this body is drawn, and travel `dt` seconds toward that answer.
+    ///
+    /// `dt` of 0 re-asks the question without moving, which is what a render-time refresh wants:
+    /// the answer is brought up to date but the slide is the tick's business, so refreshing twice
+    /// in a frame cannot advance it twice.
+    ///
+    /// A CORPSE resolves and then HOLDS: it never moves again, and its resolve ignores doors, so
+    /// re-resolving it could only twitch a settled body across the room. It holds once it has
+    /// arrived, though — not the instant it dies — otherwise the collapse would freeze the body
+    /// mid-slide, at whatever the live capsule's answer had been.
+    mutating func refreshDrawn(dt: Float,
+                              _ resolve: (_ pos: SIMD2<Float>, _ dir: Float, _ corpse: Bool) -> SIMD2<Float>) {
         let corpse = corpsePose
-        if corpse, drawnAsCorpse, drawnFrom == pos { return }
-        drawnSettled = resolve(pos, dir, corpse)
-        drawnFrom = pos
-        drawnAsCorpse = corpse
+        if corpse, drawnAsCorpse { return }                     // already settled as a corpse
+        let target = resolve(pos, dir, corpse) - pos
+        guard drawnEverSettled else {                           // first sight of this body — no history to slide from
+            drawnOffset = target
+            drawnEverSettled = true
+            drawnAsCorpse = corpse
+            return
+        }
+        let step = target - drawnOffset, gap = simd_length(step)
+        let reach = def.speed * max(0, dt)          // how far this body may be drawn moving this frame
+        if gap > reach {
+            if reach > 0 { drawnOffset += step * (reach / gap) }
+        } else {
+            // WITHIN one frame's travel of the answer — so hold, rather than close the last
+            // fraction. This is the hysteresis, and the band is the slew limit itself: a target
+            // this close cannot be chased in less than a frame, so chasing it produces a twitch
+            // and then a twitch back, which is the shimmer rather than a correction. Holding also
+            // makes the approach strictly monotonic — the body slews toward the answer, stops on
+            // arrival, and can never overshoot, so it has no way to oscillate at all.
+            //
+            // The cost is that the body sits up to one frame's travel from the solver's answer:
+            // ~2.6 cm, against a footprint radius of ~39 cm. It cannot lap the mesh back into a
+            // wall, which is the whole reason the settle exists.
+            if corpse { drawnAsCorpse = true }      // ...and a corpse that has arrived holds for good
+        }
     }
 }

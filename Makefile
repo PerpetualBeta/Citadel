@@ -108,6 +108,7 @@ SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/Harness/ProofRoom.swift \
                     Sources/Harness/RasterShot.swift \
                     Sources/Harness/CreatureMergeProbe.swift \
+                    Sources/Harness/SettleProbe.swift \
                     Sources/Harness/GPUProbe.swift
 
 PACKAGE_TYPE     := zip

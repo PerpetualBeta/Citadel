@@ -698,15 +698,43 @@ enum SmokeTest {
                 cw.monsters = [live, dead]
                 var nudge: Float = 1
                 cw.meshPoseResolve = { _, pos, _, _, _, _ in pos + SIMD2(nudge, 0) }
-                cw.refreshDrawnPositions()
+                let frame: Float = 1.0 / 60
+                cw.refreshDrawnPositions(dt: frame)
                 let settled = cw.monsters[1].drawnPos
                 nudge = 5                                    // the resolve now answers differently
-                cw.refreshDrawnPositions()
+                cw.refreshDrawnPositions(dt: frame)
                 check(vlen(cw.monsters[1].drawnPos - settled) < 0.001,
                       "a settled corpse is resolved once and stays put")
-                check(vlen(cw.monsters[0].drawnPos - settled) > 0.001,
-                      "a live drone keeps re-resolving as it moves")
+                let moved = vlen(cw.monsters[0].drawnPos - settled)
+                check(moved > 0.001, "a live drone keeps re-resolving as it moves")
+                // ...and it TRAVELS to the new answer instead of appearing at it. The settle solver
+                // is not continuous — half a degree of turn, or a door crossing its open threshold,
+                // can move its answer a third of a metre — and a body that gets there in one frame
+                // has teleported, which is precisely what "the drone snaps into the doorway" was.
+                check(moved <= MonsterKind.alien.def.speed * frame + 1e-4,
+                      String(format: "...and slides there no faster than it could walk (%.3f m in a frame)", moved))
             }
+            // (d) FACING is rate-limited too. It used to be assigned straight to the bearing of the
+            // marine, so the mesh yawed as fast as he could move — a twitch at the neck, and a
+            // jumping input into a settle solver that is not continuous in it. Two things have to
+            // hold at once: the turn is bounded, AND it is still fast enough that a drone can keep
+            // a SPRINTING marine in front of it at biting range, or the hunt would have been
+            // traded away for the fix.
+            let turnFrame: Float = 1.0 / 60
+            let half = World.turn(0, toward: .pi, by: MonsterKind.alien.def.turnRate * turnFrame)
+            check(abs(half) <= MonsterKind.alien.def.turnRate * turnFrame + 1e-5,
+                  String(format: "a drone turns no faster than its own body allows (%.1f°/s)",
+                         MonsterKind.alien.def.turnRate * 180 / .pi))
+            // the short way round: from just west of north to just east of north is a small turn,
+            // not a 350° spin. This is the one that bites if the wrap is written naively.
+            let short = World.turn(3.0, toward: -3.0, by: 10)
+            check(abs(World.turn(short, toward: -3.0, by: 0)) > 2.9,
+                  String(format: "...and turns the SHORT way across ±pi (landed at %.2f rad)", short))
+            let melee = MonsterKind.alien.def.radius + 1.0
+            let sprintOrbit = 5.6 / melee                 // rad/s a running marine subtends at bite range
+            check(MonsterKind.alien.def.turnRate >= sprintOrbit,
+                  String(format: "...and still tracks a sprinting marine at bite range (%.1f vs %.1f rad/s)",
+                         MonsterKind.alien.def.turnRate, sprintOrbit))
         }
 
         // ── PLANT MACHINERY HUM ── the compressors' proximity bed on floors 7–8. Asserted rather than
