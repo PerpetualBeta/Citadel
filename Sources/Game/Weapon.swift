@@ -14,7 +14,7 @@ enum AmmoType: Int, CaseIterable {
         switch self {
         case .none: return 0
         case .cells: return 400      // plasma rifle — energy cells
-        case .rockets: return 50     // rocket launcher
+        case .rockets: return 16     // rocket launcher — a shell is heavy; you carry what fits on the rig
         case .fuel: return 300       // flamethrower — pressurised fuel
         }
     }

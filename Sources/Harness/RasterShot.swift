@@ -1225,6 +1225,31 @@ extension RasterRenderer {
             if !done { print("RASTERSHOT: dorm check found no dormitory in the sampled seeds") }
         }
 
+        // ── THE POWER SAG ── a distant fault drags the whole grid down for ~1.7 s: lamps, lit panels and
+        // display walls droop together. It was live under the raymarcher and went dark with the pivot —
+        // the sim kept computing a dropout every 25-60 s that nothing drew. Two frames, same camera, so
+        // shotcheck holds the wiring: an effect nothing renders is invisible to every other check here.
+        do {
+            let world = World(level: 3, colonyIndex: 2, seed: 8)
+            let m = world.map
+            func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil }
+            search: for y in 2..<(m.h - 2) { for x in 2..<(m.w - 2) where op(x, y) {
+                var run = 0
+                while op(x + run, y) { run += 1 }
+                guard run >= 6 else { continue }
+                world.player.pos = SIMD2(Float(x) + 0.5, Float(y) + 0.5)
+                world.player.dir = 0
+                for (name, dim) in [("lit", Float(0)), ("sag", Float(0.72))] {
+                    world.powerDim = dim
+                    _ = rr.render(world, into: canvas)
+                    Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1,
+                                      to: dir.appendingPathComponent("raster-power-\(name).png"))
+                }
+                print("RASTERSHOT: wrote raster-power-{lit,sag}.png (the distant-fault brownout at \(x),\(y))")
+                break search
+            } }
+        }
+
         // ── THE ENDING ── one frame per beat, into the same directory, so shotcheck guards the
         // ceremony alongside everything else. This matters more here than anywhere: the ending is
         // reached exactly once, by clearing every floor of every citadel, so it is the one screen

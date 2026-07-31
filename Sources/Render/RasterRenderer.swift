@@ -33,7 +33,7 @@ final class RasterRenderer {
         var params: SIMD4<Float>    // lightCount, shadowLampCount, mapW, mapH
         var amb: SIMD4<Float>       // (unused rgb) + baked-field scale
         var headFwd: SIMD4<Float>   // view forward xyz + headlamp intensity
-        var shX: SIMD4<Float>       // shadowed lamp CELL x for slices 0,1,2 (.w unused; -1 = none)
+        var shX: SIMD4<Float>       // shadowed lamp CELL x for slices 0,1,2 (-1 = none) · .w = POWER SAG 0…0.9 (World.powerDim)
         var shZ: SIMD4<Float>       // shadowed lamp CELL z for slices 0,1,2 (.w unused; -1 = none)
         var camFwd: SIMD4<Float>    // TRUE camera forward (cos,0,sin) — the main pass writes perp-depth = dot(wp-eye, camFwd) so mesh creatures composite with correct occlusion
         var water: SIMD4<Float>     // M6 liquids: x = global flood level (lowest floor drowns) · yz = this level's puddle-field offset (World.waterOff) · w unused
@@ -430,6 +430,10 @@ final class RasterRenderer {
             lmvps[k] = lampShadowMVP(lampX: c.x, lampZ: c.y, half: 3.4)
             shX[k] = (c.x - 0.5).rounded(); shZ[k] = (c.y - 0.5).rounded()   // integer lamp cell for the shader match
         }
+        // The POWER SAG rides the spare 4th slot: only three shadow slices exist, so shX.w is never a
+        // lamp cell. The sim has computed this every frame since long before the raster pivot; nothing
+        // has drawn it since, because the value used to reach the retired kernel's debug uniform.
+        shX.w = world.powerDim
         let headFwd = simd_normalize(SIMD3<Float>(cos(p.dir), -0.4, sin(p.dir)))   // headlamp aimed slightly down (lights the floor ahead)
         let headInt: Float = FeatureFlags.headlamp ? 1.7 : 0                       // gentle assist (doesn't flood the pools); 0 → off
         let camFwd = SIMD3<Float>(cosf(p.dir), 0, sinf(p.dir))                     // TRUE camera forward (matches MeshCreature's fwd) → perp-depth

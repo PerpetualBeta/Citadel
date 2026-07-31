@@ -45,8 +45,8 @@ enum SmokeTest {
             let pw = propWalk(level: level)
             check(walkableWithProps(pw), "L\(level) exit still reachable past the furniture")
             // …and so must every KEYCARD be. One flood answers both questions, so this costs nothing.
-            let dry = unreachableKeys(pw)
-            check(dry.isEmpty, "L\(level) every keycard is collectable past the furniture"
+            let dry = unreachableItems(pw)
+            check(dry.isEmpty, "L\(level) every PICKUP is collectable past the furniture"
                              + (dry.isEmpty ? "" : " — STRANDED: \(dry.map { "\($0)" }.joined(separator: ", "))"))
             // side-by-side doors are mechanically impossible (leaves slide into
             // the jambs — adjacent doors have nowhere to go); the generator must
@@ -200,7 +200,7 @@ enum SmokeTest {
         // floors. The "cards seen" tally is not padding: without it, a change that stopped placing
         // keys would turn every assertion here into a vacuous pass.
         var unwinnable: [String] = []
-        var cardsSeen = 0, floorsSwept = 0, floorsCulled = 0, propsCulled = 0
+        var cardsSeen = 0, floorsSwept = 0, floorsCulled = 0, propsCulled = 0, itemsSwept = 0
         for base in stride(from: UInt64(1), through: 40, by: 1).map({ $0 &* 2_654_435_761 &+ 7 }) {
             for lv in 2...8 {
                 let seed = base &+ UInt64(lv) &* 1000
@@ -216,6 +216,16 @@ enum SmokeTest {
                               - pw.world.props.count
                 if lostProps > 0 { floorsCulled += 1; propsCulled += lostProps }
                 for d in keyDiagnosis(pw) { unwinnable.append("L\(lv)/base\(base) \(d)") }
+                // EVERY pickup, across the WHOLE sweep — not the eight floors the narrow check used to
+                // cover, which is why an armour plate buried in a compressor on a plant floor reached
+                // play. A stranded keycard blocks the floor; a stranded medkit merely cheats the player,
+                // silently, which is the harder kind to notice.
+                let stranded = unreachableItems(pw)
+                if !stranded.isEmpty {
+                    unwinnable.append("L\(lv)/base\(base) UNREACHABLE PICKUPS: "
+                                      + stranded.map { "\($0)" }.sorted().joined(separator: ", "))
+                }
+                itemsSwept += pw.world.items.count
                 let win = winnable(level: lv, colonyIndex: ci, seed: seed)
                 if !win.ok {
                     unwinnable.append("L\(lv)/base\(base) UNWINNABLE — \(win.why) || "
@@ -241,7 +251,7 @@ enum SmokeTest {
         check(floorsCulled * 20 <= floorsSwept,
               "the chokepoint cull stays a rescue, not routine (\(floorsCulled)/\(floorsSwept) floors, \(propsCulled) props)")
         check(unwinnable.isEmpty,
-              "every floor winnable with locks AND furniture together (\(floorsSwept) floors)"
+              "every floor winnable, every pickup collectable (\(floorsSwept) floors, \(itemsSwept) pickups)"
               + (unwinnable.isEmpty ? "" : " — \(unwinnable.count) BAD: \(unwinnable.prefix(6).joined(separator: " · "))"))
 
         // the pipe-routing mask must be DIAGONALLY CLEAN: a diagonal-only
@@ -1229,6 +1239,48 @@ enum SmokeTest {
                   "the line is sized to the frame and never touches an edge (x \(left)…\(right) of \(RenderConfig.width))")
         }
 
+        // ── A SECOND LAUNCHER IS SHELLS, NOT A LAUNCHER ── you carry one tube. Walking over another
+        // strips its rockets and leaves it; with no room for the rockets it stays put entirely, so a
+        // launcher can never vanish for nothing. It used to be consumed unconditionally.
+        do {
+            let w = World(level: 2, colonyIndex: 0, seed: 404)
+            w.monsters = []
+            let cap = AmmoType.rockets.capacity
+            check(cap == 16, "a marine carries \(cap) rocket shells")
+
+            func walkOver(_ kind: ItemKind, at p: SIMD2<Float>) -> Bool {
+                w.items = [Item(kind: kind, pos: p)]
+                w.player.pos = p
+                w.update(dt: 1.0 / 60, input: InputState(), audio: audio)
+                return w.items[0].taken
+            }
+            let spot = w.player.pos
+            // FIRST launcher: taken, and it arms her
+            w.player.weapons[WeaponKind.rocket.rawValue] = false
+            w.player.ammo[AmmoType.rockets.rawValue] = 0
+            check(walkOver(.weaponRocket, at: spot), "the first launcher is picked up")
+            check(w.player.has(.rocket), "…and she is armed with it")
+            check(w.player.ammo[AmmoType.rockets.rawValue] == ItemKind.rocketsPerPickup,
+                  "…carrying its \(ItemKind.rocketsPerPickup) shells")
+
+            // SECOND launcher with room: the shells are stripped, the tube is spent
+            let before = w.player.ammo[AmmoType.rockets.rawValue]
+            check(walkOver(.weaponRocket, at: spot), "a second launcher is stripped for its shells")
+            check(w.player.ammo[AmmoType.rockets.rawValue] == before + ItemKind.rocketsPerPickup,
+                  "…and they are actually added (\(before) → \(w.player.ammo[AmmoType.rockets.rawValue]))")
+
+            // SECOND launcher with NO room: left where it lies, so it is not wasted
+            w.player.ammo[AmmoType.rockets.rawValue] = cap
+            check(!walkOver(.weaponRocket, at: spot),
+                  "a launcher is LEFT on the deck when there is no room for its shells")
+            check(w.player.ammo[AmmoType.rockets.rawValue] == cap, "…and the carry cap holds at \(cap)")
+
+            // and the cap holds against the loose ammo pickup too
+            w.player.ammo[AmmoType.rockets.rawValue] = cap - 1
+            _ = walkOver(.ammoRockets, at: spot)
+            check(w.player.ammo[AmmoType.rockets.rawValue] == cap, "loose rockets cannot exceed it either")
+        }
+
         // ── A LIVE DRONE IS ALWAYS DRAWN ── found in play: drones went INVISIBLE while the plasma lock
         // still found them, killed them and left the gore. The drawn set is capped at the nearest
         // `creatureBudget`, and the cap was being spent on monsters that are never drawn: gibbed
@@ -1902,10 +1954,12 @@ enum SmokeTest {
     /// GRID and knows nothing about furniture, while the flood above is furniture-aware but only ever
     /// asked about the EXIT. A card inside a canteen range or walled in by a bank of lockers satisfied
     /// both. `within: 0.5` is the real pickup distance (see World.pickups), not a guess.
-    private static func unreachableKeys(_ pw: PropWalk) -> [ItemKind] {
-        let keyKinds = Set(KeyColor.allCases.map { $0.item })
-        return pw.world.items.filter { keyKinds.contains($0.kind) && !pw.canReach($0.pos, within: 0.5) }
-                             .map { $0.kind }
+    /// EVERY pickup, not just the keycards. A stranded keycard blocks the floor, which is why it was
+    /// guarded first — but a stranded medkit or armour plate just quietly cheats the player, and being
+    /// invisible is what makes it worse. Found in play: an armour plate floating inside a compressor on
+    /// a plant floor, where the imported machinery's footprint is several cells across.
+    private static func unreachableItems(_ pw: PropWalk) -> [ItemKind] {
+        pw.world.items.filter { !pw.canReach($0.pos, within: 0.5) }.map { $0.kind }
     }
 
     /// Flood fill from start treating any door as passable; confirms the exit

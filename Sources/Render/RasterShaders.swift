@@ -602,6 +602,15 @@ extension RasterRenderer {
         float3 baseEmis = (in.tid >= 0.0) ? float3(0.0) : in.emis;
         float3 emisTerm = baseEmis + decalEmis + waterEmis + alb * wemis + wallGlow;  // self-lit fixtures + decals + textured-wall glow (CRT/panel) + CRT content
         col += emisTerm;
+        // ── THE POWER SAG ── a distant fault drags the whole grid down for ~1.7 s: the lamps, the lit
+        // panels and the display walls all droop and flicker together (World.powerDim). It rides the
+        // EMISSIVE as well as the lit surfaces on purpose — a brownout that left the CRTs burning at
+        // full would read as a lighting effect rather than as the colony losing power.
+        //
+        // This was live under the raymarcher and went dark with it: the kernel read the value from its
+        // own debug uniform and nothing replaced that when the rasteriser took over, so the sim has
+        // been computing a dropout every ~25-60 s that nothing has drawn since the pivot.
+        col *= 1.0 - clamp(C.shX.w, 0.0, 0.9);
         // LINEAR HDR out; alpha = EMISSION MASK so only emitters bloom (never merely bright-lit walls).
         // The whole frame is bloomed, then ACES-graded, gamma-corrected and vignetted ONCE in composite_frag.
         float emL = dot(emisTerm, float3(0.299, 0.587, 0.114));

@@ -421,7 +421,7 @@ final class World {
         // Then the two ways furniture can make a floor UNFINISHABLE rather than merely awkward.
         // Props first: culling one changes the collider set the key check then reasons about.
         clearPropsWallingOffTheFloor()
-        relocateStrandedKeys()
+        relocateUnreachableItems()
         buildSteamVents()
         buildSparkSites()
         buildDebris()
@@ -2258,27 +2258,40 @@ final class World {
         }
     }
 
-    /// Every KEYCARD must be COLLECTABLE, or the floor cannot be finished.
+    /// Every PICKUP must be COLLECTABLE — not merely the keycards.
     ///
-    /// This is the drum problem again, and it hid for the same reason: MapGen rolls the card's cell
-    /// while the room is still bare, and the wall-hugging furniture passes never consult it — so a card
-    /// landing one cell off a wall can end up penned by a desk on one side and a locker on the diagonal.
+    /// This is the drum problem again, and it hid for the same reason: MapGen rolls an item's cell while
+    /// the room is still bare, and the furniture passes never consult it — so a pickup can end up penned
+    /// by a desk on one side and a locker on the diagonal, or, once the plant floors gained imported
+    /// MACHINERY with footprints several cells across, simply buried inside a machine. Jonathan found an
+    /// armour plate floating in the middle of a compressor on Demeter floor 8.
+    ///
     /// Neither existing guard sees it. `MapGen.solvable()` reasons over the bare grid, where the cell is
-    /// plain floor; the arrival-reachability flood is furniture-aware but treats every lock as open, so
-    /// it never asks whether the card that opens a door can itself be picked up. Observed at roughly one
-    /// floor in 280 — which over a 48-floor run is something like one playthrough in six.
+    /// plain floor; the arrival-reachability flood is furniture-aware but only ever asked about drums.
+    /// The keycard case was fixed first, at roughly one floor in 280 — but keycards were never the only
+    /// thing that can be walled in, only the only thing whose loss BLOCKS the floor. An unreachable
+    /// medkit does not block anything; it just quietly cheats the player out of a pickup, which is worse
+    /// for being invisible.
     ///
-    /// Unlike a drum, a card can never simply be dropped, so this relocates and is written to succeed.
-    /// The destination must satisfy both halves of solvability at once, which a single flood delivers:
-    /// standable-reachable from the arrival car with every locked door treated as open EXCEPT the ones
-    /// this card opens. That keeps a layered floor layered — a blue card may still legitimately sit
-    /// beyond the red door — while making it impossible for a card to end up behind its own lock.
-    private func relocateStrandedKeys() {
+    /// Nothing is dropped, so this relocates and is written to succeed. The destination must be
+    /// standable-reachable from the arrival car, with locks treated as open EXCEPT — for a keycard —
+    /// the one it opens itself. That keeps a layered floor layered (a blue card may legitimately sit
+    /// beyond the red door) while making it impossible for a card to end up behind its own lock.
+    private func relocateUnreachableItems() {
         var keyOf: [Int: KeyColor] = [:]
         for c in KeyColor.allCases { keyOf[c.item.rawValue] = c }
+        // The flood is the expensive part, and there are only ever a handful of distinct exemptions
+        // (nil, plus one per lock colour the floor placed), so compute each ONCE for the whole sweep
+        // instead of per item — this pass used to run over two or three keycards and now runs over
+        // every pickup on the floor.
+        var floods: [KeyColor?: (step: Float, nx: Int, ny: Int, seen: Set<Int>)] = [:]
         for i in items.indices {
-            guard let color = keyOf[items[i].kind.rawValue] else { continue }
-            let f = standableFlood(exceptLock: color)
+            // A KEYCARD must be reachable without needing its OWN colour, or it locks itself away.
+            // Everything else is judged with all locks open: the marine gets the run of the floor
+            // eventually, so an armour plate behind a red door is fine — one inside a machine is not.
+            let color = keyOf[items[i].kind.rawValue]
+            let f: (step: Float, nx: Int, ny: Int, seen: Set<Int>)
+            if let cached = floods[color] { f = cached } else { f = standableFlood(exceptLock: color); floods[color] = f }
             // Could the marine stand somewhere that brings this point within pickup range? Node centres
             // sit on a half-cell lattice, so allow half a step of quantisation slack.
             func collectable(_ p: SIMD2<Float>) -> Bool {
@@ -2527,9 +2540,13 @@ final class World {
     private func pickups(audio: AudioEngine) {
         for i in items.indices where !items[i].taken {
             if vlen(player.pos - items[i].pos) < World.pickupRange {
+                let hadRocket = player.has(.rocket)
                 if applyPickup(items[i].kind, audio: audio) {
                     items[i].taken = true
-                    message(items[i].kind.pickupMessage)
+                    // A second launcher is shells, not a launcher — say so, or the feed announces a
+                    // weapon she already had and the message becomes noise.
+                    message(items[i].kind == .weaponRocket && hadRocket
+                            ? "\(ItemKind.rocketsPerPickup) ROCKETS" : items[i].kind.pickupMessage)
                     audio.pickup()
                 }
             }
@@ -2557,7 +2574,16 @@ final class World {
             player.mines = min(Player.maxMines, player.mines + ItemKind.minesPerCrate)
             if !minesHintGiven { minesHintGiven = true; message("PRESS [G] TO DEPLOY A MINE") }
             return true
-        case .weaponRocket: player.giveWeapon(.rocket); player.giveAmmo(.rockets, ItemKind.rocketsPerPickup); switchTo(.rocket); return true
+        case .weaponRocket:
+            // You do not carry two launchers. Walking over a second one STRIPS ITS SHELLS and leaves
+            // the tube: it used to be consumed unconditionally, so meeting one with full rockets made
+            // a launcher vanish for nothing at all, and it yanked you off your current weapon every
+            // time. Now the pickup is only spent if it actually gave you something, so a tube you
+            // cannot use yet is still lying there when you come back with room for its shells.
+            let shells = player.giveAmmo(.rockets, ItemKind.rocketsPerPickup)
+            guard player.giveWeapon(.rocket) else { return shells }
+            switchTo(.rocket)                       // only ever on the FIRST one — the moment it is news
+            return true
         case .keyRed: player.keys.insert(.red); return true
         case .keyBlue: player.keys.insert(.blue); return true
         case .keyYellow: player.keys.insert(.yellow); return true
