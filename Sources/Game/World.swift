@@ -200,7 +200,17 @@ final class World {
     private var machineSites: [SIMD2<Float>] = []   // compressor positions on this floor (collected once)
     private var machineSitesScanned = false        // …and a floor with NONE must not re-scan every frame
     private let machineHumRange: Float = 9.0        // audible right across a machine hall
-    private let machineHumFloor: Float = 0.18       // a plant floor is never silent, even between halls
+    // A PLANT DECK IS NOISY. This is the level between halls, with no machine within range, and it
+    // has to beat the far Signal at these depths or the marine hears the transmission and not the
+    // plant she is standing on: measured, the Signal reaches +8.0 dB over the calm room tone on
+    // floor 8, and this baseline was +2.1 — six decibels the wrong way round, which is why the
+    // machinery seemed to have gone silent. The proximity swell above it then runs to +13.
+    private let machineHumFloor: Float = 0.62      // a plant floor is never silent, even between halls
+    /// …and the level the sub-deck ramp reaches by the floor just above the plant. Deliberately NOT
+    /// `machineHumFloor` any more: that is now loud enough to be a plant deck, and a ramp ending
+    /// there would have floor 6 louder than its own Signal and rob floor 7 of its step up. This is
+    /// the "felt through the boots" end of the scale, about +2 dB over the room tone.
+    private let machineHumThroughDeck: Float = 0.18
     private var machineHumLevel: Float = 0
     private let machineHumSmooth: Float = 0.55      // slower than the faults': machinery swells, it doesn't snap
     // ── the Queen ──
@@ -2957,6 +2967,11 @@ final class World {
     /// Harness: the smoothed machinery hum level, so the smoke test can assert the proximity curve
     /// instead of somebody having to stand next to a compressor and listen.
     var machineHumLevelForTest: Float { machineHumLevel }
+    /// The two ends of the machinery scale, for the audio probe — which used to carry them as its own
+    /// literals and quietly went stale the moment they changed.
+    static var machineHumFloorForTest: Float { World(level: 7, colonyIndex: 0, seed: 1).machineHumFloor }
+    var machineHumFloorForTest: Float { machineHumFloor }
+    var machineHumThroughDeckForTest: Float { machineHumThroughDeck }
     var machineSiteCountForTest: Int { machineSites.count }
     #endif
 
@@ -2995,16 +3010,14 @@ final class World {
         // the two things bleeding up from below rise together. Nothing on floor 1 (exactly zero, not
         // merely small), and about five sixths of the plant's baseline by the deep workings.
         //
-        // The endpoint is `machineHumFloor` rather than anything larger because that IS the ceiling:
-        // measured, standing between halls on a plant floor is only +2.1 dB over the calm room tone,
-        // so this whole ramp lives in a couple of decibels and is meant to be FELT rather than heard.
-        // Going above it would make the floor above the plant noisier than the plant, which is the
-        // one thing the ramp must not do. A plant floor that somehow generated no machinery lands on
-        // the baseline exactly, which is also the right answer.
+        // The endpoint is `machineHumThroughDeck`, which is deliberately far below the plant's own
+        // between-halls level: this ramp lives in a couple of decibels and is meant to be FELT rather
+        // than heard, and it must never make the floor ABOVE the plant noisier than the plant — that
+        // would rob floor 7 of its step up, which is the whole point of the ramp.
         if machineSites.isEmpty {
             let above = Progression.industrialFirstFloor - Progression.floorInBuilding(level)
             let approach = 1 - Float(max(0, above)) / Float(Progression.industrialFirstFloor - 1)
-            machineHumLevel += (machineHumFloor * approach - machineHumLevel) * min(1, dt / machineHumSmooth)
+            machineHumLevel += (machineHumThroughDeck * approach - machineHumLevel) * min(1, dt / machineHumSmooth)
             audio.machineHum(machineHumLevel)
             return
         }

@@ -867,12 +867,15 @@ enum GPURaymarch {
             out.append(iBox(SIMD3(-0.055, cy - 0.10 + Float(k) * 0.067, 0.062), SIMD3(0.05, 0.026, 0.006), 0.002, col, 0.0015))
         }
         out.append(iBox(SIMD3(0.07, cy, 0.06), SIMD3(0.04, 0.05, 0.008), 0.006, face, 0.003))   // plug-in port recess
-        // PORT LAMP — a hemisphere standing ON the recess face, so its equator is exactly the surface
-        // it emerges from. Its centre used to sit at z 0.066, two millimetres BEHIND that face (the
-        // recess front is at 0.052 + 0.008 × 2 = 0.068), which showed slightly more than half a ball
-        // with the faceplate cutting across it — a lamp that read as three-quarters of a sphere
-        // clipped by the panel rather than as a domed indicator set into it.
-        out.append(iSphere(SIMD3(0.07, cy, 0.068), 0.02,
+        // PORT LAMP — a domed indicator standing PROUD of the recess face, and the clearance is the
+        // point. Its centre first sat at z 0.066, two millimetres behind that face (the recess front
+        // is at 0.06 + 0.008 = 0.068), showing a bit more than half a ball with the faceplate cutting
+        // across it. Moving it to exactly 0.068 made that worse, not better: an equator sitting
+        // EXACTLY on the plane it emerges from is coplanar with it, and two coplanar surfaces fight
+        // for the same depth — which is what turned it into a pale blob with a dark cap. Exactness
+        // was the wrong goal. It sits 4 mm clear of the face instead, so nothing shares a plane with
+        // anything and it reads as a lamp bolted onto the panel, which is what it is.
+        out.append(iSphere(SIMD3(0.07, cy, 0.072), 0.02,
                            depleted ? SIMD3<Float>(0.85, 0.14, 0.10) : SIMD3<Float>(0.22, 0.50, 0.60)))
         return out
     }

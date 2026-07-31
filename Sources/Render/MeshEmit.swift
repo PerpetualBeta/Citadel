@@ -348,8 +348,15 @@ extension RasterRenderer {
     /// room, and you see through it into whatever the sleeves failed to close.
     static func emitElbow(at p: SIMD3<Float>, legA: SIMD3<Float>, legB: SIMD3<Float>, r: Float, _ body: Mat,
                           capNear: Bool = false, into v: inout [PVert]) {
-        emitTube(p, p + legA * 0.055, r: r * 1.26, sides: 9, body, caps: true, nearCap: capNear, into: &v)
-        emitTube(p, p + legB * 0.055, r: r * 1.26, sides: 9, body, caps: true, nearCap: capNear, into: &v)
+        // At a TERMINUS the sleeve starts slightly BEHIND `p` rather than on it. The run's own end disc
+        // is at `p`, and a sleeve cap placed exactly there is coplanar with it — two surfaces at one
+        // depth, fighting, which is what made a finished pipe end read as a pale mismatched disc
+        // instead of a casting. Backing the sleeve off puts its cap unambiguously in front, so the
+        // run's disc is hidden behind a face rather than competing with one. Mid-run the sleeves start
+        // at `p` as before: their near discs are inside the junction and never drawn.
+        let back = capNear ? Float(0.014) : 0
+        emitTube(p - legA * back, p + legA * 0.055, r: r * 1.26, sides: 9, body, caps: true, nearCap: capNear, into: &v)
+        emitTube(p - legB * back, p + legB * 0.055, r: r * 1.26, sides: 9, body, caps: true, nearCap: capNear, into: &v)
     }
 
     /// Wall-mount ONE bulkhead fixture: the imported brass lamp plus its lit, ribbed lens (or the procedural

@@ -842,9 +842,10 @@ enum SmokeTest {
                   + (1...6).map { String(format: "%.4f", humByFloor[$0] ?? 0) }.joined(separator: " "))
             check((humByFloor[1] ?? 1) < 0.005,
                   String(format: "…inaudible on the surface (%.4f)", humByFloor[1] ?? 0))
-            check((humByFloor[6] ?? 0) < 0.18,
-                  String(format: "…and never as loud as standing on the plant floor itself (%.4f vs 0.18)",
-                         humByFloor[6] ?? 0))
+            let plantOwn = World(level: 7, colonyIndex: 0, seed: 1).machineHumFloorForTest
+            check((humByFloor[6] ?? 0) < plantOwn,
+                  String(format: "…and never as loud as standing on the plant floor itself (%.4f vs %.2f)",
+                         humByFloor[6] ?? 0, plantOwn))
 
             let plant = World(level: 7, colonyIndex: 0, seed: 4242)
             for _ in 0..<40 { plant.update(dt: 1.0 / 60, input: InputState(), audio: audio) }

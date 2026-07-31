@@ -149,15 +149,21 @@ enum AudioProbe {
         //      The whole ramp lives in about two decibels, because the plant's OWN between-halls
         //      level is its ceiling and that measures only ~+2 dB over the room tone. Reported per
         //      floor next to that ceiling, so a future change to either is visibly a change to both.
-        for (label, level) in [("floor 1 (the surface)", Float(0)), ("floor 3", 0.072),
-                               ("floor 6 (deep workings)", 0.15),
-                               ("floor 7 between halls — THE CEILING", 0.18)] {
+        var plantBetweenHalls: Float = 0
+        let plantFloorLevel = World(level: 7, colonyIndex: 0, seed: 1).machineHumFloorForTest
+        let deckEnd = World(level: 1, colonyIndex: 0, seed: 1).machineHumThroughDeckForTest
+        for (label, level) in [("floor 1 (the surface)", Float(0)),
+                               ("floor 3", deckEnd * 0.4),
+                               ("floor 6 (deep workings)", deckEnd * 5 / 6),
+                               ("floor 7 BETWEEN HALLS — must beat the Signal", plantFloorLevel),
+                               ("floor 7 beside a machine", 1.0)] {
             let r = settle(2) {
                 audio.startMusic(.level, depth: 6, farSignalGain: 0); calm()
                 audio.machineHum(level)
             }.mean
             report("+ plant through the deck, " + label.padding(toLength: 36, withPad: " ", startingAt: 0)
                    + String(format: "%+.1f dB", vsBed(r)), r)
+            if level == plantFloorLevel { plantBetweenHalls = r }
         }
 
         // (c) THE FAR SIGNAL, floor by floor, swept across its WHOLE loop — it breathes, swells
@@ -174,6 +180,17 @@ enum AudioProbe {
             sig.append((f, s.mean, s.peak))
             report(String(format: "+ far Signal, floor %d/%d (ramp %.2f)  %+.1f dB · swell %+.1f dB",
                           f, Progression.floorsPerBuilding, ramp, vsBed(s.mean), vsBed(s.peak)), s.mean)
+        }
+
+        // THE PLANT MUST BE HEARD ON THE PLANT FLOORS. Jonathan's brief was that machinery reads over
+        // the Signal there; the plant's between-halls level was 6 dB UNDER the floor-8 Signal and the
+        // machinery seemed to have gone silent. Asserted against the Signal's SWELL, not its mean,
+        // because a bed that only wins on average still disappears every time the transmission surges.
+        if let deep = sig.first(where: { $0.floor == Progression.industrialFirstFloor }) {
+            let ok = vsBed(plantBetweenHalls) > vsBed(deep.swell)
+            print("  \(ok ? "PASS  " : "REVIEW")  the plant is heard over the Signal on its own floors — "
+                  + String(format: "plant %+.1f dB vs floor %d Signal swell %+.1f dB",
+                           vsBed(plantBetweenHalls), deep.floor, vsBed(deep.swell)))
         }
 
         // (d) the ONE-SHOTS, each fired over the same calm bed and measured across its onset —
