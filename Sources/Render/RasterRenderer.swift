@@ -1112,7 +1112,9 @@ final class RasterRenderer {
         }
         let c = SIMD3(sh.a.x, sh.a.y, sh.a.z)
         if bw < -4.5 {                                       // glow → emissive sphere
-            Self.tessSphere(c, r: sh.a.w, tri: tri)
+            // 2× segments: these are the gun's small round emitters (charge LEDs, cell window, pilot
+            // flame) and they sit inches from the eye, where the house 12×8 sphere shows its facets.
+            Self.tessSphere(c, r: sh.a.w, segments: 2, tri: tri)
         } else if bw < -3.5 {                                // z-cylinder (barrel / coils / nozzle) — axis +Z
             Self.tessAxial(c, r: sh.a.w, half: sh.b.y, axis: SIMD3(0, 0, 1), rad1: SIMD3(1, 0, 0), rad2: SIMD3(0, 1, 0), tri: tri)
         } else if bw < -2.5 {                                // y-cylinder (fuel tank / cell housing) — axis +Y

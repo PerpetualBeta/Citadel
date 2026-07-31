@@ -88,14 +88,19 @@ enum Viewmodel {
         // third, which is the one moment the number is worth looking up for.
         let lit = charge <= 0 ? 0 : max(1, Int((charge * 3).rounded(.up)))       // any charge at all lights one
         let pulse = 0.5 + 0.5 * sinf(time * 6.0)                                // ~1 Hz, the cadence of a warning lamp
+        // Centred on the spine (x = 0). They sat at x = 0.012, off to the right of the rail, which read
+        // as a mistake rather than as a gauge — a row of status lamps belongs down the centreline where
+        // the eye already is. Lit and spent share ONE radius: three identical lenses, some of them dark,
+        // is a gauge; three of differing sizes is a decoration.
         for (k, z) in [Float(-0.10), -0.04, 0.02].enumerated() {
+            let at = SIMD3<Float>(0, 0.066, z)
             if k < lit {
                 // the LAST live segment pulses once she is into the final third — the one moment the
                 // number on the visor is worth looking up for
                 let warn = (k == lit - 1) && charge <= 1.0 / 3.0
-                s.append(glow(SIMD3(0.012, 0.066, z), r: 0.007, plasmaCyan, em: warn ? 0.7 + 1.6 * pulse : 1.8))
+                s.append(glow(at, r: 0.007, plasmaCyan, em: warn ? 0.7 + 1.6 * pulse : 1.8))
             } else {
-                s.append(sph(SIMD3(0.012, 0.066, z), r: 0.006, nearBlack))       // spent: a dead lens, not a dim one
+                s.append(sph(at, r: 0.007, nearBlack))                           // spent: a dead lens, not a dim one
             }
         }
         s.append(box(SIMD3(0, -0.10, -0.13), SIMD3(0.026, 0.065, 0.030), 0.010, darkSteel))    // grip

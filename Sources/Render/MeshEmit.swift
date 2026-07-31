@@ -72,9 +72,13 @@ extension RasterRenderer {
         quad(P(x0, y0, z0), P(x1, y0, z0), P(x1, y1, z0), P(x0, y1, z0), SIMD3(0, 0, -1))
     }
 
-    static func tessSphere(_ c: SIMD3<Float>, r: Float,
+    /// `segments` scales the longitude/latitude count. The default 1 is the house budget for props and
+    /// creature detail, where a sphere is metres away and 12×8 facets are invisible. The held weapon is
+    /// INCHES from the eye, so its small round parts — the charge LEDs above all — show every facet at
+    /// that density; they pass a higher count, and only they pay for it.
+    static func tessSphere(_ c: SIMD3<Float>, r: Float, segments: Int = 1,
                             tri: (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>) -> Void) {
-        let LON = 12, LAT = 8, tau = 2 * Float.pi
+        let LON = 12 * segments, LAT = 8 * segments, tau = 2 * Float.pi
         func nrm(_ la: Int, _ lo: Int) -> SIMD3<Float> {
             let ph = Float(la) / Float(LAT) * Float.pi, s = Float(lo) / Float(LON) * tau
             return SIMD3(sinf(ph) * cosf(s), cosf(ph), sinf(ph) * sinf(s))
