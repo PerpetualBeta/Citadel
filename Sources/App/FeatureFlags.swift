@@ -15,10 +15,28 @@ enum FeatureFlags {
     /// the Desktop.
     static var screenshotKey: Bool { d.bool(forKey: "ScreenshotKey") }
 
-    /// Start the Sparkle auto-updater. Off by default in development — the
-    /// appcast isn't published yet, so the automatic startup check would throw a
-    /// missing-feed dialog. The "Check for Updates…" menu still works on demand.
-    static var updater: Bool { d.bool(forKey: "Updater") }
+    /// Start the Sparkle auto-updater at launch.
+    ///
+    /// The default is decided by WHICH BUILD THIS IS, not by a `defaults` key, because the two
+    /// audiences want opposite answers and a single default served the wrong one. A local build
+    /// wants it OFF — the appcast isn't published, so an automatic startup check throws a
+    /// missing-feed dialog — while a SHIPPED build must have it on, or the release strands itself:
+    /// Sparkle is the only remediation channel Citadel has, and until this was split, a bare
+    /// `d.bool(forKey:)` meant every 1.0 install would have gone out with automatic checks dead and
+    /// `SUEnableAutomaticChecks` in Info.plist inert. Only players who happened to find
+    /// "Check for Updates…" would ever have seen 1.0.1.
+    ///
+    /// `CITADEL_HARNESS` is exactly the right discriminator: release.mk defines it only when
+    /// `SIGN_ID` is the ad-hoc `-`, and strips it from every signed release. So this needs no
+    /// per-machine setup on either side, and the key remains an override for both — an opt-IN
+    /// during development, an opt-OUT for a player who wants no update checks.
+    static var updater: Bool {
+        #if CITADEL_HARNESS
+        return d.bool(forKey: "Updater")                                              // dev: off unless asked
+        #else
+        return d.object(forKey: "Updater") == nil ? true : d.bool(forKey: "Updater")   // shipped: on unless refused
+        #endif
+    }
 
     // Cheats — undocumented by design; the curious can find them in the source
     // (or via `strings` on the binary). Read live.

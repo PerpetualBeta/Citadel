@@ -22,9 +22,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private let highScores = HighScores()
 
     private let userDriverDelegate = CitadelUserDriverDelegate()
-    // Sparkle is OFF by default during development — the appcast isn't published
-    // yet, so the automatic startup check throws a "missing feed" dialog. Opt in
-    // per machine:  defaults write cc.jorviksoftware.Citadel Updater -bool true
+    // Sparkle starts at launch in a SHIPPED build and stays off in a local one — the split lives in
+    // `FeatureFlags.updater`, which reads the build rather than a preference, because a local build
+    // has no published appcast to check and a released one cannot afford dead update checks. Either
+    // way `Updater` overrides it. The manual "Check for Updates…" builds a controller on demand, but
+    // that object dies with the session, so it was never a substitute for starting the scheduler.
     private var updater: SPUStandardUpdaterController?
     private func makeUpdater() -> SPUStandardUpdaterController {
         SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: userDriverDelegate)
@@ -159,8 +161,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         updater?.checkForUpdates(sender)
     }
 
+    // Every window-modal sheet PAUSES first, for the reason `saveGame` already gives: a game that
+    // keeps advancing behind a dialog is a game that can kill you while you use it. These three did
+    // not, so drones went on hunting while the player rebound a key — and because a sheet takes key
+    // focus, the `keyUp` for a key held as it opened never reached GameView either. Pausing fixes
+    // the first; `Renderer.state`'s transition back to `.playing` clears the stale key.
     @objc private func openSettings() {
         guard let win = window, !gamepad.configuring else { return }
+        renderer?.pauseForDialog()
         OptionsSheet.present(over: win, audio: audio, gamepad: gamepad, highScores: highScores)
     }
     @objc private func viewHighScores() {
@@ -237,10 +245,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     @objc private func openKeyboard() {
         guard let win = window, !gamepad.configuring else { return }
+        renderer?.pauseForDialog()
         KeyboardSheet.present(over: win, gamepad: gamepad)
     }
     @objc private func openController() {
         guard let win = window, !gamepad.configuring else { return }
+        renderer?.pauseForDialog()
         ControllerSheet.present(over: win, gamepad: gamepad)
     }
 }

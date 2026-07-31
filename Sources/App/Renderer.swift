@@ -32,7 +32,38 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let input: InputState
     private let gamepad: Gamepad
 
-    private(set) var state: GameState = .title
+    private(set) var state: GameState = .title {
+        didSet {
+            // ── LEAVING THE TALLY DISARMS NAME ENTRY, wherever the exit came from ──
+            // `GameView.keyDown` sends every key into the name buffer while this flag is up and
+            // does NOT itself check the state, so a flag that outlives the tally is a total
+            // keyboard lockout: movement, fire, USE, ESC, Tab and P all vanish, the player keeps
+            // only a gamepad, and there is no way back but ⌘Q. It used to be cleared in exactly one
+            // place — `recordScore`, reachable only through `tickGameOver` — and two ordinary menu
+            // clicks walked straight past it. ⌘O Load Game is enabled in every state, and the Hall
+            // of the Fallen needs no save file at all; either one left the tally with the flag set.
+            // Worse, it arms on EVERY early death on a fresh install, because `qualifies` is true
+            // whenever the Hall holds fewer than ten entries, whatever the score.
+            //
+            // Clearing it on the transition covers every exit including ones not written yet, which
+            // is the only version of this fix that stays fixed. `enterGameOver` assigns the state
+            // before arming the flag, so arriving here cannot disarm itself.
+            if oldValue == .gameOver, state != .gameOver {
+                input.nameEntryActive = false
+                input.nameBuffer = ""
+                input.nameCommitted = false
+            }
+            // ── RETURNING TO LIVE PLAY FROM A PAUSE DROPS STALE KEY STATE ──
+            // A window-modal sheet (options, keyboard, controller) takes key focus, so the `keyUp`
+            // for a key held as it opened is delivered to the sheet and never to `GameView`: the
+            // marine would walk on her own once play resumed. The cost is that unpausing with a key
+            // already held needs a fresh press, which is the same discipline `fireArmRequired`
+            // already applies to the trigger — and much the better failure of the two.
+            if state == .playing, oldValue == .paused {
+                input.resetControls()
+            }
+        }
+    }
     var world: World?
     private var baseSeed: UInt64 = 1
     private var level = 1
@@ -580,7 +611,15 @@ final class Renderer: NSObject, MTKViewDelegate {
         transition = nil
         victory = false
         baseSeed = s.runSeed                      // the run's identity: every floor, and the seven, follow from it
-        level = max(1, s.level); colonyIndex = Progression.planetIndex(level)
+        // CLAMP BOTH ENDS. `FeatureFlags.startLevel` already bounds the cheat path for exactly this
+        // reason — MapGen sizes a floor as `40 + level * 2` — and RC.2's manual saves opened a second
+        // door into the same arithmetic with only a lower bound on it. A hand-edited slot at a few
+        // million puts millions of aliens through a linear placement scan and the ride never ends;
+        // near UInt64's ceiling the multiply traps and the process dies. saves.json is the player's
+        // own file so nothing is being defended against, but a floor number that cannot exist should
+        // not reach the generator. Lossless: floor 48 is the last one there is.
+        level = min(max(1, s.level), Progression.totalFloors)
+        colonyIndex = Progression.planetIndex(level)
         carryScore = s.score
         // A standard-issue marine, then overwritten with what she was carrying. Built this way round
         // so a save written before a weapon or ammo type existed still lands on a valid player: the

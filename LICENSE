@@ -19,3 +19,18 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 For more information, please refer to <https://unlicense.org>
+
+---
+
+SCOPE: the above applies to the SOURCE CODE of Citadel, which is the overwhelming majority of
+this work — the world, its materials, its architecture and its creatures are generated in code.
+
+It does not, and cannot, apply to the third-party assets bundled with the built application.
+Those carry their own terms, and CREDITS.md records every one of them with its source, author
+and licence. Two of those terms travel with any copy you distribute:
+
+  * the ceremony crowd recordings are CC-BY 4.0 — attribution must accompany redistribution;
+  * five imported prop models come from archibase.net, which grants free use and modification
+    but no explicit redistribution right, and operates a remove-on-request policy.
+
+If you redistribute the built app, honour CREDITS.md. If you only want the code, take it freely.

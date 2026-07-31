@@ -29,6 +29,16 @@ PRODUCT_NAME     := Citadel.app
 BUNDLE_ID        := cc.jorviksoftware.Citadel
 BUILD_SYSTEM     := swiftc
 
+# APPLE SILICON ONLY — the one Jorvik target that is not universal, and deliberately so.
+# Citadel is a real-time Metal renderer tuned to a 16.7 ms frame budget, and every measurement
+# behind that tuning (the frame-cost probe, the 68-frame shot baseline, the smoke suite) was taken
+# on Apple silicon. The x86_64 slice would have shipped never having been executed on the hardware
+# it targets, and its failure mode is bad: shaders compile at first dispatch, so a construct an
+# Intel/AMD Metal compiler rejects fails at RUNTIME, `RasterRenderer.init?` returns nil, and the
+# player gets a permanently black world rather than a refusal to launch. An honest requirement
+# beats an untested slice. Must be set BEFORE the include below; see release.mk's ARCH_LIST.
+ARCH_LIST        := arm64
+
 # MetalKit pulls in Metal; QuartzCore gives us CACurrentMediaTime for the
 # frame clock; AVFoundation for the code synth; GameController for gamepads.
 SWIFT_FRAMEWORKS := Cocoa Metal MetalKit QuartzCore AVFoundation GameController

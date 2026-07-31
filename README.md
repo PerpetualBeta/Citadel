@@ -106,8 +106,13 @@ fight.
 
 ## Run it
 
+**Requires an Apple silicon Mac** (M1 or later), macOS 14 or newer. Citadel is the one Jorvik app
+that isn't a universal binary, and that is deliberate: it is a real-time Metal renderer tuned to a
+16.7 ms frame budget, every measurement behind that tuning was taken on Apple silicon, and an
+Intel slice would have shipped without ever running on the hardware it claimed to support.
+
 ```sh
-gmake build                 # universal .app via the shared jorvik-release pipeline
+gmake build                 # arm64 .app via the shared jorvik-release pipeline
 open .build/Citadel.app     # descend
 ```
 

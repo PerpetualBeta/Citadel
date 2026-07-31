@@ -39,7 +39,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # decision; a flag in neither this dict nor the README is an oversight, which is the point.
 DELIBERATELY_UNDOCUMENTED = {
     "FallenColonists": "naming it spoils a discovery — the README must not describe what it strips",
-    "Updater": "internal Sparkle opt-in for development machines, not a player-facing switch",
+    "Updater": "an override on a default the BUILD decides (on when shipped, off when local) — "
+               "documenting it would advertise a switch whose useful setting is already the default",
 }
 
 # Assets whose absence from CREDITS is intentional (none so far — keep it that way).
