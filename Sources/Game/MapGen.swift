@@ -132,6 +132,8 @@ enum MapGen {
     }
     /// Read-only view of the chosen ops room, for the ASCII layout dump.
     static var debugOpsRoom: Int { opsRoomIndex }
+    /// …and of the sleeping halls, so a harness can assert the two never name the same room.
+    static var debugDormRooms: Set<Int> { dormRooms }
     private static var lastRoomCount = 0
     static var debugRoomCount: Int { lastRoomCount }
     /// Room dimensions of the last generated level, largest first — so a debug dump can say WHY a
@@ -493,7 +495,12 @@ enum MapGen {
             // unbroken end to end left some floors with no ops centre at all, and a board occupying part of a
             // wall is how a real control room looks anyway. Board width then varies floor to floor for free.
             var best = (score: 0, ri: -1, side: (0, 0), from: 0, len: 0)
-            for (ri, r) in rooms.enumerated() where ri != 0 && ri != rooms.count - 1 {
+            // NOT A SLEEPING HALL. The dormitories are chosen first and take "the biggest halls",
+            // and this scores "widest board first, then the roomiest" — so the two picked the same
+            // room on 69 of 72 floors, stamping the complex's one full-colour operations board onto
+            // a wall whose entire spec is plain concrete and nothing else. A control room is not
+            // where the crew sleep.
+            for (ri, r) in rooms.enumerated() where ri != 0 && ri != rooms.count - 1 && !dormRooms.contains(ri) {
                 guard min(r.w, r.h) >= opsMinDim, !roomHasHazardCells(map, r) else { continue }
                 for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
                     let horiz = (dy != 0)
@@ -1464,15 +1471,29 @@ enum MapGen {
         // or the fuel-store hazard plating), where a bolted-on panel reads as a
         // mistake. These are all feature-only textures — never a theme's base wall —
         // so rejecting them can't starve placement (litPanel/pipework stay valid).
-        let socketBadBacking: Set<Int> = [WallTex.computer.rawValue, WallTex.glass.rawValue, WallTex.hazard.rawValue]
-        /// A wall a prop must not be stood against: a surface FEATURE (display bank, backlit glass,
-        /// fuel-store hazard plating) — or a mounted LIGHT FIXTURE, because covering the lamp that
-        /// lights the room is worse than covering a texture.
-        func featureBacked(_ s: Slot) -> Bool {
+        /// A DISPLAY. Nothing is ever mounted or stood in front of one, at any cost — a charge point
+        /// bolted over a screen is nonsense no fallback justifies, so the last-resort socket pass
+        /// honours this set too. `opsBoard` was missing from it, which is how a recharge panel ended
+        /// up mounted on the operations centre's big board.
+        let displayBacking: Set<Int> = [WallTex.computer.rawValue, WallTex.opsBoard.rawValue]
+        /// …and walls to avoid where there is any choice: backlit glass and fuel-store hazard plating.
+        let socketBadBacking: Set<Int> = displayBacking.union([WallTex.glass.rawValue, WallTex.hazard.rawValue])
+        /// The wall cell a slot backs onto, or nil off-map.
+        func backingCell(_ s: Slot) -> Int? {
             let bx = s.x - Int(s.inward.x), by = s.y - Int(s.inward.y)
-            guard map.inBounds(bx, by) else { return false }
-            let bi = map.idx(bx, by)
+            return map.inBounds(bx, by) ? map.idx(bx, by) : nil
+        }
+        /// A wall a prop must not be stood against: a surface FEATURE (display bank, the ops board,
+        /// backlit glass, fuel-store hazard plating) — or a mounted LIGHT FIXTURE, because covering
+        /// the lamp that lights the room is worse than covering a texture.
+        func featureBacked(_ s: Slot) -> Bool {
+            guard let bi = backingCell(s) else { return false }
             return socketBadBacking.contains(map.wall[bi]) || map.wallLamp.contains(bi)
+        }
+        /// Just the displays — the subset that admits no exception.
+        func displayBacked(_ s: Slot) -> Bool {
+            guard let bi = backingCell(s) else { return false }
+            return displayBacking.contains(map.wall[bi])
         }
         func roomHasHazard(_ r: Room) -> Bool {
             for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) where map.hazard[map.idx(xx, yy)] { return true } }
@@ -1921,9 +1942,12 @@ enum MapGen {
                     }
                 }
             }
-            if sockets.isEmpty {                                 // last resort: guarantee one even if only feature walls remain
+            // Last resort: accept a lamp or glass wall to guarantee the floor a charge point — but NEVER
+            // a display. A socket over a screen is the one backing no guarantee is worth, so a floor
+            // whose only remaining walls are displays goes without rather than mount one on the board.
+            if sockets.isEmpty {
                 outer2: for (ri, r) in rooms.enumerated().dropFirst() {
-                    for s in wallSlots(r, ri) where freeCell(s.pos, 0.6) {
+                    for s in wallSlots(r, ri) where freeCell(s.pos, 0.6) && !displayBacked(s) {
                         sockets.append((pos: s.pos, yaw: yawFor(s.inward))); placed.append(s.pos); break outer2
                     }
                 }

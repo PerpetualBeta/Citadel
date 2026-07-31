@@ -178,7 +178,12 @@ extension RasterRenderer {
 
     /// A capped cylinder between two world points. The GShape cylinders the prop path uses are Y-axis or
     /// Z-axis only, but a pipe run lies along an ARBITRARY axis, so tessellate it directly here.
-    static func emitTube(_ a: SIMD3<Float>, _ b: SIMD3<Float>, r: Float, sides: Int = 10, _ m: Mat, caps: Bool = true, into v: inout [PVert]) {
+    /// `nearCap: false` caps only the FAR end (`b`). A fitting sleeve starts inside the junction it belongs to,
+    /// with the pipe running through it, so its near disc can never be seen — and pipework is the geometry that
+    /// dominates the level mesh, which is the whole reason caps are optional here. Capping both ends of every
+    /// sleeve measured +43% on the pipe vertex count; capping only the exposed ends is half of that.
+    static func emitTube(_ a: SIMD3<Float>, _ b: SIMD3<Float>, r: Float, sides: Int = 10, _ m: Mat,
+                         caps: Bool = true, nearCap: Bool = true, into v: inout [PVert]) {
         let ax = b - a; let len = simd_length(ax)
         guard len > 1e-5, r > 1e-5 else { return }
         let d = ax / len
@@ -195,8 +200,8 @@ extension RasterRenderer {
             let ca = a + n * r, cb = b + n * r
             v += [vert(prevA, prevN), vert(ca, n), vert(cb, n), vert(prevA, prevN), vert(cb, n), vert(prevB, prevN)]
             if caps {
-                v += [vert(a, -d), vert(prevA, -d), vert(ca, -d)]      // near cap
-                v += [vert(b, d), vert(cb, d), vert(prevB, d)]         // far cap
+                if nearCap { v += [vert(a, -d), vert(prevA, -d), vert(ca, -d)] }   // near cap
+                v += [vert(b, d), vert(cb, d), vert(prevB, d)]                     // far cap
             }
             prevN = n; prevA = ca; prevB = cb
         }
@@ -322,15 +327,24 @@ extension RasterRenderer {
     /// A cast TEE: the main passes through a slightly fatter body, and the branch leaves it square. Real plant
     /// pipework never just abuts — a branch is taken off a tee, so this is what a junction must look like.
     static func emitTee(at p: SIMD3<Float>, run: SIMD3<Float>, branch: SIMD3<Float>, r: Float, _ body: Mat, into v: inout [PVert]) {
-        emitTube(p - run * 0.052, p + run * 0.052, r: r * 1.34, sides: 9, body, caps: false, into: &v)   // the tee body on the main
-        emitTube(p, p + branch * 0.055, r: r * 1.18, sides: 9, body, caps: false, into: &v)              // the branch socket
+        // The body straddles the main, so BOTH its ends stand in open air; the branch socket starts inside the
+        // junction, so only its outer end can be seen.
+        emitTube(p - run * 0.052, p + run * 0.052, r: r * 1.34, sides: 9, body, caps: true, into: &v)
+        emitTube(p, p + branch * 0.055, r: r * 1.18, sides: 9, body, caps: true, nearCap: false, into: &v)
     }
 
     /// A 90° ELBOW: a fatter short sleeve on each leg where the two directions meet, so the corner reads as a
     /// cast fitting rather than two pipes mitred into each other.
+    ///
+    /// CAPPED, unlike the runs. The runs drop their caps because every end is buried in a wall or hidden behind
+    /// a flange, and an invisible cap is pure cost on the geometry that dominates the level mesh — but a fitting
+    /// sleeve is WIDER than the pipe it wraps, so its outer end is an annulus standing in open air. Uncapped,
+    /// you looked straight through that annulus into the inside of the sleeve's far wall, and the fitting read
+    /// as a torn hollow cage rather than a casting. The pipe emerging through the middle hides the centre of
+    /// each disc, so what you see is the flat end face a real cast fitting has.
     static func emitElbow(at p: SIMD3<Float>, legA: SIMD3<Float>, legB: SIMD3<Float>, r: Float, _ body: Mat, into v: inout [PVert]) {
-        emitTube(p, p + legA * 0.055, r: r * 1.26, sides: 9, body, caps: false, into: &v)
-        emitTube(p, p + legB * 0.055, r: r * 1.26, sides: 9, body, caps: false, into: &v)
+        emitTube(p, p + legA * 0.055, r: r * 1.26, sides: 9, body, caps: true, nearCap: false, into: &v)
+        emitTube(p, p + legB * 0.055, r: r * 1.26, sides: 9, body, caps: true, nearCap: false, into: &v)
     }
 
     /// Wall-mount ONE bulkhead fixture: the imported brass lamp plus its lit, ribbed lens (or the procedural

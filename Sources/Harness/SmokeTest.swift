@@ -932,6 +932,59 @@ enum SmokeTest {
         }
         check(queenWedged == 0, "the Queen always spawns with clearance (\(queenWedged) wedged)")
 
+        // 2g1a. NO CHARGE POINT IS EVER MOUNTED ON A DISPLAY. `socketBadBacking` listed the CRT bank
+        // but not the operations centre's big board, so a recharge panel could bolt straight onto the
+        // one full-colour screen in the complex — and the last-resort pass that guarantees each floor
+        // a socket ignored backing altogether. A socket's yaw is `atan2(-inward.x, inward.y)`, so the
+        // wall it is mounted on is the neighbour OPPOSITE its inward facing; that is the cell checked.
+        var onDisplay = 0, socketless: [Int] = [], socketsSeen = 0
+        let displays: Set<Int> = [WallTex.computer.rawValue, WallTex.opsBoard.rawValue]
+        for lvl in 1...8 {
+            for sd in 0..<12 {
+                let g = MapGen.generate(level: lvl, colonyIndex: Progression.planetIndex(lvl),
+                                        seed: UInt64(sd) &* 6421 &+ UInt64(lvl) &* 97)
+                let m = g.map
+                if g.sockets.isEmpty { socketless.append(lvl) }
+                for s in g.sockets {
+                    socketsSeen += 1
+                    let inward = SIMD2<Float>(-sinf(s.yaw), cosf(s.yaw))          // inverse of yawFor
+                    let bx = Int((s.pos - inward * 0.5).x), by = Int((s.pos - inward * 0.5).y)
+                    guard m.inBounds(bx, by) else { continue }
+                    if displays.contains(m.wall[m.idx(bx, by)]) { onDisplay += 1 }
+                }
+            }
+        }
+        // 2g1b. THE OPERATIONS BOARD IS NEVER IN A SLEEPING HALL. The dormitories are chosen first
+        // and take "the biggest halls"; the ops board scores "widest board first, then the roomiest".
+        // Nothing excluded one from the other, so they picked the same room on 69 of 72 floors and
+        // the complex's one full-colour display was stamped onto a dormitory wall — a room whose
+        // whole spec is plain concrete and bunks. Composed from two independent facts (which room
+        // ops took, which rooms sleep the crew) so it cannot quietly become vacuous, and both are
+        // asserted non-empty for the same reason.
+        var opsIsDorm = 0, opsFloors = 0, dormFloors = 0, sweptFloors = 0
+        for lvl in 1...6 {
+            for sd in 0..<12 {
+                sweptFloors += 1
+                _ = MapGen.generate(level: lvl, colonyIndex: Progression.planetIndex(lvl),
+                                    seed: UInt64(sd) &* 6421 &+ UInt64(lvl) &* 97)
+                if !MapGen.debugDormRooms.isEmpty { dormFloors += 1 }
+                guard MapGen.debugOpsRoom >= 0 else { continue }
+                opsFloors += 1
+                if MapGen.debugDormRooms.contains(MapGen.debugOpsRoom) { opsIsDorm += 1 }
+            }
+        }
+        check(opsFloors > 0 && dormFloors > 0,
+              "the ops/dorm sweep saw both (\(opsFloors) ops rooms, \(dormFloors) floors with dorms)")
+        check(opsIsDorm == 0, "the operations board is never stamped on a dormitory wall (\(opsIsDorm) of \(opsFloors))")
+        // …and refusing the sleeping halls must not cost a floor its control room.
+        check(opsFloors == sweptFloors, "…and every floor still gets one (\(opsFloors) of \(sweptFloors))")
+        check(socketsSeen > 0, "the socket sweep saw real sockets (\(socketsSeen)) — the check below is not vacuous")
+        check(onDisplay == 0, "no charge point is mounted on a display (\(onDisplay) of \(socketsSeen))")
+        // …and refusing display walls must not routinely cost a floor its charge point.
+        check(socketless.count <= 2,
+              "and a floor still gets one: \(socketless.count) of 96 floors went without"
+              + (socketless.isEmpty ? "" : " (floors \(Set(socketless).sorted()))"))
+
         // 2g2a. HEADROOM RAMPS TOWARD THE PLANT. It used to change in one step at floor 7, so the
         // citadel read as two places rather than one you descend through. Checked against the
         // DECISION (rooms raised of rooms present) rather than a share of open cells, because
