@@ -867,8 +867,13 @@ enum GPURaymarch {
             out.append(iBox(SIMD3(-0.055, cy - 0.10 + Float(k) * 0.067, 0.062), SIMD3(0.05, 0.026, 0.006), 0.002, col, 0.0015))
         }
         out.append(iBox(SIMD3(0.07, cy, 0.06), SIMD3(0.04, 0.05, 0.008), 0.006, face, 0.003))   // plug-in port recess
-        out.append(iSphere(SIMD3(0.07, cy, 0.066), 0.02,
-                           depleted ? SIMD3<Float>(0.85, 0.14, 0.10) : SIMD3<Float>(0.22, 0.50, 0.60)))  // port lamp
+        // PORT LAMP — a hemisphere standing ON the recess face, so its equator is exactly the surface
+        // it emerges from. Its centre used to sit at z 0.066, two millimetres BEHIND that face (the
+        // recess front is at 0.052 + 0.008 × 2 = 0.068), which showed slightly more than half a ball
+        // with the faceplate cutting across it — a lamp that read as three-quarters of a sphere
+        // clipped by the panel rather than as a domed indicator set into it.
+        out.append(iSphere(SIMD3(0.07, cy, 0.068), 0.02,
+                           depleted ? SIMD3<Float>(0.85, 0.14, 0.10) : SIMD3<Float>(0.22, 0.50, 0.60)))
         return out
     }
 
