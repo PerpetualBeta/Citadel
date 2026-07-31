@@ -142,6 +142,24 @@ enum AudioProbe {
         }.mean
         report(String(format: "+ plant hum, beside a compressor   %+.1f dB", vsBed(plant)), plant)
 
+        // (b2) THE PLANT HEARD THROUGH THE DECK, on the floors above it. The level is what
+        //      `World.driveMachineHum` feeds in — a halving per floor of separation — and the point
+        //      is that it should be nothing on the surface and something you notice by the deep
+        //      workings, without ever rivalling the room tone it sits under.
+        //      The whole ramp lives in about two decibels, because the plant's OWN between-halls
+        //      level is its ceiling and that measures only ~+2 dB over the room tone. Reported per
+        //      floor next to that ceiling, so a future change to either is visibly a change to both.
+        for (label, level) in [("floor 1 (the surface)", Float(0)), ("floor 3", 0.072),
+                               ("floor 6 (deep workings)", 0.15),
+                               ("floor 7 between halls — THE CEILING", 0.18)] {
+            let r = settle(2) {
+                audio.startMusic(.level, depth: 6, farSignalGain: 0); calm()
+                audio.machineHum(level)
+            }.mean
+            report("+ plant through the deck, " + label.padding(toLength: 36, withPad: " ", startingAt: 0)
+                   + String(format: "%+.1f dB", vsBed(r)), r)
+        }
+
         // (c) THE FAR SIGNAL, floor by floor, swept across its WHOLE loop — it breathes, swells
         //     and bursts, so the mean and the loudest second are both reported: "barely audible"
         //     is a claim about the mean, "does not overpower" is a claim about the peak.

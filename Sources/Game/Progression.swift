@@ -42,6 +42,13 @@ enum Progression {
 
     /// How many floors at the bottom of each citadel are the depths.
     static let deepFloors = 3
+    /// How many floors at the bottom are the WORKING PLANT — blasted rock, machine halls, no
+    /// dormitories and no display banks, because nobody sleeps or monitors down there.
+    static let plantFloors = 2
+    /// The first plant floor. Several things ramp TOWARD it from the surface — headroom, failed
+    /// light fixtures, the plant hum heard through the deck — so they need it by name rather than
+    /// each counting to 7 on their own.
+    static var industrialFirstFloor: Int { floorsPerBuilding - plantFloors + 1 }
     /// 1…`deckFloors` — the floors above the depths, the only ones a SIGNAL deck can sit on.
     static var deckFloors: Int { floorsPerBuilding - deepFloors }
 

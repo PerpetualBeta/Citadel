@@ -180,6 +180,36 @@ two ceilings — because every level in it was specified as a comparison and not
 also sweeps a fault's attenuation and fires the same shower repeatedly, which is what caught both
 faults above. Change a trim, re-run it.
 
+## The descent is a gradient
+
+The plant floors at the bottom of each citadel are the payoff — raw rock, machine halls twice a
+storey, standing water, bulkhead light. The risk with a payoff is announcing it: for a while
+several of its ingredients switched on in **one step** at floor 7, so a citadel read as two
+places rather than one you descend through. Three of them now ramp toward it instead, and each
+ramp ends exactly where the plant's own value begins so the two can never disagree:
+
+- **Headroom.** Every room on the plant floors stands twice a storey. Above them the share of
+  raised rooms ramps — one chamber on the surface, most of them by the deep workings — biggest
+  rooms first, since a big room is what wants the height. Only room interiors rise, so a doorway
+  keeps its own height and a door still fills its frame; the soffit closing the step is most of
+  what the height is *for*.
+- **The plant heard through the deck.** `driveMachineHum` fades the compressors in linearly from
+  silence at the surface to the plant's own between-halls level as you arrive at it — the same
+  shape `Progression.farSignalRamp` gives THE SIGNAL, so the two things bleeding up from below
+  rise together. The whole ramp lives in about two decibels: standing between halls on a plant
+  floor measures only ~+2 dB over the calm room tone, and that ceiling is deliberately the
+  endpoint, because a floor *above* the plant must never sound noisier than the plant.
+- **Failed light runs.** A strip light that has died is simply not placed — the cell takes the
+  theme's plain wall — so it casts no light and emits nothing, because both the point-light pass
+  and the shader's self-illumination key off the wall id. This corrects a real inconsistency: a
+  "busted" fixture used to spark while still glowing and still lighting the room. Only the
+  **surface facility** has strip lights (`theme()` puts `.litPanel` in the 1–2 palette and nothing
+  below), so only it can lose them — the descent already works by taking the lighting away, and
+  this sharpens its top end rather than duplicating its bottom.
+
+Each of the three is asserted in the smoke suite as a **trend across floors**, not as a value on
+any one floor, because a single floor's room count is a roll of the dice.
+
 ## Determinism
 
 A floor is a pure function of its seed, and that is load-bearing in three places: the shot

@@ -40,6 +40,33 @@ enum Lighting {
         }
     }
 
+    /// What fraction of a floor's strip-light runs have FAILED. A failed run is simply NOT PLACED
+    /// (see `MapGen.retexWalls`) — the cell takes the theme's plain wall — so it casts no light and
+    /// emits nothing, because both the point-light pass and the shader's self-illumination key off
+    /// the wall id. That is what a dead fixture should do, and what the spark system had always
+    /// claimed was happening while a "busted" panel in fact went on glowing and lighting the room.
+    ///
+    /// **Only the surface facility has strip lights**, so only the surface facility can lose them:
+    /// `theme()` puts `.litPanel` in the 1–2 palette and nothing below it, because the descent
+    /// already works by taking the lighting away — the workings are lit by amber CRT banks and
+    /// hazard pools, and the depths by bulkhead lamps. So this curve does not ramp toward the plant;
+    /// it sharpens the TOP of the descent, where a dead run beside a working one is the first sign
+    /// that the colony stopped being maintained. Floor 2 loses twice what floor 1 does.
+    static func fixtureFailure(level: Int) -> Float {
+        switch Progression.floorInBuilding(level) {
+        case 1:  return 0.11    // arrival: mostly intact, the odd dead run to notice
+        case 2:  return 0.24    // one run in four out — the first floor that feels neglected
+        default: return 0       // below the surface there are no strip lights to fail
+        }
+    }
+
+    /// Whether the fixture at a cell is one of the failed ones. Positional and hash-based, so it is
+    /// stable for the level and identical everywhere it is asked — the same lockstep discipline the
+    /// puddle field uses.
+    static func fixtureDead(_ x: Int, _ y: Int, failure: Float) -> Bool {
+        failure > 0 && ihash01(x, y) < failure
+    }
+
     /// How flooded the floor is at this depth: 0 = dry industrial deck, 1 = standing
     /// water. An installation floor isn't a mirror — only the bottom of a building
     /// floods (drainage has failed that far down), so reflections are reserved for

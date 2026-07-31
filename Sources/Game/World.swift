@@ -198,6 +198,7 @@ final class World {
     // cross to it. Hence the long range, and NO line-of-sight gate — heavy machinery carries through
     // structure, and gating it made the hum flick on and off as pillars and machines passed the eye.
     private var machineSites: [SIMD2<Float>] = []   // compressor positions on this floor (collected once)
+    private var machineSitesScanned = false        // …and a floor with NONE must not re-scan every frame
     private let machineHumRange: Float = 9.0        // audible right across a machine hall
     private let machineHumFloor: Float = 0.18       // a plant floor is never silent, even between halls
     private var machineHumLevel: Float = 0
@@ -2779,7 +2780,9 @@ final class World {
     }
 
     /// Deterministic ~⅓ "shattered fixture" test — IDENTICAL uint maths to the
-    /// kernel's `fixtureBusted`, so sparks fly from the very panels that render dead.
+    /// Whether the CRT bank at a cell is faulting. A display bank stays lit and simply misbehaves —
+    /// unlike a strip light, which when it fails is not placed at all (`map.deadFixture`) and so
+    /// goes genuinely dark. Positional, so a bank's fault is stable for the level.
     private func fixtureBusted(_ x: Int, _ y: Int) -> Bool {
         var h = UInt32(truncatingIfNeeded: x) &* 374761393 &+ UInt32(truncatingIfNeeded: y) &* 668265263
         h = (h ^ (h >> 13)) &* 1274126177
@@ -2787,12 +2790,17 @@ final class World {
         return h % 100 < 32
     }
 
-    /// Spark/smoke emitters at every shattered lit-panel / computer — on the wall
-    /// face, spitting out into the room.
+    /// Spark/smoke emitters at every failed fixture — on the wall face, spitting out into the room.
+    ///
+    /// Two kinds, and the difference is the point. A **dead strip light** (`map.deadFixture`) is a
+    /// cell where the run failed and was never placed, so it is dark AND spitting: the spark is what
+    /// killed the light, which is why they have to be the same cell. A **CRT bank** stays lit and
+    /// merely faults, so it keeps the positional `fixtureBusted` roll it always had.
     private func buildSparkSites() {
         for y in 0..<map.h { for x in 0..<map.w {
-            let wid = map.wall[map.idx(x, y)]
-            guard wid == WallTex.litPanel.rawValue || wid == WallTex.computer.rawValue, fixtureBusted(x, y) else { continue }
+            let i = map.idx(x, y)
+            let crtFault = map.wall[i] == WallTex.computer.rawValue && fixtureBusted(x, y)
+            guard map.deadFixture.contains(i) || crtFault else { continue }
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                 let ox = x + dx, oy = y + dy
                 guard map.inBounds(ox, oy), map.wall[map.idx(ox, oy)] == 0 else { continue }
@@ -2919,10 +2927,29 @@ final class World {
     #endif
 
     private func driveMachineHum(dt: Float, audio: AudioEngine) {
-        if machineSites.isEmpty {
+        if !machineSitesScanned {
             machineSites = props.filter { $0.kind == .machineCompressor || $0.kind == .machineFilter
                                        || $0.kind == .machineColumn }.map { $0.pos }
-            if machineSites.isEmpty { audio.machineHum(0); return }      // not a plant floor
+            machineSitesScanned = true        // scanned once — the props do not change under us
+        }
+        // NO MACHINERY ON THIS FLOOR — but the plant is still down there, heard THROUGH the deck.
+        // It fades in LINEARLY from silence at the surface to the plant's own between-halls level as
+        // you arrive at it, which is the same shape `Progression.farSignalRamp` gives the Signal, so
+        // the two things bleeding up from below rise together. Nothing on floor 1 (exactly zero, not
+        // merely small), and about five sixths of the plant's baseline by the deep workings.
+        //
+        // The endpoint is `machineHumFloor` rather than anything larger because that IS the ceiling:
+        // measured, standing between halls on a plant floor is only +2.1 dB over the calm room tone,
+        // so this whole ramp lives in a couple of decibels and is meant to be FELT rather than heard.
+        // Going above it would make the floor above the plant noisier than the plant, which is the
+        // one thing the ramp must not do. A plant floor that somehow generated no machinery lands on
+        // the baseline exactly, which is also the right answer.
+        if machineSites.isEmpty {
+            let above = Progression.industrialFirstFloor - Progression.floorInBuilding(level)
+            let approach = 1 - Float(max(0, above)) / Float(Progression.industrialFirstFloor - 1)
+            machineHumLevel += (machineHumFloor * approach - machineHumLevel) * min(1, dt / machineHumSmooth)
+            audio.machineHum(machineHumLevel)
+            return
         }
         var target = machineHumFloor          // the deck plant is always running somewhere below you
         for m in machineSites {

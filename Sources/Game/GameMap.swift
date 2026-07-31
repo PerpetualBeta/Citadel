@@ -47,6 +47,13 @@ final class GameMap {
     /// room, and until this existed the renderer and MapGen chose that wall independently.
     var wallLamp: Set<Int> = []
 
+    /// Wall cells where a strip light SHOULD have been and has failed — the run is not placed, so the
+    /// cell carries the theme's plain wall, casts no light and emits nothing. Recorded because the
+    /// electrical faults spark from these very cells: the fault and the darkness are the same event,
+    /// which is what makes a dead run read as broken rather than merely absent. Its density per floor
+    /// is `Lighting.fixtureFailure`.
+    var deadFixture: Set<Int> = []
+
     // ── rooms that act on the marine while she stands in them ────────────────────────────────
     // Baked as CELL SETS rather than looked up through room indices at runtime, because the room
     // bookkeeping is per-generation scratch that the NEXT floor overwrites — a live lookup would

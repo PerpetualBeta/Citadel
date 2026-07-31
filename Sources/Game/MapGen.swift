@@ -76,6 +76,11 @@ enum MapGen {
     /// nobody monitors down here, so dormitories and CRT display banks are both suppressed. Set once at the
     /// top of attemptGen (generation is sequential), like `fuelStoreCells`.
     private static var industrialFloor = false
+    #if CITADEL_HARNESS
+    /// Harness only: how many of a floor's rooms the headroom ramp raised. Pair it with
+    /// `debugRoomCount` for the share.
+    private(set) static var lastTallRooms = 0
+    #endif
     // ── OPERATIONS CENTRE ── one per floor on 1–6: the room from which the colony ran its mining, shipping,
     // launches/landings and orbital work. Pure scenery — ranks of amber operator consoles facing a big board
     // that is the ONE full-colour display in the complex. No bunks, no lockers, no fuel drums; power points and
@@ -203,7 +208,7 @@ enum MapGen {
 
     private static func attemptGen(level: Int, colonyIndex: Int, seed: UInt64, allowLocks: Bool, runSeed: UInt64 = 0) -> GeneratedLevel? {
         var rng = Rng(seed: seed)
-        industrialFloor = Progression.floorInBuilding(level) >= 7   // 7–8: the working plant (no dorms, no display banks)
+        industrialFloor = Progression.floorInBuilding(level) >= Progression.industrialFirstFloor   // the working plant (no dorms, no display banks)
         let th = theme(colonyIndex, level: level)
         let size = min(58, 40 + level * 2)
         let map = GameMap(w: size, h: size)
@@ -308,21 +313,36 @@ enum MapGen {
 
         // ── wall texturing: pick a per-room wall texture by tinting border cells ──
         // (walls stay as their solid id; we vary which WallTex by region for variety)
-        retexWalls(map, rooms: rooms, rng: &rng, theme: th)
+        retexWalls(map, rooms: rooms, rng: &rng, theme: th, level: level)
 
-        // ── DOUBLE-HEIGHT MACHINE HALLS ── on the plant floors the ROOMS are plant halls: they stand twice a
-        //    storey so the machinery has headroom, while the corridors feeding them stay a normal height. Only
-        //    room interiors are raised (a doorway keeps its own height so a door still fills its frame), and the
-        //    renderer closes the step with a soffit where a tall cell meets a short neighbour.
-        if industrialFloor {
-            for r in rooms {
-                for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) {
-                    let i = map.idx(xx, yy)
-                    guard map.wall[i] == 0, map.doors[i] == nil else { continue }
-                    map.ceilY[i] = GameMap.tallCeiling
-                } }
-            }
+        // ── HEADROOM ── a citadel OPENS UP as it descends. On the plant floors every room is a plant hall
+        //    standing twice a storey, so the machinery has headroom and the halls tower over the corridors
+        //    feeding them. Above them it is a RAMP rather than a step: one raised chamber on the surface,
+        //    most of them by the deep workings, so by the time you reach the plant the change has been
+        //    coming for six floors instead of being announced in one. Biggest rooms first — a big room is
+        //    what wants the height, and taking them in order keeps the tall/short mix legible rather than
+        //    scattering single tall cells through a floor.
+        //
+        //    Only room INTERIORS rise (a doorway keeps its own height, so a door still fills its frame) and
+        //    the renderer closes the step with a soffit where a tall cell meets a short neighbour. That
+        //    soffit shadow line is most of what the height is FOR.
+        let tallShare = industrialFloor ? 1
+            : Float(Progression.floorInBuilding(level) - 1) / Float(Progression.industrialFirstFloor - 1)
+        let tallRooms = industrialFloor ? rooms.count
+            : max(1, Int((Float(rooms.count) * tallShare).rounded()))
+        for r in rooms.sorted(by: { $0.w * $0.h > $1.w * $1.h }).prefix(tallRooms) {
+            for yy in r.y..<(r.y + r.h) { for xx in r.x..<(r.x + r.w) {
+                let i = map.idx(xx, yy)
+                guard map.wall[i] == 0, map.doors[i] == nil else { continue }
+                map.ceilY[i] = GameMap.tallCeiling
+            } }
         }
+        #if CITADEL_HARNESS
+        // The ramp has to be checked against the DECISION, not against a share of open cells:
+        // corridors are deliberately left low, so a floor with every room raised still measures
+        // about two thirds by area and the trend drowns in how much corridor a layout happened to get.
+        lastTallRooms = tallRooms
+        #endif
 
         // ── player start ──
         let start = rooms[0]
@@ -757,12 +777,20 @@ enum MapGen {
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
-    private static func retexWalls(_ map: GameMap, rooms: [Room], rng: inout Rng, theme: Theme) {
+    private static func retexWalls(_ map: GameMap, rooms: [Room], rng: inout Rng, theme: Theme, level: Int) {
         // Give each wall cell a texture from the theme based on which room it
         // borders (cheap: nearest room centre). Keeps a world visually cohesive.
         // DORMITORY walls are the exception: plain concrete only — no lit panels / pipe
         // runs (theme.walls can include .litPanel / .pipework). Any wall cell bordering a
         // dorm interior is forced to the theme's PLAIN base wall (walls[0]).
+        //
+        // FAILED FIXTURES are the other exception, and they take the same fallback: a strip light
+        // that has died is simply not placed, so the cell reads as plain wall and — because both the
+        // point-light pass and the shader's self-illumination key off the wall id — it stops lighting
+        // the room and stops glowing without either of them needing to be told. The density rises
+        // with depth (`Lighting.fixtureFailure`), which is what brings the dark on in pockets before
+        // the plant floors rather than all at once when you reach them.
+        let failure = Lighting.fixtureFailure(level: level)
         var dormBorder = [Bool](repeating: false, count: map.w * map.h)
         for (ri, r) in rooms.enumerated() where isDormitory(r, ri, rooms.count) {
             for yy in (r.y - 1)...(r.y + r.h) { for xx in (r.x - 1)...(r.x + r.w) where map.inBounds(xx, yy) {
@@ -774,7 +802,12 @@ enum MapGen {
             if map.wall[i] == 0 || map.doors[i] != nil { continue }
             // pick by a stable hash so neighbouring walls mostly match
             let pick = (x / 6 + y / 6) % theme.walls.count
-            map.wall[i] = dormBorder[i] ? theme.walls[0].rawValue : theme.walls[pick].rawValue
+            var id = dormBorder[i] ? theme.walls[0].rawValue : theme.walls[pick].rawValue
+            if id == WallTex.litPanel.rawValue, Lighting.fixtureDead(x, y, failure: failure) {
+                id = theme.walls[0].rawValue        // the run is out: plain wall, no light, no glow
+                map.deadFixture.insert(i)           // …and the fault sparks from here
+            }
+            map.wall[i] = id
         }}
         _ = rng
     }

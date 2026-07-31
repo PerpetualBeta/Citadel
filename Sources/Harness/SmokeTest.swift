@@ -738,13 +738,26 @@ enum SmokeTest {
         }
 
         // ── PLANT MACHINERY HUM ── the compressors' proximity bed on floors 7–8. Asserted rather than
-        // listened to: it has to be SILENT where there is no machinery, and it has to SWELL as you
-        // close on a machine, which is the whole point of a positional bed over an ambient one.
+        // listened to: it has to SWELL as you close on a machine, which is the whole point of a
+        // positional bed over an ambient one — and above the plant it has to be audible only as
+        // something UNDER the deck, halving with every floor of separation, so the surface is
+        // effectively silent while the deep workings can feel the plant running below them.
         do {
-            let quiet = World(level: 1, colonyIndex: 0, seed: 4242)
-            for _ in 0..<40 { quiet.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
-            check(quiet.machineSiteCountForTest == 0 && quiet.machineHumLevelForTest == 0,
-                  "no machinery hum on the upper floors (level 1)")
+            var humByFloor: [Int: Float] = [:]
+            for lvl in 1...6 {
+                let w = World(level: lvl, colonyIndex: 0, seed: 4242)
+                for _ in 0..<240 { w.update(dt: 1.0 / 60, input: InputState(), audio: audio) }   // let it ease up
+                check(w.machineSiteCountForTest == 0, "floor \(lvl) has no machinery of its own")
+                humByFloor[lvl] = w.machineHumLevelForTest
+            }
+            check((2...6).allSatisfy { (humByFloor[$0] ?? 0) > (humByFloor[$0 - 1] ?? 0) },
+                  "the plant is heard THROUGH the deck, louder the closer you get — "
+                  + (1...6).map { String(format: "%.4f", humByFloor[$0] ?? 0) }.joined(separator: " "))
+            check((humByFloor[1] ?? 1) < 0.005,
+                  String(format: "…inaudible on the surface (%.4f)", humByFloor[1] ?? 0))
+            check((humByFloor[6] ?? 0) < 0.18,
+                  String(format: "…and never as loud as standing on the plant floor itself (%.4f vs 0.18)",
+                         humByFloor[6] ?? 0))
 
             let plant = World(level: 7, colonyIndex: 0, seed: 4242)
             for _ in 0..<40 { plant.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
@@ -918,6 +931,66 @@ enum SmokeTest {
             if nbrsOpen < 3 { queenWedged += 1 }                              // boxed against walls
         }
         check(queenWedged == 0, "the Queen always spawns with clearance (\(queenWedged) wedged)")
+
+        // 2g2a. HEADROOM RAMPS TOWARD THE PLANT. It used to change in one step at floor 7, so the
+        // citadel read as two places rather than one you descend through. Checked against the
+        // DECISION (rooms raised of rooms present) rather than a share of open cells, because
+        // corridors are deliberately left low: a floor with every room raised still measures about
+        // two thirds by area, and the trend drowns in how much corridor a layout happened to get.
+        // Averaged over seeds — one floor's room count is a roll of the dice; the trend is the claim.
+        var tallByFloor: [Int: Float] = [:], raisedByFloor: [Int: Float] = [:]
+        let seeds = (0..<8).map { UInt64($0) &* 7919 &+ 11 }
+        for lvl in 1...8 {
+            var share: Float = 0, raised: Float = 0
+            for sd in seeds {
+                _ = MapGen.generate(level: lvl, colonyIndex: Progression.planetIndex(lvl), seed: sd)
+                raised += Float(MapGen.lastTallRooms)
+                share += MapGen.debugRoomCount > 0
+                    ? Float(MapGen.lastTallRooms) / Float(MapGen.debugRoomCount) : 0
+            }
+            tallByFloor[lvl] = share / Float(seeds.count)
+            raisedByFloor[lvl] = raised / Float(seeds.count)
+        }
+        // Trend on the COUNT the ramp decides, not on its share of rooms: the share's denominator is
+        // however many rooms a layout happened to get, and floors 1 and 2 both raise exactly one
+        // chamber, so the share between them moves with the room count rather than with the ramp.
+        let tallTrend = (2...8).allSatisfy { (raisedByFloor[$0] ?? 0) >= (raisedByFloor[$0 - 1] ?? 0) }
+        check(tallTrend, "headroom RAMPS toward the plant — rooms raised "
+              + (1...8).map { String(format: "%.1f", raisedByFloor[$0] ?? 0) }.joined(separator: " ")
+              + ", i.e. " + (1...8).map { String(format: "%.0f%%", (tallByFloor[$0] ?? 0) * 100) }.joined(separator: " "))
+        check((tallByFloor[7] ?? 0) > 0.99 && (tallByFloor[8] ?? 0) > 0.99,
+              "…and every room on the plant floors is raised")
+        check((tallByFloor[1] ?? 1) < 0.25, "…while the surface gets one raised chamber, not a floor of them")
+
+        // 2g2b. A FAILED STRIP LIGHT GOES DARK. It used to spark while still glowing and still
+        // lighting the room, which is why "busted" never read as broken. Only the surface facility
+        // has strip lights at all (theme() puts .litPanel in the 1–2 palette and nothing below), so
+        // that is where this is asserted — and the count is asserted non-zero so the invariant below
+        // cannot pass by finding nothing.
+        var litSeen = 0, deadSeen = 0, deadStillLit = 0
+        var deadByFloor: [Int: Float] = [:]
+        for lvl in 1...8 {
+            var share: Float = 0
+            for sd in seeds {
+                let m = MapGen.generate(level: lvl, colonyIndex: Progression.planetIndex(lvl), seed: sd).map
+                var lit = 0
+                for i in 0..<(m.w * m.h) where m.wall[i] == WallTex.litPanel.rawValue { lit += 1 }
+                for i in m.deadFixture where m.wall[i] == WallTex.litPanel.rawValue { deadStillLit += 1 }
+                litSeen += lit; deadSeen += m.deadFixture.count
+                share += (m.deadFixture.count + lit) > 0
+                    ? Float(m.deadFixture.count) / Float(m.deadFixture.count + lit) : 0
+            }
+            deadByFloor[lvl] = share / Float(seeds.count)
+        }
+        check(litSeen > 0 && deadSeen > 0,
+              "the sweep saw real strip lights and real failures (\(litSeen) lit, \(deadSeen) dead)")
+        check(deadStillLit == 0,
+              "a failed run is never left as a lit panel — it cannot glow while dark (\(deadStillLit))")
+        check((deadByFloor[2] ?? 0) > (deadByFloor[1] ?? 0),
+              "the surface facility loses more runs the deeper it goes — "
+              + String(format: "floor 1 %.0f%%, floor 2 %.0f%%", (deadByFloor[1] ?? 0) * 100, (deadByFloor[2] ?? 0) * 100))
+        check((3...8).allSatisfy { (deadByFloor[$0] ?? 0) == 0 },
+              "…and below it there are no strip lights to lose, which is the descent doing the work")
 
         // 2g2b. transit boxes are SEALED: entry/exit cars and teleporter pads
         // must have back, jambs AND back corners solid. A ring open at a
