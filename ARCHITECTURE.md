@@ -89,7 +89,7 @@ fallback for a missing sample. See [CREDITS.md](CREDITS.md).
 | `SmokeTest.swift` | The suite: generation, solvability, combat, saves, determinism fingerprint |
 | `RasterShot.swift` | ~65 frames covering every environment feature — the shotcheck input |
 | `Captures.swift` / `RoomShots.swift` / `MaterialPreview.swift` / `ProofRoom.swift` | Screenshot + room / material / proof captures |
-| `AudioProbe.swift` | Offline audio-graph render + per-path RMS |
+| `AudioProbe.swift` | Offline audio-graph render; per-path RMS + the mix asserted as ratios |
 | `GPUProbe.swift` / `CreatureMergeProbe.swift` / `QueenMeshTest.swift` / `RigProbe.swift` | Frame-cost and mesh/rig probes |
 | `generate_icon.swift` | Build-time app-icon generator (not compiled in) |
 
@@ -123,6 +123,28 @@ meshes are far larger than a collision radius, so before drawing, each creature'
 mesh is settled clear of walls and furniture; that settled position is the **sim's**
 (`Monster.drawnPos`), and every aim and hit test uses it, because the body you can see has
 to be the body you can hit.
+
+
+## Audio levels
+
+**Two sounds carry information in their loudness,** so for them a level is data rather than
+taste: a spark shower's volume is how far away its panel is, and the far Signal's is how deep
+into a citadel you have gone. Both were wrong, in ways only a measurement could show.
+`AVAudioPlayerNode.volume` is not dependable here — a node ignores the volume set on it for the
+**first** buffer it ever renders, and through the shared one-shot pool a quarter of a fault's
+distance attenuation still came out at 96% of full level *at an identical peak*. Every fault in
+the game therefore arrived at the same loudness whatever its distance, and three separate
+commits that "quietened the electrical fault" by trimming the gain table changed nothing that
+could be heard. The spark voices now multiply their level into **their own scratch copy of the
+sample** and leave node volume at 1 for ever, so the level is arithmetic this codebase owns. The
+far Signal's trim was declared in the table and then never applied, which let the bleed play at
+**full scale** on the bottom floor of every citadel; it is applied where the depth ramp is.
+
+`AudioProbe.swift` (`CITADEL_AUDIOPROBE=1`) renders the real graph offline and asserts the mix in
+**relative** terms — the calm room tone as the reference, the plant hum and a weapon shot as the
+two ceilings — because every level in it was specified as a comparison and not as a number. It
+also sweeps a fault's attenuation and fires the same shower repeatedly, which is what caught both
+faults above. Change a trim, re-run it.
 
 ## Determinism
 

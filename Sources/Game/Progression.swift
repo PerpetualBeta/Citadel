@@ -32,6 +32,26 @@ enum Progression {
     /// True once this floor was the LAST one: there is no next building to rotate into.
     static func isFinalFloor(_ level: Int) -> Bool { level >= totalFloors }
 
+    // ── THE DEPTHS ───────────────────────────────────────────────────────────────────────────
+    // The bottom floors of every citadel are the DEPTHS — blasted rock rather than built
+    // colony, and the floors where THE SIGNAL bleeds through with no source you can walk to.
+    // ONE boundary with two consequences, which is why it lives here rather than at either
+    // site: the reel-to-reel deck that teaches you the sound only appears ABOVE it (a floor
+    // cannot introduce a sound its own air already carries), and the sourceless bleed only
+    // exists BELOW it. Both used to hardcode the boundary, from opposite ends.
+
+    /// How many floors at the bottom of each citadel are the depths.
+    static let deepFloors = 3
+    /// 1…`deckFloors` — the floors above the depths, the only ones a SIGNAL deck can sit on.
+    static var deckFloors: Int { floorsPerBuilding - deepFloors }
+
+    /// THE FAR SIGNAL's depth ramp, 0…1 — the SHAPE of the fade, not its level (`AudioEngine`
+    /// owns the trim). Silent above the depths, then linear: a third of the way up on the first
+    /// deep floor, full at the bottom, so reaching the deepest floor is the payoff.
+    static func farSignalRamp(_ level: Int) -> Float {
+        max(0, min(1, Float(floorInBuilding(level) - deckFloors) / Float(deepFloors)))
+    }
+
     // ── THE SEVEN ────────────────────────────────────────────────────────────────────────────
     //
     // The only humans left alive-ish in the cluster, and there are exactly seven of them: seven

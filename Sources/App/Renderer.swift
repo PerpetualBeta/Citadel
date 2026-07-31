@@ -758,13 +758,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         deathTimer = 0
         state = .playing
         audio.elevatorMove(false)
-        // THE FAR SIGNAL fades in across the DEPTHS — the last `deepFloors` floors of
-        // each citadel (the deck-free floors, where the player already knows the sound).
-        // Faint as you enter them, full at the deepest, so reaching the bottom is the payoff.
-        let deepFloors = 3
-        let intoDepths = Progression.floorInBuilding(level) - (Progression.floorsPerBuilding - deepFloors)
-        let farGain = max(0, min(1, Float(intoDepths) / Float(deepFloors)))
-        audio.startMusic(.level, depth: level, farSignalGain: farGain)
+        // THE FAR SIGNAL fades in across the DEPTHS — faint as you enter them, full at the
+        // deepest, so reaching the bottom of a citadel is the payoff. The ramp belongs to
+        // `Progression`, which owns the boundary the deck placement reads from the other side.
+        audio.startMusic(.level, depth: level, farSignalGain: Progression.farSignalRamp(level))
     }
 
     private func nextLevel() {

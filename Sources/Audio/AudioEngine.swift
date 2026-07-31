@@ -126,10 +126,23 @@ final class AudioEngine {
             case .fault: return 0.7
             case .faultHum: return 0.34       // quietened relative to the ambient bed
             case .machineHum: return 0.30     // a working compressor, not a jet: sits under the ambient bed
-            case .faultBuzz: return 0.24      // pre-spark buzz — kept low; only fires when close
-            case .faultCrackle: return 0.32   // the spark itself
+            // The spark shower, HALVED against what the game actually shipped — set by measuring
+            // the old level rather than by halving the old constant, because the old constant was
+            // not what came out (see `faultShotNodes`). At the panel the crackle now renders at
+            // 0.017 RMS against a measured 0.034 before, and for the first time it also gets
+            // quieter as you walk away from the panel.
+            case .faultBuzz: return 0.20      // pre-spark buzz — kept under the crackle it warns of
+            case .faultCrackle: return 0.31   // the spark itself
             case .signalDeep: return 0.9      // the reel-to-reel playback — front and clear
-            case .signalFar: return 0.45      // the distant bleed — under the bed
+            // THE FAR SIGNAL at FULL depth, i.e. the bottom floor of a citadel;
+            // `Progression.farSignalRamp` scales it to a third and two thirds on the two floors
+            // above. Set by MEASUREMENT, not by matching another trim: a stem's output level is
+            // its node volume times the intrinsic RMS of its sample, and these samples differ by
+            // far more than their trims do — signal_far.wav is hot, and the room tone it plays
+            // over is not. CITADEL_AUDIOPROBE renders the real graph and asserts the brief:
+            // barely there on the first deep floor, machinery still over it on the second,
+            // unmistakable on the last and still clear of a weapon. Change this, re-run that.
+            case .signalFar: return 0.11
             case .crowdBed: return 0.55        // a packed hall heard THROUGH the picture, never over it
             case .crowdCheer: return 1.0       // the medal — the loudest moment of the ceremony
             case .crowdChant: return 0.8       // deliberately under the medal: the second beat, not the first
@@ -162,6 +175,28 @@ final class AudioEngine {
     private let faultVari = AVAudioUnitVarispeed()            // per-hit pitch/pace tweak so the crack never repeats
     private let faultEQ = AVAudioUnitEQ(numberOfBands: 1)     // lowpass — "heard through steel"
     private let faultReverb = AVAudioUnitReverb()             // echo down the corridors → distance
+    // spark-shower chain — the localised fault's BUZZ and CRACKLE, the only one-shots whose level
+    // carries information: World scales them by distance, so a shower across the room has to
+    // arrive quieter than one at your shoulder.
+    //
+    // They are the one path that does NOT use a player node's `volume`, because measurement says
+    // it cannot be trusted for this. A node's volume is ignored for the FIRST buffer it ever
+    // renders — the first spark on each voice came out at the sample's own level, 2.6× too loud
+    // and 6× too peaky, and only later ones obeyed. Priming the voices with silence did not fix
+    // it. Through the shared `sfxPool` it was worse still: a quarter of the attenuation rendered
+    // at 96% of full, at an identical peak, so every fault in the game arrived at the same
+    // loudness whatever its distance, and three separate commits that trimmed these sounds in
+    // the gain table changed nothing anyone could hear.
+    //
+    // So the gain is applied to the SAMPLES, not to the mixer: each voice owns a scratch buffer,
+    // and firing copies the source into it multiplied by the level. Node volume stays at 1 for
+    // ever. The level is then plain arithmetic on floats this file owns, which is exactly what a
+    // distance cue needs to be — and `CITADEL_AUDIOPROBE` asserts the response is linear.
+    // They also play on the AMBIENT bus, which is what `Sound.bus` always said and the pool
+    // ignored. Four voices so overlapping showers don't cut each other short.
+    private let faultShotNodes = (0..<4).map { _ in AVAudioPlayerNode() }
+    private var faultShotBufs: [AVAudioPCMBuffer] = []
+    private var faultShotNext = 0
     private let staticNode = AVAudioPlayerNode()              // the teleport static: a seamless noise loop, volume-driven per frame
     private var staticBuf: AVAudioPCMBuffer?
     private var staticOn = false
@@ -304,6 +339,9 @@ final class AudioEngine {
         engine.connect(faultVari, to: faultEQ, format: canonical)
         engine.connect(faultEQ, to: faultReverb, format: canonical)
         engine.connect(faultReverb, to: ambMix, format: canonical)
+        // spark-shower voices: DRY and straight to the ambient bus. No reverb — a fault you can
+        // see is right there in the room with you, and the echo belongs to the distant one above.
+        for n in faultShotNodes { engine.attach(n); engine.connect(n, to: ambMix, format: canonical) }
         // drip chain: the plinks echo off wet stone — a room-scale wash, drier
         // and tighter than the distant-vox hall so nearby drips still snap
         dripReverb.loadFactoryPreset(.largeRoom)
@@ -368,6 +406,17 @@ final class AudioEngine {
             // first level"). Prime each bed node with the same silence now.
             for s in [Sound.bedDrone, .bedPulse, .bedTension, .bedSwarm] {
                 if let n = loopNodes[s] { n.play(); n.scheduleBuffer(warm, at: nil, completionHandler: nil) }
+            }
+            for n in faultShotNodes { n.play(); n.scheduleBuffer(warm, at: nil, completionHandler: nil) }   // and the spark voices
+        }
+        // One scratch buffer per spark voice, big enough for the longest spark sample — the level
+        // is multiplied into these on the way out (see `playFaultOneShot`). Sized from the samples
+        // rather than from a number, so adding a longer crackle cannot silently truncate it.
+        let faultFrames = [Sound.faultBuzz, .faultCrackle]
+            .compactMap { bank[$0]?.map(\.frameLength).max() }.max() ?? 0
+        if faultFrames > 0 {
+            faultShotBufs = faultShotNodes.compactMap { _ in
+                AVAudioPCMBuffer(pcmFormat: canonical, frameCapacity: faultFrames)
             }
         }
     }
@@ -437,6 +486,64 @@ final class AudioEngine {
     /// and its loop seam. This sound cannot be auditioned in office mode, so it is verified by
     /// measurement instead of by ear.
     var machineHumBuffer: AVAudioPCMBuffer? { bank[.machineHum]?.first }
+    /// Harness only: as `renderOfflineRMS`, but also the PEAK sample and how many samples came
+    /// out at or past full scale. RMS alone cannot tell a loud mix from a clipping one — and a
+    /// clipping mix stops responding to its own trims, so every gain below it becomes a lie.
+    ///
+    /// Rendered in SMALL chunks — a mixer applies an input's volume change at render-cycle
+    /// granularity, so pumping a 4096-frame chunk (93 ms, far longer than the game's own cycle)
+    /// lets a percussive sample's whole attack play at the volume the previous sound left on that
+    /// pooled voice. That is a property of the measuring apparatus, not of the game, and it made
+    /// the spark crackle look immune to its own trim. 512 frames is ~12 ms, the order a live
+    /// device uses.
+    func renderOfflineStats(seconds: Double, chunkFrames: AVAudioFrameCount = 512)
+        -> (rms: Float, peak: Float, clipped: Int, frames: Int) {
+        guard engine.manualRenderingMode == .offline,
+              let buf = AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: 4096)
+        else { return (0, 0, 0, 0) }
+        var acc = 0.0, n = 0, peak: Float = 0, clipped = 0, frames = 0
+        var left = AVAudioFrameCount(44100 * seconds)
+        while left > 0 {
+            let chunk = min(chunkFrames, left)
+            guard (try? engine.renderOffline(chunk, to: buf)) == .success else { break }
+            frames += Int(buf.frameLength)
+            for c in 0..<Int(buf.format.channelCount) {
+                let d = buf.floatChannelData![c]
+                for i in 0..<Int(buf.frameLength) {
+                    let a = abs(d[i])
+                    acc += Double(d[i] * d[i]); n += 1
+                    peak = max(peak, a)
+                    if a >= 0.999 { clipped += 1 }
+                }
+            }
+            left -= chunk
+        }
+        return (n > 0 ? Float((acc / Double(n)).squareRoot()) : 0, peak, clipped, frames)
+    }
+    /// Harness only: a bundled sample's OWN peak and RMS, before the graph touches it. Without
+    /// this, a level coming out of the engine cannot be attributed — sample, trim, or bus.
+    func sampleStats(_ s: Sound) -> (rms: Float, peak: Float, seconds: Float) {
+        guard let b = bank[s]?.first, let d = b.floatChannelData else { return (0, 0, 0) }
+        var acc = 0.0, n = 0, peak: Float = 0
+        for c in 0..<Int(b.format.channelCount) {
+            for i in 0..<Int(b.frameLength) {
+                let v = d[c][i]; acc += Double(v * v); n += 1; peak = max(peak, abs(v))
+            }
+        }
+        return (n > 0 ? Float((acc / Double(n)).squareRoot()) : 0, peak,
+                Float(b.frameLength) / Float(b.format.sampleRate))
+    }
+    /// Harness only: whether the SAMPLED reactive bed loaded, or the graph fell back to the
+    /// synth bed. The two behave differently under measurement — the sampled bed is a steady
+    /// loop, the synth bed re-enqueues voices every tick — so the probe has to know which it got.
+    var sampleBedsLoaded: Bool { bank[.bedDrone] != nil }
+    /// Harness only: how long a looping stem is, so the probe can sweep a WHOLE loop rather
+    /// than sample a one-second window of it. The far Signal is 24 s and deliberately
+    /// non-stationary, so any shorter window measures wherever it happened to land.
+    func loopSeconds(_ s: Sound) -> Float {
+        guard let b = bank[s]?.first else { return 0 }
+        return Float(b.frameLength) / Float(b.format.sampleRate)
+    }
     #endif
 
     /// A seamless 2-second compressor loop, generated.
@@ -823,10 +930,31 @@ final class AudioEngine {
     /// The crackle as the sparks emit — distance-attenuated one-shot.
     func faultCrackle(_ vol: Float) { playFaultOneShot(.faultCrackle, vol) }
 
+    /// A spark shower's buzz or crackle, at `vol` (1 at the panel, fading with distance).
+    ///
+    /// The level is baked into the samples rather than set on the node — see `faultShotNodes` for
+    /// the measurements that forced that. `stop()` first so the render thread has certainly let go
+    /// of the scratch buffer before it is rewritten.
     private func playFaultOneShot(_ s: Sound, _ vol: Float) {
         alog("play \(s) vol=\(String(format: "%.2f", vol))")
-        guard vol > 0.02, !isMuted(s), engine.isRunning, let bufs = bank[s] else { return }
-        playOneShot(bufs, gain: s.gain * min(1, vol))
+        guard vol > 0.02, !isMuted(s), engine.isRunning,
+              let src = bank[s]?.randomElement(),
+              faultShotBufs.count == faultShotNodes.count,
+              let sd = src.floatChannelData else { return }
+        let i = faultShotNext; faultShotNext = (faultShotNext + 1) % faultShotNodes.count
+        let node = faultShotNodes[i], dst = faultShotBufs[i]
+        guard let dd = dst.floatChannelData,
+              src.format.channelCount == dst.format.channelCount,
+              src.frameLength <= dst.frameCapacity else { return }
+        let level = s.gain * min(1, vol), n = Int(src.frameLength)
+        node.stop()
+        for c in 0..<Int(src.format.channelCount) {
+            let from = sd[c], to = dd[c]
+            for f in 0..<n { to[f] = from[f] * level }
+        }
+        dst.frameLength = src.frameLength
+        node.scheduleBuffer(dst, at: nil, options: .interrupts, completionHandler: nil)
+        node.play()
     }
 
     // ── arcade mini-game (the Space Invaders easter egg) — pure synth bleeps, no
@@ -890,10 +1018,11 @@ final class AudioEngine {
             }
             _ = startLoop(.faultHum, volume: 0)     // electrical-fault proximity hum; World drives its volume each frame
             _ = startLoop(.machineHum, volume: 0)   // plant machinery proximity hum; World drives its volume each frame
-            // THE FAR SIGNAL — in the depths, the intercepted transmission bleeds
-            // through with no source you can walk to. Fades up as you descend (the
-            // caller scales the gain by depth); silent above the deep floors.
-            if farSignalGain > 0 { _ = startLoop(.signalFar, volume: farSignalGain) }
+            // THE FAR SIGNAL — in the depths, the intercepted transmission bleeds through with
+            // no source you can walk to. The caller passes the depth RAMP (0…1); the stem's own
+            // trim sets the level, exactly as every other loop here is scaled. Leaving the trim
+            // off is what let the bleed play at full scale on the bottom floor of each citadel.
+            if farSignalGain > 0 { _ = startLoop(.signalFar, volume: farSignalGain * Sound.signalFar.gain) }
         }
     }
     func stopMusic() { mode = .none; stopAllLoops() }

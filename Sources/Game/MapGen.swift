@@ -704,18 +704,18 @@ enum MapGen {
             }
         }
 
-        // THE SIGNAL deck: 1 (max 2) per BUILDING, only within floors 1–5. Decided
-        // BUILDING-STABLY so a single building doesn't over- or under-shoot: the run
-        // seed is recoverable (the per-floor seed is baseSeed + level; see Renderer),
-        // so a per-building RNG picks which of floors 1–5 host the deck, and every
-        // floor of that building agrees.
+        // THE SIGNAL deck: 1 (max 2) per BUILDING, and never in the depths — the bleed already
+        // carries the sound down there (`Progression.deckFloors`). Decided BUILDING-STABLY so a
+        // single building doesn't over- or under-shoot: the run seed is recoverable (the per-floor
+        // seed is baseSeed + level; see Renderer), so a per-building RNG picks which of the upper
+        // floors host the deck, and every floor of that building agrees.
         var signalDeckFloor = false
-        if Progression.floorInBuilding(level) <= 5 {
+        if Progression.floorInBuilding(level) <= Progression.deckFloors {
             let runSeed = seed &- UInt64(level)
             var brng = Rng(seed: runSeed ^ (UInt64(Progression.building(level)) &* 0x9E37_79B9_7F4A_7C15) ^ 0x5165_DEC0)
             let count = brng.chance(0.45) ? 2 : 1
             var floors = Set<Int>()
-            while floors.count < count { floors.insert(brng.i(1, 5)) }
+            while floors.count < count { floors.insert(brng.i(1, Progression.deckFloors)) }
             signalDeckFloor = floors.contains(Progression.floorInBuilding(level))
         }
 
@@ -1858,8 +1858,8 @@ enum MapGen {
 
         // ── THE SIGNAL archive ── a reel-to-reel deck in the control/ops room (the one
         // with the CRT terminal bank), on a wall clear of the bank + the room's other
-        // furniture. RARE: 1 (max 2) per BUILDING, and only within floors 1–5 (by 6+
-        // the player knows the sound). The building-stable choice is `signalDeck`,
+        // furniture. RARE: 1 (max 2) per BUILDING, and never in the depths (down there the
+        // player already knows the sound). The building-stable choice is `signalDeck`,
         // decided in attemptGen; here we just honour it where a control room fits it.
         if signalDeck {
             var deckPlaced = false
