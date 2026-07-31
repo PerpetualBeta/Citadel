@@ -996,6 +996,37 @@ extension RasterRenderer {
                 print("RASTERSHOT: wrote raster-pipework.png (\(f.w < 0.5 ? "valve" : "gauge") at \(fx),\(fz); \(m.pipeFittings.count) fittings, \(routedCells) routed cells, \(rr.pipeVertCount) pipe verts of \(rr.totalVertCount) total)")
                 break
             }
+            // PIPE RUN TERMINUS — where a wall-hugging run reaches the end of its wall and stops. Nothing
+            // in this set covered one, which is how an open bore at that end survived a baseline and two
+            // reports: the run's tube was uncapped, and looking along its axis you saw straight down it.
+            // Found from the routing mask (a routed cell whose neighbour along the run is unrouted) and
+            // framed from along the run, which is the only angle the bore is visible from.
+            var endShot = false
+            for yy in 2..<(m.h - 2) where !endShot {
+                for xx in 2..<(m.w - 2) where !endShot {
+                    guard op(xx, yy), m.pipe[m.idx(xx, yy)] > 0.5 else { continue }
+                    for (ax, ay) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                        let nx = xx + ax, ny = yy + ay
+                        guard m.inBounds(nx, ny), !(op(nx, ny) && m.pipe[m.idx(nx, ny)] > 0.5) else { continue }
+                        // stand back ALONG the run, on the far side, as far as the floor stays open
+                        var stand = SIMD2<Float>(Float(xx) + 0.5, Float(yy) + 0.5)
+                        var got = false
+                        for d in stride(from: Float(1.5), through: 3.5, by: 0.5) {
+                            let p = SIMD2<Float>(Float(xx) + 0.5 - Float(ax) * d, Float(yy) + 0.5 - Float(ay) * d)
+                            guard op(Int(p.x), Int(p.y)) else { break }
+                            stand = p; got = true
+                        }
+                        guard got else { continue }
+                        world.player.pos = stand
+                        world.player.dir = atan2(Float(ay), Float(ax))
+                        _ = rr.render(world, into: canvas)
+                        Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1, to: dir.appendingPathComponent("raster-pipe-end.png"))
+                        print("RASTERSHOT: wrote raster-pipe-end.png (run ends at \(xx),\(yy), viewed along \(ax),\(ay))")
+                        endShot = true
+                        break
+                    }
+                }
+            }
             // TEE + RISER close-up — find the START of a tall stretch along a wall (the renderer feeds the high
             // main there with a single riser off a tee) and stand off it, so the junction bodies read.
             var teeShot = false

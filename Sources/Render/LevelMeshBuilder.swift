@@ -314,8 +314,12 @@ struct LevelMeshBuilder {
     /// Emitted into the STATIC mesh: pipework never moves, so it costs nothing per frame.
     private mutating func buildPipework(_ map: GameMap, into v: inout [PVert]) {
         let copper = RasterRenderer.M(SIMD3(0.60, 0.35, 0.25), 0.44, 0.85)      // drawn copper, warm against the iron
-        let flange = RasterRenderer.M(SIMD3(0.42, 0.26, 0.19), 0.52, 0.80)
         let steel  = RasterRenderer.M(SIMD3(0.34, 0.36, 0.40), 0.40, 0.80)
+        // A fitting is a CASTING: duller and a shade darker than the drawn pipe it joins, so the
+        // junction reads as a separate part — and it matches ITS OWN pipe. One shared warm `flange`
+        // for every service is what put copper elbows on the grey steel line.
+        let copperFit = RasterRenderer.M(SIMD3(0.42, 0.26, 0.19), 0.52, 0.80)
+        let steelFit  = RasterRenderer.M(SIMD3(0.25, 0.27, 0.30), 0.54, 0.72)
         let enamel = RasterRenderer.M(SIMD3(0.40, 0.045, 0.035), 0.34, 0.10)    // red-enamel handwheel
         let dialF  = RasterRenderer.M(SIMD3(0.82, 0.80, 0.74), 0.35, 0.05)
         // Pipework hangs at ONE height for the whole level — the standard storey less the kernel's 0.28 drop.
@@ -377,19 +381,28 @@ struct LevelMeshBuilder {
                     /// One continuous service along the span, mitred square into the wall at both ends.
                     /// `sides` stays lean and caps are dropped where an end is buried in a wall or behind a
                     /// flange — pipework dominates the level mesh, so an invisible cap is pure cost.
-                    func service(_ py: Float, _ r: Float, _ mat: Mat, _ lateral: Float, _ sides: Int) {
+                    /// `fit` is the FITTING material, taken per service rather than shared: a single warm
+                    /// `flange` on every service put copper castings on the steel line.
+                    func service(_ py: Float, _ r: Float, _ mat: Mat, _ fit: Mat, _ lateral: Float, _ sides: Int) {
                         let a2 = at(t0, lateral), b2 = at(t1, lateral)
                         let a = SIMD3<Float>(a2.x, py, a2.y), b = SIMD3<Float>(b2.x, py, b2.y)
-                        RasterRenderer.emitTube(a, b, r: r, sides: sides, mat, caps: false, into: &v)
+                        // CAPPED at both ends. The run stops at the outer edge of its first and last cell,
+                        // and where the wall stretch ends at a room corner that edge stands in open air —
+                        // so its bore was a black hole you could look straight down, framed by the fitting.
+                        // The sleeves around it hid nothing: they are wider than the pipe, and the wedge
+                        // between the two perpendicular ones is exactly where the bore showed through.
+                        RasterRenderer.emitTube(a, b, r: r, sides: sides, mat, caps: true, into: &v)
                         for (pt, dir) in [(a, SIMD3<Float>(-axis.x, 0, -axis.y)), (b, SIMD3<Float>(axis.x, 0, axis.y))] {
                             let face = pt + intoWall * (off + lateral + 0.04)
-                            RasterRenderer.emitTube(pt, face, r: r, sides: sides, mat, caps: false, into: &v)     // spur square into the wall
-                            RasterRenderer.emitElbow(at: pt, legA: dir * -1, legB: intoWall, r: r, flange, into: &v)
-                            RasterRenderer.emitTube(face - intoWall * 0.012, face + intoWall * 0.012, r: r * 1.6, sides: 8, flange, into: &v)
+                            // the spur needs NO caps: its near end coincides with the run's own new cap and the
+                            // elbow around it, and its far end is 4 cm inside the wall
+                            RasterRenderer.emitTube(pt, face, r: r, sides: sides, mat, caps: false, into: &v)
+                            RasterRenderer.emitElbow(at: pt, legA: dir * -1, legB: intoWall, r: r, fit, capNear: true, into: &v)
+                            RasterRenderer.emitTube(face - intoWall * 0.012, face + intoWall * 0.012, r: r * 1.6, sides: 8, fit, into: &v)
                         }
                     }
-                    service(runY, pipeR, copper, 0, 10)                     // the copper main
-                    service(runY - 0.105, pipeR * 0.66, steel, 0.012, 8)    // a thinner steel line beneath it
+                    service(runY, pipeR, copper, copperFit, 0, 10)                     // the copper main
+                    service(runY - 0.105, pipeR * 0.66, steel, steelFit, 0.012, 8)     // a thinner steel line beneath it
                     // HIGH MAIN: carried under a double-height hall's own ceiling, fed by ONE riser off the low
                     // main via a real tee, and terminating into the wall through an elbow at its far end.
                     var t = k
@@ -410,13 +423,13 @@ struct LevelMeshBuilder {
                             let r2 = at(riserT, lateral), e2 = at(hEnd, lateral)
                             let footY = runY, top = SIMD3<Float>(r2.x, highY, r2.y), foot = SIMD3<Float>(r2.x, footY, r2.y)
                             RasterRenderer.emitTube(foot, top, r: hr, sides: 9, copper, caps: false, into: &v)                       // the riser
-                            RasterRenderer.emitTube(top, SIMD3(e2.x, highY, e2.y), r: hr, sides: 9, copper, caps: false, into: &v)    // the high main
+                            RasterRenderer.emitTube(top, SIMD3(e2.x, highY, e2.y), r: hr, sides: 9, copper, caps: true, nearCap: false, into: &v)   // the high main; its far end is the wall terminus
                             let up = SIMD3<Float>(0, 1, 0), along = SIMD3<Float>(axis.x, 0, axis.y)
-                            RasterRenderer.emitTee(at: SIMD3(r2.x, footY, r2.y), run: along, branch: up, r: pipeR, flange, into: &v)  // branch off the low main
-                            RasterRenderer.emitElbow(at: top, legA: -up, legB: along, r: hr, flange, into: &v)                        // riser turns into the high main
+                            RasterRenderer.emitTee(at: SIMD3(r2.x, footY, r2.y), run: along, branch: up, r: pipeR, copperFit, into: &v)  // branch off the low main
+                            RasterRenderer.emitElbow(at: top, legA: -up, legB: along, r: hr, copperFit, into: &v)                        // riser turns into the high main
                             let fEnd = SIMD3<Float>(e2.x, highY, e2.y)
                             RasterRenderer.emitTube(fEnd, fEnd + intoWall * (off + lateral + 0.04), r: hr, sides: 9, copper, caps: false, into: &v)
-                            RasterRenderer.emitElbow(at: fEnd, legA: -along, legB: intoWall, r: hr, flange, into: &v)                 // and back into the wall
+                            RasterRenderer.emitElbow(at: fEnd, legA: -along, legB: intoWall, r: hr, copperFit, capNear: true, into: &v)  // and back into the wall
                         }
                         t = hi + 1
                     }

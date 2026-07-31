@@ -342,9 +342,14 @@ extension RasterRenderer {
     /// you looked straight through that annulus into the inside of the sleeve's far wall, and the fitting read
     /// as a torn hollow cage rather than a casting. The pipe emerging through the middle hides the centre of
     /// each disc, so what you see is the flat end face a real cast fitting has.
-    static func emitElbow(at p: SIMD3<Float>, legA: SIMD3<Float>, legB: SIMD3<Float>, r: Float, _ body: Mat, into v: inout [PVert]) {
-        emitTube(p, p + legA * 0.055, r: r * 1.26, sides: 9, body, caps: true, nearCap: false, into: &v)
-        emitTube(p, p + legB * 0.055, r: r * 1.26, sides: 9, body, caps: true, nearCap: false, into: &v)
+    /// `capNear` closes the discs at `p` itself. Mid-run — a riser turning into a high main — the two
+    /// sleeves leave `p` with pipe inside each, so those discs are buried and omitting them is free.
+    /// At a run TERMINUS they are not: the wedge between two perpendicular sleeves is open to the
+    /// room, and you see through it into whatever the sleeves failed to close.
+    static func emitElbow(at p: SIMD3<Float>, legA: SIMD3<Float>, legB: SIMD3<Float>, r: Float, _ body: Mat,
+                          capNear: Bool = false, into v: inout [PVert]) {
+        emitTube(p, p + legA * 0.055, r: r * 1.26, sides: 9, body, caps: true, nearCap: capNear, into: &v)
+        emitTube(p, p + legB * 0.055, r: r * 1.26, sides: 9, body, caps: true, nearCap: capNear, into: &v)
     }
 
     /// Wall-mount ONE bulkhead fixture: the imported brass lamp plus its lit, ribbed lens (or the procedural
