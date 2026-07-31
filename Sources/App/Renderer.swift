@@ -70,6 +70,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var colonyIndex = 0
     private var carry: Player?
     private var carryScore = 0             // score the marine arrives on a floor with (a fresh run starts at 0)
+    /// WHICH of the seven this RUN has cremated. Lives here rather than in `World` because a World is
+    /// one floor and this is the whole descent — and it is the only run state the seed cannot rebuild:
+    /// `Progression.survivors` says where the bodies are, but only the player's history says which she
+    /// has burned. Carried into saves for the same reason (see `SaveSlot.cremated`).
+    private var cremated: Set<Int> = []
     /// The state she began the CURRENT floor on — what ⌘S writes, whenever it is pressed.
     private var checkpoint: SaveSlot?
     let saves = SaveGames()
@@ -510,6 +515,16 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     /// Enter the ceremony. The world stays alive — it carries the score the tally reports.
     private func beginEnding() {
+        // ── THE SEVEN, ALL OF THEM ── the run is over, so this is the last moment the tally can be
+        // judged. The final floor's own pyres have not been folded in yet (that happens in
+        // `installWorld`, and there is no next floor to install), so union them here first.
+        // Silent, like each individual cremation: it lands in the FINAL SCORE on the tally and
+        // nowhere else. A player who did it will notice the number; one who didn't is never told
+        // what they missed, which is the only way a secret this large stays worth finding.
+        if let w = world {
+            cremated.formUnion(w.cremated)
+            if cremated.count >= Colonist.modelCount { w.score += World.allCrematedBonus }
+        }
         genEpoch += 1                    // orphan any floor-49 build that was already in flight
         pendingWorld = nil; pendingLevel = 0
         rideWorld = nil
@@ -621,6 +636,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         level = min(max(1, s.level), Progression.totalFloors)
         colonyIndex = Progression.planetIndex(level)
         carryScore = s.score
+        cremated = Set(s.cremated ?? [])          // nil = a save written before cremation existed: nobody burned
         // A standard-issue marine, then overwritten with what she was carrying. Built this way round
         // so a save written before a weapon or ammo type existed still lands on a valid player: the
         // arrays below are only copied as far as they go.
@@ -735,6 +751,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         baseSeed = FeatureFlags.fixedSeed > 0 ? FeatureFlags.fixedSeed : UInt64.random(in: 1...UInt64.max)
         level = max(1, FeatureFlags.startLevel); colonyIndex = Progression.planetIndex(level); carry = nil
         carryScore = 0; checkpoint = nil          // a fresh run carries no score and no checkpoint
+        cremated.removeAll()                      // …and has buried nobody
         victory = false                           // …and it has not been won yet
         world = nil                               // a fresh run carries nothing over
         beginWorldBuild(level: level, seed: Renderer.floorSeed(baseSeed, level))
@@ -778,6 +795,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         if let old = world {                       // floor-to-floor: the run carries over
             carry = old.player
             carryScore = old.score
+            cremated.formUnion(old.cremated)      // the floor's pyres join the run's tally before it is discarded
         }
         w.score = carryScore
         world = w
@@ -791,7 +809,11 @@ final class Renderer: NSObject, MTKViewDelegate {
                               runSeed: baseSeed, level: w.level, colonyName: w.colonyName, score: w.score,
                               health: w.player.health, armor: w.player.armor, mines: w.player.mines,
                               current: w.player.current.rawValue,
-                              weapons: w.player.weapons, ammo: w.player.ammo)
+                              weapons: w.player.weapons, ammo: w.player.ammo,
+                              // as of the floor's START, like every other field here: the body on THIS
+                              // floor is unburned again when the save is restored, so it counts as
+                              // uncremated and can be earned back.
+                              cremated: cremated.sorted())
         pendingWorld = nil; pendingLevel = 0
         input.resetControls()
         deathTimer = 0

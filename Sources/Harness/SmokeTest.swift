@@ -737,6 +737,93 @@ enum SmokeTest {
                          MonsterKind.alien.def.turnRate, sprintOrbit))
         }
 
+        // ── CREMATION ── burning the fallen. The seven are the only humans left in the cluster, and
+        // the marine can do exactly one thing for them. Asserted rather than eyeballed because the
+        // scoring is SILENT by design: there is no message and no HUD change, so a regression here
+        // would be invisible in play — the number would simply be wrong at the tally, and nobody
+        // would know which body had not counted.
+        do {
+            let cw = World(level: 1, colonyIndex: 0, seed: 4242)
+            // A body two cells ahead — but AIMED, not taken on trust. `map.playerDir` is random, so
+            // "two cells the way she happens to be facing" lands inside a wall as often as not, and a
+            // corpse in a wall fails line-of-sight: the first cut of this test passed its negative
+            // check for exactly that wrong reason.
+            // Find a clear line and STAND HER ON IT. Not the arrival position: the marine begins inside
+            // the lift car, a sealed steel box, so nothing two cells away is in sight from there in any
+            // direction — the first cut of this test proved that the hard way.
+            var aim: SIMD2<Float>? = nil
+            search: for yy in 1..<(cw.map.h - 1) {
+                for xx in 1..<(cw.map.w - 1) {
+                    for (dx, dy) in [(1, 0), (0, 1)] {
+                        guard !cw.map.blocksMovement(xx, yy),
+                              !cw.map.blocksMovement(xx + dx, yy + dy),
+                              !cw.map.blocksMovement(xx + dx * 2, yy + dy * 2) else { continue }
+                        let from = SIMD2<Float>(Float(xx) + 0.5, Float(yy) + 0.5)
+                        let to = SIMD2<Float>(Float(xx + dx * 2) + 0.5, Float(yy + dy * 2) + 0.5)
+                        guard cw.lineOfSightForTest(from, to) else { continue }
+                        cw.player.pos = from
+                        cw.player.dir = atan2(Float(dy), Float(dx))
+                        aim = to
+                        break search
+                    }
+                }
+            }
+            check(aim != nil, "found a clear line to stand a body on")
+            let at = aim ?? cw.player.pos
+            cw.colonists = [Colonist(pos: at, yaw: 0, seed: 0.5, variant: 3)]
+            cw.monsters = []; cw.drums = []
+            let score0 = cw.score
+            check(cw.cremated.isEmpty, "a fresh floor has cremated nobody")
+            cw.flameForTest(audio: audio)
+            check(cw.colonists[0].burn > 0, "the flame LIGHTS a fallen colonist (burn \(cw.colonists[0].burn))")
+            // …and carries them through the pyre, awarding once and only once
+            var ticks = 0
+            while cw.colonists[0].burn < 1 && ticks < 1200 { cw.update(dt: 1.0 / 60, input: InputState(), audio: audio); ticks += 1 }
+            check(cw.colonists[0].burn >= 1, "…and burns them to ash in \(String(format: "%.1f", Float(ticks) / 60)) s")
+            check(cw.cremated == [3], "…recording WHICH of the seven it was (\(cw.cremated.sorted()))")
+            check(cw.score == score0 + World.cremationScore,
+                  "…and scoring it exactly once (\(cw.score - score0) for \(World.cremationScore))")
+            // keep ticking: a body already ash must not keep paying out
+            let after = cw.score
+            for _ in 0..<120 { cw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+            check(cw.score == after, "…and not again once they are ash (\(cw.score - after))")
+
+            // A body BEHIND the marine is not cremated by facing away from it — the cone and the
+            // line-of-sight rules are the flamethrower's own, not a special case for corpses.
+            let bw = World(level: 1, colonyIndex: 0, seed: 4242)
+            bw.player.pos = cw.player.pos                        // the same proven-clear spot…
+            bw.player.dir = cw.player.dir + .pi                  // …facing AWAY down that line
+            bw.colonists = [Colonist(pos: at, yaw: 0, seed: 0.5, variant: 3)]
+            bw.monsters = []; bw.drums = []
+            bw.flameForTest(audio: audio)
+            check(bw.colonists[0].burn == 0, "a body behind her does not catch")
+
+            // THE BONUS IS REACHABLE: the run must deal all seven, or all-seven could never be earned.
+            var dealtAll = 0
+            for sd in 0..<24 {
+                let cast = Progression.survivors(runSeed: UInt64(sd) &* 7919 &+ 3).flatMap { $0 }
+                if Set(cast.map(\.variant)).count == Colonist.modelCount { dealtAll += 1 }
+            }
+            check(dealtAll == 24, "every run deals all seven, so the all-seven bonus is earnable (\(dealtAll)/24)")
+            check(World.allCrematedBonus == 50_000, "…and it is worth \(World.allCrematedBonus)")
+
+            // THE SAVE CARRIES IT, and an OLD save still loads. A non-optional new property would make
+            // its key required for every element and fail the whole decode, taking all ten slots with
+            // it — so the field is optional and a pre-cremation save restores as "burned nobody".
+            let slot = SaveSlot(name: "T", stardate: "x", runSeed: 9, level: 3, colonyName: "DEMETER", score: 10,
+                               health: 100, armor: 0, mines: 0, current: 0,
+                               weapons: [true], ammo: [1], cremated: [2, 5])
+            let round = try? JSONDecoder().decode(SaveSlot.self, from: JSONEncoder().encode(slot))
+            check(round?.cremated ?? [] == [2, 5], "a save round-trips which of the seven were burned")
+            let legacy = """
+            {"name":"old","stardate":"x","runSeed":9,"level":3,"colonyName":"DEMETER","score":10,
+             "health":100,"armor":0,"mines":0,"current":0,"weapons":[true],"ammo":[1]}
+            """
+            let old = try? JSONDecoder().decode(SaveSlot.self, from: Data(legacy.utf8))
+            check(old != nil, "a save written BEFORE cremation existed still decodes")
+            check(old?.cremated == nil, "…and reads as nobody burned rather than failing")
+        }
+
         // ── PLANT MACHINERY HUM ── the compressors' proximity bed on floors 7–8. Asserted rather than
         // listened to: it has to SWELL as you close on a machine, which is the whole point of a
         // positional bed over an ambient one — and above the plant it has to be audible only as

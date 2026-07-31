@@ -35,6 +35,18 @@ struct SaveSlot: Codable {
     var current: Int                 // WeaponKind rawValue
     var weapons: [Bool]
     var ammo: [Int]
+    /// WHICH of the seven have been cremated so far (variant indices — see `Progression.survivors`).
+    /// The one piece of run state that cannot be recomputed from the seed: the seed says where the
+    /// bodies are, only the player's own history says which ones she has burned. Without it a restored
+    /// run could never earn the all-seven bonus, however thorough the player had been.
+    ///
+    /// OPTIONAL, and that is load-bearing rather than lazy: `Codable`'s synthesised decoder makes a
+    /// non-optional property a REQUIRED key for every element of the array, so adding one as
+    /// non-optional does not just lose the new field on an old file — it fails the whole decode and
+    /// takes all ten slots with it. Optional decodes an older save to nil, which `Renderer` reads as
+    /// an empty set: a save written before cremation existed restores as a run that has burned nobody,
+    /// which is exactly true.
+    var cremated: [Int]?
 
     /// One line for the menu's slot list.
     var summary: String {

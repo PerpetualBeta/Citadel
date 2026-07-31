@@ -264,6 +264,20 @@ final class World {
     var sockets: [Socket] = []         // fixed plasma recharge stations (anti-softlock)
     var props: [Prop] = []             // furniture/fixtures (set-dressing; SOLID — see propColliders)
     var colonists: [Colonist] = []     // fallen ARC workers (human corpse meshes; no collision — step over the dead)
+
+    // ── CREMATION ──────────────────────────────────────────────────────────────────────────────
+    // The variants (see `Progression.survivors` — WHICH of the seven) that finished burning on THIS
+    // floor. At most one, since no two of the seven share a floor. The Renderer unions it into the
+    // run's own tally, because a `World` lasts one floor and the tally has to last the whole descent.
+    private(set) var cremated: Set<Int> = []
+    /// A human body is consumed in about four seconds — a shade slower than a drone's 3.3, since the
+    /// pyre is quieter and there is less of it to catch.
+    private let cremationRate: Float = 0.25
+    /// Awarded silently per body. The marine gets no message and the HUD says nothing: this is
+    /// something she does because it needs doing, and a congratulatory pop-up would say the opposite.
+    static let cremationScore = 1000
+    /// …and for all seven, wherever they fell. Also silent, added at the ceremony.
+    static let allCrematedBonus = 50_000
     // THE SIGNAL — reel-to-reel playback: when the marine USEs a deck, its reels spin
     // and the recording plays until `signalPlayUntil` (see handleUse / packProps spin).
     var signalDeckPos: SIMD2<Float>? = nil
@@ -553,6 +567,7 @@ final class World {
         updateMonsters(dt: dt, audio: audio)
         droneProwl(dt: dt, audio: audio)
         breedQueen(dt: dt, audio: audio)
+        updateCremations(dt: dt)
         // Everything that moves has moved: re-settle the bodies, so the projectiles resolved below
         // test against the same positions the frame is about to be drawn at. This is the ONE call
         // that advances each body's settle correction — hence the dt.
@@ -1160,6 +1175,18 @@ final class World {
             else if monsters[i].state == .dead && !monsters[i].gibbed && !monsters[i].dissolving { monsters[i].burn = max(monsters[i].burn, 0.06) }   // light it up (and commits a downed Queen to ash)
             else if monsters[i].state == .dying && monsters[i].kind == .queen { monsters[i].burn = max(monsters[i].burn, 0.06) }   // flames during her topple PRIME the pyre — it catches as she lands
         }
+        // ── CREMATION ── the flame over a fallen colonist lights them. The bodies have been lying in a
+        // sealed store for months and whatever took the colony is still in them; burning one is field
+        // hygiene, not desecration, and it is the only thing the marine can still do for them.
+        for i in colonists.indices where colonists[i].burn <= 0 {
+            let rel = colonists[i].pos - player.pos
+            let d = vlen(rel)
+            if d > def.range || d < 0.0001 { continue }
+            let nd = rel / d
+            if nd.x * dir.x + nd.y * dir.y < cosHalf { continue }                    // outside the cone
+            guard lineOfSight(player.pos, colonists[i].pos) else { continue }        // fire doesn't cook through walls
+            colonists[i].burn = 0.06                                                 // caught — `updateCremations` takes it from here
+        }
         // playing the flame over a drum cooks it off — torch one across the room
         for di in drums.indices where drums[di].health > 0 {
             let rel = drums[di].pos - player.pos
@@ -1295,6 +1322,13 @@ final class World {
     /// Smoke-test hook: run the plasma lock on its own, without ticking the world (a tick would
     /// walk the aliens out of the arranged position before the lock could be read).
     func acquirePlasmaTargetForTest() { acquirePlasmaTarget() }
+
+    /// Smoke-test hook: play the flamethrower over whatever is in front of the marine for one tick,
+    /// so the cone and line-of-sight rules are the ones under test rather than a stand-in.
+    func flameForTest(audio: AudioEngine) { flameTick(WeaponKind.flamethrower.def, audio: audio) }
+
+    /// Smoke-test hook: the same sight test the weapons use.
+    func lineOfSightForTest(_ a: SIMD2<Float>, _ b: SIMD2<Float>) -> Bool { lineOfSight(a, b) }
 
     /// Smoke-test hook: fire one hitscan pellet down `angle` and report whether it landed.
     func hitscanForTest(angle: Float, range: Float, audio: AudioEngine) -> Int {
@@ -2925,6 +2959,29 @@ final class World {
     var machineHumLevelForTest: Float { machineHumLevel }
     var machineSiteCountForTest: Int { machineSites.count }
     #endif
+
+    /// Carry each lit colonist through their pyre. Mirrors the creature version deliberately, down to
+    /// laying the ash bed down EARLY, under cover of the blaze, so there is never a visible
+    /// corpse→ash swap — see the monster branch in `updateMonsters` for why that ordering matters.
+    ///
+    /// The score lands HERE rather than at the moment the flame touches them: a body that catches and
+    /// is then walked away from is not cremated, and the marine gets nothing for starting a job. It is
+    /// added to `score`, which crosses a floor boundary through `Renderer.carryScore` like every other
+    /// point in the run, so nothing extra has to be threaded through for it.
+    private func updateCremations(dt: Float) {
+        for i in colonists.indices where colonists[i].burn > 0 && colonists[i].burn < 1 {
+            let nb = min(1, colonists[i].burn + dt * cremationRate)
+            if colonists[i].burn < 0.5 && nb >= 0.5 {
+                addDecal(colonists[i].pos, radius: 0.92, w: 0.95)      // scorch
+                addDecal(colonists[i].pos, radius: 0.68, w: 2.9)       // smouldering ash + embers
+            }
+            colonists[i].burn = nb
+            if nb >= 1 {
+                cremated.insert(colonists[i].variant)
+                score += World.cremationScore
+            }
+        }
+    }
 
     private func driveMachineHum(dt: Float, audio: AudioEngine) {
         if !machineSitesScanned {
