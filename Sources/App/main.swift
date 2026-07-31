@@ -29,7 +29,7 @@ import QuartzCore
 for key in ["CITADEL_SMOKE", "CITADEL_TIMING",
             "CITADEL_SHOTS", "CITADEL_MATERIALS",
             "CITADEL_AUTOMAP", "CITADEL_ROOMS", "CITADEL_DISPLAYVID",
-            "CITADEL_TITLESHOT", "CITADEL_ENDINGSHOT", "CITADEL_CLUSTERSHOT", "CITADEL_QUEENMESH",
+            "CITADEL_TITLESHOT", "CITADEL_ENDINGSHOT", "CITADEL_QUEENMESH",
             "CITADEL_MESHVERIFY", "CITADEL_DRONEMESH", "CITADEL_COLONISTMESH", "CITADEL_CORPSES", "CITADEL_DECKCHECK", "CITADEL_TERMSHOT", "CITADEL_PROOFROOM", "CITADEL_RASTERSHOT",
             "CITADEL_CREATUREPROBE", "CITADEL_GPUPROBE"]
     where ProcessInfo.processInfo.environment[key] != nil {
@@ -309,21 +309,6 @@ if ProcessInfo.processInfo.environment["CITADEL_DECKCHECK"] != nil {
         }
         print(deckLine); print(paperLine)
     }
-    exit(0)
-}
-
-// CITADEL_CLUSTERSHOT[=path] → render the loop-payoff (cluster-fallen) card over
-// teleport static to a PNG, so the end-of-cluster beat can be judged without
-// playing to floor 48. VESPER (the sixth citadel) → the roll-back to DEMETER.
-if let v = ProcessInfo.processInfo.environment["CITADEL_CLUSTERSHOT"] {
-    let out = (v.isEmpty || v == "1") ? NSHomeDirectory() + "/Desktop/citadel-cluster.png" : v
-    let world = World(level: 48, colonyIndex: 5, seed: 4848)
-    let c = Canvas2D()
-    StaticFX.fill(c, t: 2.0)
-    FrontEnd.clusterCard(c, world: world, t: 2.0)
-    Captures.writePNG(c.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: 1,
-                      to: URL(fileURLWithPath: out))
-    print("Citadel: wrote cluster card to \(out)")
     exit(0)
 }
 

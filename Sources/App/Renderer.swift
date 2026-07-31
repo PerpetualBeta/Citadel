@@ -463,7 +463,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         // The cluster-fallen beat that used to live here is gone: it fired when the sixth citadel fell
         // and the descent rolled back to Demeter, and nothing rolls back any more — floor 48 is caught
         // by the ending gate above and never reaches this state. So every arrival here is an ordinary
-        // planet jump. (FrontEnd.clusterCard is now unreachable in game.)
+        // planet jump, and the card that announced the roll-back has been deleted along with its
+        // harness — it drew a claim the finite game no longer makes.
         FrontEnd.teleportCard(canvas, world: world, t: screenT)
         // (the static's sound is the looping noise bed — one volume authority
         // in tick() drives it through charge → hold → burn-off seamlessly)
