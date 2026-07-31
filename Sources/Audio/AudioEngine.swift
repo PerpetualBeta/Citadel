@@ -404,7 +404,16 @@ final class AudioEngine {
             // its first signal, on level 1, so their nodes have never rendered and
             // the DAC pops on arrival (by level 2 they're warm — hence "only the
             // first level"). Prime each bed node with the same silence now.
-            for s in [Sound.bedDrone, .bedPulse, .bedTension, .bedSwarm] {
+            // …and the two PROXIMITY loops and the far Signal, on the same grounds as the beds above:
+            // they are ambient-bus nodes whose first real signal arrives mid-level, so they are exactly
+            // the cold-path case this warm-up exists for. Kept because it is consistent and free.
+            //
+            // HONESTY NOTE: this was added while chasing "no machine noise on floors 7 and 8" on the
+            // theory that a node ignores a volume raised after it has rendered at zero. `AUDIOPROBE`'s
+            // cold-start check then DISPROVED that theory — the hums are audible from a cold engine
+            // with the game's own timeline, warmed or not — so this is not the fix for that report and
+            // the cause of it is still unknown. Do not read this block as having settled it.
+            for s in [Sound.bedDrone, .bedPulse, .bedTension, .bedSwarm, .faultHum, .machineHum, .signalFar] {
                 if let n = loopNodes[s] { n.play(); n.scheduleBuffer(warm, at: nil, completionHandler: nil) }
             }
             for n in faultShotNodes { n.play(); n.scheduleBuffer(warm, at: nil, completionHandler: nil) }   // and the spark voices

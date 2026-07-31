@@ -514,8 +514,17 @@ enum MapGen {
                         if ok {
                             let wi = map.idx(wx, wy), fi = map.idx(fx, fy)
                             // solid wall behind, no doorway in it, and open floor in front to stand on
+                            // A TRANSIT BOX IS NOT A CONTROL ROOM WALL. The board simply overwrote whatever
+                            // wall id it landed on, so it could be stamped across the arrival lift's steel
+                            // lining or a sealed shaft face — an operations display inside the elevator car.
+                            // Every other retexture pass in this file already refuses `liftWall`; this one
+                            // did not, and it is the only pass that stamps a WHOLE RUN rather than a cell.
+                            let transit: Set<Int> = [WallTex.liftWall.rawValue, WallTex.elevatorSealed.rawValue,
+                                                     WallTex.exitSwitch.rawValue, WallTex.glass.rawValue]
                             ok = map.wall[wi] != 0 && map.doors[wi] == nil && map.wall[fi] == 0 && map.doors[fi] == nil
                                  && map.wall[wi] != WallTex.computer.rawValue      // a CRT bank wall isn't the big board
+                                 && !transit.contains(map.wall[wi])
+                                 && map.floor[fi] != FlatTex.teleportPad.rawValue  // nor the receiver pad's own alcove
                         }
                         if ok { if runLen == 0 { runFrom = t }; runLen += 1
                                 if runLen > bestLen { bestLen = runLen; bestFrom = runFrom } }

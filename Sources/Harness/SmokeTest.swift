@@ -1064,6 +1064,27 @@ enum SmokeTest {
         check(opsFloors > 0 && dormFloors > 0,
               "the ops/dorm sweep saw both (\(opsFloors) ops rooms, \(dormFloors) floors with dorms)")
         check(opsIsDorm == 0, "the operations board is never stamped on a dormitory wall (\(opsIsDorm) of \(opsFloors))")
+        // …nor across a transit box. It overwrote whatever wall id it landed on, so an operations
+        // display could end up inside the arrival lift car or on a sealed shaft face.
+        var opsOnTransit = 0, boardCells = 0
+        for lvl in 1...6 {
+            for sd in 0..<12 {
+                let m = MapGen.generate(level: lvl, colonyIndex: Progression.planetIndex(lvl),
+                                        seed: UInt64(sd) &* 6421 &+ UInt64(lvl) &* 97).map
+                for i in 0..<(m.w * m.h) where m.wall[i] == WallTex.opsBoard.rawValue {
+                    boardCells += 1
+                    // a board cell must not touch the lift lining or a teleport pad
+                    let x = i % m.w, y = i / m.w
+                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] where m.inBounds(x + dx, y + dy) {
+                        let j = m.idx(x + dx, y + dy)
+                        if m.wall[j] == WallTex.liftWall.rawValue || m.wall[j] == WallTex.elevatorSealed.rawValue
+                            || m.floor[j] == FlatTex.teleportPad.rawValue { opsOnTransit += 1; break }
+                    }
+                }
+            }
+        }
+        check(boardCells > 0, "the transit sweep saw real board cells (\(boardCells))")
+        check(opsOnTransit == 0, "…and none of them abuts a lift car or a teleport pad (\(opsOnTransit))")
         // …and refusing the sleeping halls must not cost a floor its control room.
         check(opsFloors == sweptFloors, "…and every floor still gets one (\(opsFloors) of \(sweptFloors))")
         check(socketsSeen > 0, "the socket sweep saw real sockets (\(socketsSeen)) — the check below is not vacuous")

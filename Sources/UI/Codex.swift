@@ -583,7 +583,7 @@ enum FrontEnd {
         var y = y0 + uiS(88)
         statRow(c, "KILLS", "\(world.killCount) / \(world.monsterTotal)", y); y += uiS(30)
         if world.secretTotal > 0 { statRow(c, "SECRETS", "\(world.secretsFound) / \(world.secretTotal)", y); y += uiS(30) }
-        statRow(c, "SCORE", "\(world.score)", y, color: amber); y += uiS(38)
+        statRow(c, "SCORE", commaSep(world.score), y, color: amber); y += uiS(38)
         if Int(t * 2) % 2 == 0 { c.labelCentered("PRESS  FIRE  TO  DESCEND", y, size: uiSf(22), color: amber, weight: .bold) }
     }
 
@@ -603,7 +603,7 @@ enum FrontEnd {
         var y = y0 + uiS(88)
         statRow(c, "KILLS", "\(world.killCount) / \(world.monsterTotal)", y); y += uiS(30)
         if world.secretTotal > 0 { statRow(c, "SECRETS", "\(world.secretsFound) / \(world.secretTotal)", y); y += uiS(30) }
-        statRow(c, "SCORE", "\(world.score)", y, color: amber); y += uiS(38)
+        statRow(c, "SCORE", commaSep(world.score), y, color: amber); y += uiS(38)
         if Int(t * 2) % 2 == 0 { c.labelCentered("PRESS  FIRE  TO  JUMP", y, size: uiSf(22), color: packRGBA(150, 210, 245), weight: .bold) }
     }
 
@@ -640,7 +640,7 @@ enum FrontEnd {
         row("\(world.colonyName) RETAKEN", uiS(148), uiSf(15), ink, .medium, 1.9)
         row("TELEPORTING TO", uiS(178), uiSf(14), dim, .semibold, 3.1)
         row(Progression.planetName(world.level + 1), uiS(196), uiSf(44), amber, .heavy, 4.3, glow: packRGBA(60, 48, 0))
-        row("SCORE \(world.score)", uiS(252), uiSf(16), amber, .bold, 5.6)
+        row("SCORE \(commaSep(world.score))", uiS(252), uiSf(16), amber, .bold, 5.6)
     }
 
     private static func statRow(_ c: Canvas2D, _ k: String, _ v: String, _ y: Int, color: UInt32 = 0xFFEEEEEE) {
@@ -675,7 +675,7 @@ enum FrontEnd {
             c.labelCentered("The \(world.colonyName) citadel holds.", uiS(168), size: uiSf(22), color: packRGBA(210, 160, 160), weight: .medium)
         }
         statRow(c, victory ? "FLOORS CLEARED" : "DEPTH REACHED", "\(world.level)", uiS(208))
-        statRow(c, "FINAL SCORE", "\(world.score)", uiS(242), color: amber)
+        statRow(c, "FINAL SCORE", commaSep(world.score), uiS(242), color: amber)
         if qualifies && input.nameEntryActive {
             c.labelCentered("A NEW RECORD — ENTER YOUR NAME", uiS(286), size: uiSf(20), color: packRGBA(120, 230, 150), weight: .semibold)
             let name = input.nameBuffer.isEmpty ? " " : input.nameBuffer
@@ -756,6 +756,9 @@ enum FrontEnd {
     private static func short(_ s: String) -> String { s.count > 16 ? String(s.prefix(16)) : s }
 
     /// Format an integer with comma thousands separators (109365 → "109,365").
+    /// Thousands separators. Every score the player is shown goes through here — the Hall of the
+    /// Fallen always did, the floor-cleared card and the tally did not, and a six-figure run makes
+    /// that inconsistency obvious the moment you read one.
     private static func commaSep(_ n: Int) -> String {
         var out = "", c = 0
         for ch in String(n).reversed() { if c > 0 && c % 3 == 0 { out.append(",") }; out.append(ch); c += 1 }

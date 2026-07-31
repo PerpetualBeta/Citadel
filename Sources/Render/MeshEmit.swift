@@ -342,21 +342,42 @@ extension RasterRenderer {
     /// you looked straight through that annulus into the inside of the sleeve's far wall, and the fitting read
     /// as a torn hollow cage rather than a casting. The pipe emerging through the middle hides the centre of
     /// each disc, so what you see is the flat end face a real cast fitting has.
-    /// `capNear` closes the discs at `p` itself. Mid-run — a riser turning into a high main — the two
-    /// sleeves leave `p` with pipe inside each, so those discs are buried and omitting them is free.
-    /// At a run TERMINUS they are not: the wedge between two perpendicular sleeves is open to the
-    /// room, and you see through it into whatever the sleeves failed to close.
+    /// A 90° elbow as a SWEPT BEND: the pipe curves through the corner along a quarter-circle, the way
+    /// a real cast elbow does, with a short collar on each leg where the bend meets the run.
+    ///
+    /// It used to be two straight sleeves butted together at `p`, which is a MITRE — two tubes cut at
+    /// 45° and jammed into each other. Capping it, colouring it and offsetting it all made that mitre
+    /// tidier without making it a bend, which is why "the elbow is wrong" survived three fixes: each
+    /// one addressed a symptom of the corner being square rather than the corner being square.
+    ///
+    /// The arc is built from `seg` short tubes stepping along it. Each is emitted uncapped and the
+    /// joints overlap slightly (the next segment starts a fraction before the previous one ends), so
+    /// consecutive rings interpenetrate instead of leaving a seam or fighting for the same depth — the
+    /// coplanarity that made the last version read as a pale disc. `capNear` closes the outer face of
+    /// the run-side collar, which is the one surface open to the room at a terminus.
     static func emitElbow(at p: SIMD3<Float>, legA: SIMD3<Float>, legB: SIMD3<Float>, r: Float, _ body: Mat,
                           capNear: Bool = false, into v: inout [PVert]) {
-        // At a TERMINUS the sleeve starts slightly BEHIND `p` rather than on it. The run's own end disc
-        // is at `p`, and a sleeve cap placed exactly there is coplanar with it — two surfaces at one
-        // depth, fighting, which is what made a finished pipe end read as a pale mismatched disc
-        // instead of a casting. Backing the sleeve off puts its cap unambiguously in front, so the
-        // run's disc is hidden behind a face rather than competing with one. Mid-run the sleeves start
-        // at `p` as before: their near discs are inside the junction and never drawn.
-        let back = capNear ? Float(0.014) : 0
-        emitTube(p - legA * back, p + legA * 0.055, r: r * 1.26, sides: 9, body, caps: true, nearCap: capNear, into: &v)
-        emitTube(p - legB * back, p + legB * 0.055, r: r * 1.26, sides: 9, body, caps: true, nearCap: capNear, into: &v)
+        let a = simd_length(legA) > 1e-5 ? simd_normalize(legA) : SIMD3<Float>(1, 0, 0)
+        let b = simd_length(legB) > 1e-5 ? simd_normalize(legB) : SIMD3<Float>(0, 1, 0)
+        let bendR = r * 2.1                     // centreline radius — a cast elbow bends wide, not tight
+        let fit = r * 1.18                      // the casting is a little fatter than the pipe it joins
+        // The arc's centre is out along BOTH legs, so the curve leaves each one tangentially: the bend
+        // starts where the straight pipe stops and there is no kink at either hand-off.
+        let centre = p + (a + b) * bendR
+        let seg = 6
+        var prev = centre - b * bendR           // the point on the arc that meets leg A
+        for i in 1...seg {
+            let t = Float(i) / Float(seg) * (Float.pi / 2)
+            // sweep from the leg-A tangent round to the leg-B tangent
+            let here = centre - b * (bendR * cosf(t)) - a * (bendR * sinf(t))
+            let overlap = (here - prev) * 0.22   // let each ring bite into the last
+            emitTube(prev - overlap, here + overlap, r: fit, sides: 9, body, caps: false, into: &v)
+            prev = here
+        }
+        // …and the collars where the bend hands off to each straight run. The leg-A one is the face a
+        // terminus shows the room, so that is the one `capNear` closes.
+        emitTube(p, centre - b * bendR, r: fit, sides: 9, body, caps: capNear, nearCap: capNear, into: &v)
+        emitTube(p, centre - a * bendR, r: fit, sides: 9, body, caps: false, into: &v)
     }
 
     /// Wall-mount ONE bulkhead fixture: the imported brass lamp plus its lit, ribbed lens (or the procedural

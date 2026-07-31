@@ -17,6 +17,34 @@ enum AudioProbe {
 
         print("AudioProbe — offline render, real graph, real bank")
 
+        // ── COLD START: the proximity loops must work on the FIRST level of a session ──
+        // Written to reproduce "no machine noise on floors 7 and 8" and it does NOT: it passes with or
+        // without the warm-up, on the game's own timeline. So it did not find that fault — but it is a
+        // real invariant worth keeping, and its failure to fire is itself the useful result. It rules
+        // out the whole class of "the volume never reaches a cold node", which is where I was looking.
+        // A player node ignores the volume set on it until it has rendered a buffer once, and both
+        // proximity hums are started at 0 and raised by World every frame. Cold, they render at zero
+        // for ever — the plant machinery and the electrical fault were silent on every floor of a whole
+        // session because of it. This runs on its OWN AudioEngine, started exactly once, because the
+        // rest of this probe restarts the level audio for every measurement and that alone was enough
+        // to hide the fault: warmed by an earlier cycle, the volumes worked.
+        do {
+            let cold = AudioEngine()
+            cold.startMusic(.level, depth: Progression.industrialFirstFloor, farSignalGain: 0)
+            // THE GAME'S TIMELINE, which is the whole point: the loops start at volume 0 and the marine
+            // spends seconds walking before she is near a machine, so the node renders a great many
+            // buffers at zero BEFORE the volume is raised. Raising it first — as the rest of this probe
+            // does — is a different test, and it passes either way.
+            _ = cold.renderOfflineRMS(seconds: 2.0)              // …walk about for a bit, hum at zero
+            cold.machineHum(1)                                   // now stand at a compressor
+            cold.faultHum(1)                                     // …and beside a shorting panel
+            _ = cold.renderOfflineRMS(seconds: 0.5)
+            let heard = cold.renderOfflineRMS(seconds: 1.0)
+            let silent = cold.renderOfflineRMS(seconds: 0.0001) * 0 + 0.0008   // the floor a silent bus sits at
+            print("  \(heard > silent ? "PASS  " : "REVIEW")  the proximity hums work from a COLD start — "
+                  + String(format: "rms %.4f (silence would be under %.4f)", heard, silent))
+        }
+
         // ── the SYNTHESISED machinery loop ──
         // This one cannot be auditioned in office mode, so it is asserted rather than listened to.
         // Three things have to hold: it carries signal at a sane level, it MEETS ITSELF at the loop

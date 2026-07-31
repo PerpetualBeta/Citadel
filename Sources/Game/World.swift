@@ -210,7 +210,11 @@ final class World {
     /// `machineHumFloor` any more: that is now loud enough to be a plant deck, and a ramp ending
     /// there would have floor 6 louder than its own Signal and rob floor 7 of its step up. This is
     /// the "felt through the boots" end of the scale, about +2 dB over the room tone.
-    private let machineHumThroughDeck: Float = 0.18
+    /// Raised from 0.18 after a second report of hearing no machinery: at 0.18 the deepest sub-deck
+    /// floor measured +1.6 dB over the room tone, which is "felt" in a quiet room and simply absent in
+    /// a real one. 0.40 puts floor 6 near +6 dB — plainly there — while staying well under the plant's
+    /// own +9.3, so arriving at floor 7 is still a step up rather than a plateau.
+    private let machineHumThroughDeck: Float = 0.40
     private var machineHumLevel: Float = 0
     private let machineHumSmooth: Float = 0.55      // slower than the faults': machinery swells, it doesn't snap
     // ── the Queen ──
@@ -283,6 +287,8 @@ final class World {
     /// A human body is consumed in about four seconds — a shade slower than a drone's 3.3, since the
     /// pyre is quieter and there is less of it to catch.
     private let cremationRate: Float = 0.25
+    /// Seconds for a burned-through body to settle into its ash mound, once the flames are done.
+    private let colonistCollapse: Float = 1.4
     /// Awarded silently per body. The marine gets no message and the HUD says nothing: this is
     /// something she does because it needs doing, and a congratulatory pop-up would say the opposite.
     static let cremationScore = 1000
@@ -2995,6 +3001,14 @@ final class World {
                 cremated.insert(colonists[i].variant)
                 score += World.cremationScore
             }
+        }
+        // ── AND THEN THEY CRUMBLE ── `burn` only SCORCHES: it darkens and chars the mesh but leaves it
+        // body-shaped, which is why a cremated colonist sat there looking merely burnt. `ashed` is the
+        // collapse to an ash mound, and the shader has always taken it (0…2, mound then trodden flat);
+        // nothing was driving it. The creature version needs a footstep to crumble a corpse, but a body
+        // that has burned right through does not wait to be trodden on — it goes down on its own.
+        for i in colonists.indices where colonists[i].burn >= 1 && colonists[i].ashed < 1 {
+            colonists[i].ashed = min(1, colonists[i].ashed + dt / colonistCollapse)
         }
     }
 
