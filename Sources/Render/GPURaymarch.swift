@@ -867,15 +867,21 @@ enum GPURaymarch {
             out.append(iBox(SIMD3(-0.055, cy - 0.10 + Float(k) * 0.067, 0.062), SIMD3(0.05, 0.026, 0.006), 0.002, col, 0.0015))
         }
         out.append(iBox(SIMD3(0.07, cy, 0.06), SIMD3(0.04, 0.05, 0.008), 0.006, face, 0.003))   // plug-in port recess
-        // PORT LAMP — a domed indicator standing PROUD of the recess face, and the clearance is the
-        // point. Its centre first sat at z 0.066, two millimetres behind that face (the recess front
-        // is at 0.06 + 0.008 = 0.068), showing a bit more than half a ball with the faceplate cutting
-        // across it. Moving it to exactly 0.068 made that worse, not better: an equator sitting
-        // EXACTLY on the plane it emerges from is coplanar with it, and two coplanar surfaces fight
-        // for the same depth — which is what turned it into a pale blob with a dark cap. Exactness
-        // was the wrong goal. It sits 4 mm clear of the face instead, so nothing shares a plane with
-        // anything and it reads as a lamp bolted onto the panel, which is what it is.
-        out.append(iSphere(SIMD3(0.07, cy, 0.072), 0.02,
+        // PORT LAMP — a bead sitting ON the faceplate, TANGENT to it, which is the only placement that
+        // cannot be cut. Three attempts tuned how deeply it sat instead of removing the intersection:
+        // at z 0.066 its equator was 2 mm behind the recess face (0.06 + 0.008 = 0.068) and it showed
+        // as more than half a ball with the panel slicing across it; at exactly 0.068 the equator was
+        // COPLANAR with that face, which is worse — two surfaces at one depth, fighting; at 0.072 it
+        // still overlapped, showing a 60%-of-diameter cap that reads as three-quarters of a sphere from
+        // an angle. Every one of those was a different amount of the same mistake.
+        //
+        // Centre at 0.088 puts the sphere's back exactly ON the face (0.068 + its 0.02 radius). Tangent
+        // is a single point of contact: no interpenetration, no shared plane, nothing to cut it and
+        // nothing to fight. It reads as an indicator bead seated on the panel, which is what it is.
+        //
+        // NOT VERIFIED BY EYE. Nothing in the 69-frame set views this panel, and four attempts to frame
+        // one — generated and hand-placed — all failed on other geometry. This is arithmetic.
+        out.append(iSphere(SIMD3(0.07, cy, 0.088), 0.02,
                            depleted ? SIMD3<Float>(0.85, 0.14, 0.10) : SIMD3<Float>(0.22, 0.50, 0.60)))
         return out
     }

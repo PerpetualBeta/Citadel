@@ -1112,6 +1112,26 @@ enum SmokeTest {
         }
         check(boardCells > 0, "the transit sweep saw real board cells (\(boardCells))")
         check(opsOnTransit == 0, "…and none of them abuts a lift car or a teleport pad (\(opsOnTransit))")
+        // …and no board cell may have OPEN FLOOR on both sides. A wall is one cell with one texture, so
+        // a board on a room's wall paints the corridor behind it too — a corridor lined with operations
+        // displays, which is where this was found.
+        var opsSeenFromBothSides = 0
+        for lvl in 1...6 {
+            for sd in 0..<12 {
+                let m = MapGen.generate(level: lvl, colonyIndex: Progression.planetIndex(lvl),
+                                        seed: UInt64(sd) &* 6421 &+ UInt64(lvl) &* 97).map
+                for i in 0..<(m.w * m.h) where m.wall[i] == WallTex.opsBoard.rawValue {
+                    let x = i % m.w, y = i / m.w
+                    for (dx, dy) in [(1, 0), (0, 1)] {
+                        let f = (x + dx, y + dy), b = (x - dx, y - dy)
+                        guard m.inBounds(f.0, f.1), m.inBounds(b.0, b.1) else { continue }
+                        if m.wall[m.idx(f.0, f.1)] == 0 && m.wall[m.idx(b.0, b.1)] == 0 { opsSeenFromBothSides += 1 }
+                    }
+                }
+            }
+        }
+        check(opsSeenFromBothSides == 0,
+              "…and none is visible from both sides — a board's back is not corridor dressing (\(opsSeenFromBothSides))")
         // …and refusing the sleeping halls must not cost a floor its control room.
         check(opsFloors == sweptFloors, "…and every floor still gets one (\(opsFloors) of \(sweptFloors))")
         check(socketsSeen > 0, "the socket sweep saw real sockets (\(socketsSeen)) — the check below is not vacuous")

@@ -521,7 +521,16 @@ enum MapGen {
                             // did not, and it is the only pass that stamps a WHOLE RUN rather than a cell.
                             let transit: Set<Int> = [WallTex.liftWall.rawValue, WallTex.elevatorSealed.rawValue,
                                                      WallTex.exitSwitch.rawValue, WallTex.glass.rawValue]
+                            // A WALL IS ONE CELL WITH ONE TEXTURE, so painting the board on the control
+                            // room's side paints the OTHER side too. Where that wall backed onto a
+                            // corridor, the corridor got a hundred feet of operations display — the
+                            // board seen from behind, in a place no display belongs. So the cell beyond
+                            // it has to be solid: the board only goes on a wall with nothing on its far
+                            // side to show it to.
+                            let bx = wx + dx, by = wy + dy
+                            let backSolid = !map.inBounds(bx, by) || map.wall[map.idx(bx, by)] != 0
                             ok = map.wall[wi] != 0 && map.doors[wi] == nil && map.wall[fi] == 0 && map.doors[fi] == nil
+                                 && backSolid
                                  && map.wall[wi] != WallTex.computer.rawValue      // a CRT bank wall isn't the big board
                                  && !transit.contains(map.wall[wi])
                                  && map.floor[fi] != FlatTex.teleportPad.rawValue  // nor the receiver pad's own alcove
