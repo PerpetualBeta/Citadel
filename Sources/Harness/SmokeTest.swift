@@ -788,6 +788,39 @@ enum SmokeTest {
             for _ in 0..<120 { cw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
             check(cw.score == after, "…and not again once they are ash (\(cw.score - after))")
 
+            // AND THE BLAST PATH, WHICH IS THE ONE THAT ACTUALLY HAPPENS. The seven lie in the fuel
+            // stores, so torching a body touches off the drums beside it — the pyre above only runs
+            // undisturbed because that test cleared the drums away. A drum going up DESTROYS a carcass,
+            // so there must be no interval at all in which a charred, body-shaped corpse sits in its own
+            // crater: the gradual pyre takes seconds, and this must not.
+            let xw = World(level: 1, colonyIndex: 0, seed: 4242)
+            xw.player.pos = cw.player.pos; xw.player.dir = cw.player.dir     // the same proven-clear line
+            xw.colonists = [Colonist(pos: at, yaw: 0, seed: 0.5, variant: 3)]
+            xw.monsters = []
+            xw.drums = [Drum(pos: at, fuel: 0, health: 1)]   // slumped against the store's drums; health 1 → one lick pops it
+            let xscore0 = xw.score
+            xw.flameForTest(audio: audio)
+            var xticks = 0
+            while xw.colonists[0].ashed < 1 && xticks < 30 {                 // 0.5 s — a third of the gradual pyre
+                xw.update(dt: 1.0 / 60, input: InputState(), audio: audio); xticks += 1
+            }
+            check(xw.drums.isEmpty, "the flame cooks off the drum beside a body")
+            check(xw.colonists[0].ashed >= 1,
+                  "…and the blast takes them STRAIGHT to ash in \(String(format: "%.2f", Float(xticks) / 60)) s — no charred corpse in the crater")
+            check(xw.colonists[0].burn >= 1,
+                  "…fully cremated, not part-burned (burn \(String(format: "%.2f", xw.colonists[0].burn)))")
+            check(xw.cremated == [3], "…recording which of the seven (\(xw.cremated.sorted()))")
+            check(xw.score == xscore0 + World.cremationScore,
+                  "…and scoring it exactly once (\(xw.score - xscore0) for \(World.cremationScore))")
+            // a SECOND drum over the ashes must pay nothing — and the drum has to actually go up, or
+            // this would pass for the wrong reason (nothing happening scores nothing).
+            let xafter = xw.score
+            xw.drums = [Drum(pos: at, fuel: 0, health: 1)]
+            xw.flameForTest(audio: audio)
+            for _ in 0..<30 { xw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+            check(xw.drums.isEmpty, "a second drum over the ashes still ruptures")
+            check(xw.score == xafter, "…and pays nothing for a body already ash (\(xw.score - xafter))")
+
             // A body BEHIND the marine is not cremated by facing away from it — the cone and the
             // line-of-sight rules are the flamethrower's own, not a special case for corpses.
             let bw = World(level: 1, colonyIndex: 0, seed: 4242)
@@ -1112,26 +1145,37 @@ enum SmokeTest {
         }
         check(boardCells > 0, "the transit sweep saw real board cells (\(boardCells))")
         check(opsOnTransit == 0, "…and none of them abuts a lift car or a teleport pad (\(opsOnTransit))")
-        // …and no board cell may have OPEN FLOOR on both sides. A wall is one cell with one texture, so
-        // a board on a room's wall paints the corridor behind it too — a corridor lined with operations
-        // displays, which is where this was found.
-        var opsSeenFromBothSides = 0
+        // …and A BOARD CELL MAY BE OPEN ON EXACTLY ONE SIDE — the control room's. A wall is one cell with
+        // one texture and the renderer emits that texture on EVERY open face, so any second open face is
+        // the board showing somewhere it does not belong. Two ways that has happened, and the check now
+        // covers both at once because they are one fault:
+        //   · open on OPPOSITE sides — the corridor behind gets the board seen from the back;
+        //   · open on ADJACENT sides — the board turns the corner onto a face at right angles to the
+        //     control room, which is a display wrapping into a corridor. That one shipped, because this
+        //     check only ever looked at opposite pairs.
+        // Counts EXPOSED FACES per cell rather than testing pairs, so there is no orientation left to miss.
+        var opsOverExposed = 0, opsBoardFacesSeen = 0
         for lvl in 1...6 {
             for sd in 0..<12 {
                 let m = MapGen.generate(level: lvl, colonyIndex: Progression.planetIndex(lvl),
                                         seed: UInt64(sd) &* 6421 &+ UInt64(lvl) &* 97).map
                 for i in 0..<(m.w * m.h) where m.wall[i] == WallTex.opsBoard.rawValue {
                     let x = i % m.w, y = i / m.w
-                    for (dx, dy) in [(1, 0), (0, 1)] {
-                        let f = (x + dx, y + dy), b = (x - dx, y - dy)
-                        guard m.inBounds(f.0, f.1), m.inBounds(b.0, b.1) else { continue }
-                        if m.wall[m.idx(f.0, f.1)] == 0 && m.wall[m.idx(b.0, b.1)] == 0 { opsSeenFromBothSides += 1 }
+                    var open = 0
+                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                        let nx = x + dx, ny = y + dy
+                        guard m.inBounds(nx, ny) else { continue }
+                        let ni = m.idx(nx, ny)
+                        if m.wall[ni] == 0 || m.doors[ni] != nil { open += 1 }   // the renderer's own openness rule
                     }
+                    opsBoardFacesSeen += open
+                    if open > 1 { opsOverExposed += 1 }
                 }
             }
         }
-        check(opsSeenFromBothSides == 0,
-              "…and none is visible from both sides — a board's back is not corridor dressing (\(opsSeenFromBothSides))")
+        check(opsBoardFacesSeen > 0, "…and the board sweep saw real exposed faces (\(opsBoardFacesSeen))")
+        check(opsOverExposed == 0,
+              "…each showing into the control room ALONE — never round a corner or out the back (\(opsOverExposed))")
         // …and refusing the sleeping halls must not cost a floor its control room.
         check(opsFloors == sweptFloors, "…and every floor still gets one (\(opsFloors) of \(sweptFloors))")
         check(socketsSeen > 0, "the socket sweep saw real sockets (\(socketsSeen)) — the check below is not vacuous")

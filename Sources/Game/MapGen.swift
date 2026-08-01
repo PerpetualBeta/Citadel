@@ -495,6 +495,13 @@ enum MapGen {
             // unbroken end to end left some floors with no ops centre at all, and a board occupying part of a
             // wall is how a real control room looks anyway. Board width then varies floor to floor for free.
             var best = (score: 0, ri: -1, side: (0, 0), from: 0, len: 0)
+            /// The RENDERER's openness rule, because that is what decides whether a wall cell emits a face
+            /// at all: a doorway cell carries a wall id but is geometrically open (the door is its own mesh).
+            func openGeo(_ x: Int, _ y: Int) -> Bool {
+                guard map.inBounds(x, y) else { return false }
+                let i = map.idx(x, y)
+                return map.wall[i] == 0 || map.doors[i] != nil
+            }
             // NOT A SLEEPING HALL. The dormitories are chosen first and take "the biggest halls",
             // and this scores "widest board first, then the roomiest" — so the two picked the same
             // room on 69 of 72 floors, stamping the complex's one full-colour operations board onto
@@ -521,16 +528,20 @@ enum MapGen {
                             // did not, and it is the only pass that stamps a WHOLE RUN rather than a cell.
                             let transit: Set<Int> = [WallTex.liftWall.rawValue, WallTex.elevatorSealed.rawValue,
                                                      WallTex.exitSwitch.rawValue, WallTex.glass.rawValue]
-                            // A WALL IS ONE CELL WITH ONE TEXTURE, so painting the board on the control
-                            // room's side paints the OTHER side too. Where that wall backed onto a
-                            // corridor, the corridor got a hundred feet of operations display — the
-                            // board seen from behind, in a place no display belongs. So the cell beyond
-                            // it has to be solid: the board only goes on a wall with nothing on its far
-                            // side to show it to.
-                            let bx = wx + dx, by = wy + dy
-                            let backSolid = !map.inBounds(bx, by) || map.wall[map.idx(bx, by)] != 0
+                            // A WALL IS ONE CELL WITH ONE TEXTURE, and it shows that texture on EVERY
+                            // open side — so painting the board on the control room's side paints every
+                            // other exposed face of the same cell too. Two ways that went wrong:
+                            //   · straight through — where the wall backed onto a corridor, the corridor
+                            //     got a hundred feet of operations display, the board seen from behind.
+                            //   · ROUND THE CORNER — a run whose end cell has open floor to its LEFT or
+                            //     RIGHT paints the board onto a face at right angles to the control room,
+                            //     which is the display "wrapping around a corner into a corridor". Only
+                            //     the far side was ever guarded; the two lateral faces were not.
+                            // So: of the cell's four faces, the control room's is the ONLY one allowed to
+                            // be open. Perpendiculars of (dx, dy) are (dy, dx) and (-dy, -dx).
+                            let hidden = ![(dx, dy), (dy, dx), (-dy, -dx)].contains { openGeo(wx + $0.0, wy + $0.1) }
                             ok = map.wall[wi] != 0 && map.doors[wi] == nil && map.wall[fi] == 0 && map.doors[fi] == nil
-                                 && backSolid
+                                 && hidden
                                  && map.wall[wi] != WallTex.computer.rawValue      // a CRT bank wall isn't the big board
                                  && !transit.contains(map.wall[wi])
                                  && map.floor[fi] != FlatTex.teleportPad.rawValue  // nor the receiver pad's own alcove

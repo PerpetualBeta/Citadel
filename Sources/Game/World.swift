@@ -2090,6 +2090,10 @@ final class World {
             let dmg = Int(Float(damage) * (1 - dp / radius) * 0.6)   // self-splash is reduced
             if dmg > 0 { damagePlayer(dmg, audio: audio) }
         }
+        // A COLONIST IN THE BLAST IS DESTROYED. Not damaged — there is nothing left to damage — and not
+        // merely scorched: the fireball takes the body, which is the whole reason the slow char never
+        // belonged here. See `cremateOutright`.
+        for i in colonists.indices where vlen(colonists[i].pos - pos) < radius { cremateOutright(i) }
         // chain reactions — drums rupture and mines cook off when the blast reaches
         // them. Both resolve on the NEXT tick (flag, don't recurse), so a row of
         // drums cascades cleanly without re-entrant explode() calls.
@@ -2994,13 +2998,32 @@ final class World {
     /// is then walked away from is not cremated, and the marine gets nothing for starting a job. It is
     /// added to `score`, which crosses a floor boundary through `Renderer.carryScore` like every other
     /// point in the run, so nothing extra has to be threaded through for it.
+    /// The ground a cremation leaves behind: a scorch ring, and the smouldering ash inside it.
+    private func markCremationGround(_ pos: SIMD2<Float>) {
+        addDecal(pos, radius: 0.92, w: 0.95)      // scorch
+        addDecal(pos, radius: 0.68, w: 2.9)       // smouldering ash + embers
+    }
+
+    /// A body caught in a blast. NO SLOW CHAR HERE: the colonists lie in the fuel stores, so a cremation
+    /// cannot be performed without touching off the drums beside them — the detonation is part of the act,
+    /// not an accident around it. A fuel drum going up destroys a carcass, so the burned-but-still-
+    /// body-shaped stage was a state the player could only ever reach by watching a corpse sit intact in
+    /// its own crater. Straight to the ash mound, and scored exactly once however many blasts reach it.
+    private func cremateOutright(_ i: Int) {
+        guard colonists[i].ashed < 1 else { return }
+        if colonists[i].burn < 1 {
+            cremated.insert(colonists[i].variant)
+            score += World.cremationScore
+        }
+        if colonists[i].burn < 0.5 { markCremationGround(colonists[i].pos) }   // the gradual path lays these at 0.5
+        colonists[i].burn = 1
+        colonists[i].ashed = 1
+    }
+
     private func updateCremations(dt: Float) {
         for i in colonists.indices where colonists[i].burn > 0 && colonists[i].burn < 1 {
             let nb = min(1, colonists[i].burn + dt * cremationRate)
-            if colonists[i].burn < 0.5 && nb >= 0.5 {
-                addDecal(colonists[i].pos, radius: 0.92, w: 0.95)      // scorch
-                addDecal(colonists[i].pos, radius: 0.68, w: 2.9)       // smouldering ash + embers
-            }
+            if colonists[i].burn < 0.5 && nb >= 0.5 { markCremationGround(colonists[i].pos) }
             colonists[i].burn = nb
             if nb >= 1 {
                 cremated.insert(colonists[i].variant)
