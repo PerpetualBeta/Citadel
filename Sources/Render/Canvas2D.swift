@@ -267,9 +267,21 @@ final class Canvas2D {
                   color: color, shadow: shadow, alpha: alpha)
     }
 
-    /// Composite a Core Text bitmap (premultiplied RGBA) — used for unicode
-    /// high-score names. `out = src + dst*(1-a)`.
-    func drawTextImage(_ bmp: TextImage.Bitmap, _ dx: Int, _ dy: Int) {
+    /// Composite a Core Text bitmap (premultiplied RGBA). `out = src + dst*(1-a)`.
+    ///
+    /// `opacity` FADES THE TEXT TO TRANSPARENT. The bitmap is premultiplied, so scaling all four
+    /// channels by the same factor yields a still-correctly-premultiplied source at coverage a·o —
+    /// a true transparency fade, and no new bitmap: the cache still holds one entry per
+    /// (string, size, weight, colour) however the fade is animated.
+    ///
+    /// This exists because `TextImage.cached` IGNORES the alpha of the colour it is handed (the cache
+    /// key masks it off and Core Text draws the glyphs at alpha 1), so the only lever a caller used
+    /// to have was the RGB. Fading text meant mixing its colour toward black, which is invisible on
+    /// a black background and DARK TEXT on anything else — the ending's citation faded to black
+    /// letters over a pale ceremony plate, most legible at the moment it was supposed to be gone.
+    func drawTextImage(_ bmp: TextImage.Bitmap, _ dx: Int, _ dy: Int, opacity: Float = 1) {
+        if opacity <= 0.002 { return }
+        let o = min(1, opacity), full = o >= 0.998
         bmp.pixels.withUnsafeBufferPointer { src in
             for sy in 0..<bmp.h {
                 let oy = dy + sy
@@ -282,13 +294,13 @@ final class Canvas2D {
                     if a == 0 { continue }
                     let ox = dx + sx
                     if ox < 0 || ox >= width { continue }
-                    if a == 255 { framebuffer[obase + ox] = c | 0xFF00_0000; continue }
-                    let ia = 1 - Float(a) / 255
+                    if full && a == 255 { framebuffer[obase + ox] = c | 0xFF00_0000; continue }
+                    let ia = 1 - Float(a) / 255 * o
                     let d = framebuffer[obase + ox]
-                    // src is premultiplied: out = src + dst*(1-a)
-                    let rr = Float(c & 0xFF) + Float(d & 0xFF) * ia
-                    let gg = Float((c >> 8) & 0xFF) + Float((d >> 8) & 0xFF) * ia
-                    let bb = Float((c >> 16) & 0xFF) + Float((d >> 16) & 0xFF) * ia
+                    // src is premultiplied, so the colour channels scale by o alongside the coverage
+                    let rr = Float(c & 0xFF) * o + Float(d & 0xFF) * ia
+                    let gg = Float((c >> 8) & 0xFF) * o + Float((d >> 8) & 0xFF) * ia
+                    let bb = Float((c >> 16) & 0xFF) * o + Float((d >> 16) & 0xFF) * ia
                     framebuffer[obase + ox] = packRGBA(UInt8(clamping: Int(rr)),
                                                        UInt8(clamping: Int(gg)),
                                                        UInt8(clamping: Int(bb)))
@@ -316,21 +328,29 @@ final class Canvas2D {
         TextImage.cached(s, size: size, weight: weight, color: 0xFFFF_FFFF, mono: mono)?.w ?? 0
     }
 
+    /// `opacity` fades the whole label — glyphs, glow and shadow together — to transparent.
+    /// Prefer it over darkening `color` toward the background: see `drawTextImage`.
     func label(_ s: String, _ x: Int, _ y: Int, size: CGFloat, color: UInt32 = 0xFFFF_FFFF,
-               weight: NSFont.Weight = .regular, shadow: Bool = true, glow: UInt32? = nil, mono: Bool = false) {
+               weight: NSFont.Weight = .regular, shadow: Bool = true, glow: UInt32? = nil, mono: Bool = false,
+               opacity: Float = 1) {
+        if opacity <= 0.002 { return }
         if let glowColor = glow, let g = TextImage.cached(s, size: size, weight: weight, color: glowColor, mono: mono) {
-            for (ox, oy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] { drawTextImage(g, x + ox, y + oy) }
+            for (ox, oy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] { drawTextImage(g, x + ox, y + oy, opacity: opacity) }
         }
         if shadow, let sh = TextImage.cached(s, size: size, weight: weight, color: 0xFF00_0000, mono: mono) {
-            drawTextImage(sh, x + 1, y + 1)
+            drawTextImage(sh, x + 1, y + 1, opacity: opacity)
         }
-        if let b = TextImage.cached(s, size: size, weight: weight, color: color, mono: mono) { drawTextImage(b, x, y) }
+        if let b = TextImage.cached(s, size: size, weight: weight, color: color, mono: mono) {
+            drawTextImage(b, x, y, opacity: opacity)
+        }
     }
 
     func labelCentered(_ s: String, _ y: Int, size: CGFloat, color: UInt32 = 0xFFFF_FFFF,
-                       weight: NSFont.Weight = .regular, shadow: Bool = true, glow: UInt32? = nil, mono: Bool = false) {
+                       weight: NSFont.Weight = .regular, shadow: Bool = true, glow: UInt32? = nil, mono: Bool = false,
+                       opacity: Float = 1) {
         let w = labelWidth(s, size: size, weight: weight, mono: mono)
-        label(s, (width - w) / 2, y, size: size, color: color, weight: weight, shadow: shadow, glow: glow, mono: mono)
+        label(s, (width - w) / 2, y, size: size, color: color, weight: weight, shadow: shadow, glow: glow, mono: mono,
+              opacity: opacity)
     }
 
     /// Right edge of the text sits at `rightX`.

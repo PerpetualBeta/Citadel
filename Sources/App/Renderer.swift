@@ -292,8 +292,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             tr.t = tr.out                       // the fall starts from full black, never part way down
             enterFaded(tr.next)
         }
+        // ON THE SWITCH FRAME THE VEIL MUST BE FULL BLACK, and with `into > 0` it is — the fall starts
+        // at 1 because `tr.t == tr.out` there. With `into == 0` it was 0, and that is a one-frame FLASH
+        // of the outgoing screen: this runs after the state's own draw, and on that frame the state that
+        // drew was the one being LEFT. The ceremony's plate came back at full brightness for a frame
+        // between fading to black and the coda's first frame — "fades out, briefly flashes back in,
+        // then flashes to black again". A hard cut still hides behind one black frame; the incoming
+        // state takes over on the NEXT one, by which point the transition has already ended.
         let a: Float = tr.switched
-            ? (tr.into > 0 ? 1 - smoothstep01((tr.t - tr.out) / tr.into) : 0)
+            ? (tr.into > 0 ? 1 - smoothstep01((tr.t - tr.out) / tr.into) : 1)
             : smoothstep01(tr.t / tr.out)
         if a > 0.002 { canvas.fillRectBlend(0, 0, RenderConfig.width, RenderConfig.height, packRGBA(0, 0, 0), a) }
         audio.transitionGain = 1 - a

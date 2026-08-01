@@ -22,6 +22,16 @@ enum Progression {
     /// Which of the six planets this floor sits on (cycles after the sixth).
     static func planetIndex(_ level: Int) -> Int { building(level) % planets.count }
     static func planetName(_ level: Int) -> String { planets[planetIndex(level)] }
+
+    /// Where the transit beam is taking the marine after clearing floor `level`. Normally the next
+    /// citadel's planet — but `planetIndex` CYCLES, so past the sixth it read "destination DEMETER"
+    /// and the end of the run looked like the start of another lap. There is no seventh citadel: the
+    /// last jump is out, to ARC CITY, which is where the ceremony is held. ARC's transit has been
+    /// carrying her the whole way ("ARC TRANSIT // DESCENDING") and this is the first time it says
+    /// where to. Derived from `isFinalFloor`, so it stays right if a planet or a floor is ever added.
+    static func destinationName(after level: Int) -> String {
+        isFinalFloor(level) ? "ARC CITY" : planetName(level + 1)
+    }
     /// True on the last floor of a citadel — clearing it teleports to the next planet.
     static func isLastFloor(_ level: Int) -> Bool { floorInBuilding(level) == floorsPerBuilding }
 

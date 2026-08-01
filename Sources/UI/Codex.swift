@@ -73,16 +73,19 @@ enum FrontEnd {
         // A barely-there phosphor breath on the halo only. Not an element — the amber on a CRT
         // never sat perfectly still, and a wholly frozen frame reads as a hung game.
         let breath = 1 + 0.035 * sinf(t * 0.9)
-        let halo = mixRGBA(black, amber, 0.22 * a * breath)
+        // Opacity, not darkening — the coda sits on black so the two look alike HERE, but a fade is a
+        // fade and the next background this is asked to sit over should not resurrect the bug.
+        // The halo keeps its brightness mix: `breath` is a phosphor wobble in INTENSITY, not opacity.
+        let halo = mixRGBA(black, amber, 0.22 * breath)
         let w = c.labelWidth(codaLine, size: CGFloat(size), weight: .heavy)
         let x = (RenderConfig.width - w) / 2
         for (ox, oy) in [(-uiS(1), 0), (uiS(1), 0), (0, -uiS(1)), (0, uiS(1)), (-uiS(2), 0), (uiS(2), 0), (0, -uiS(2)), (0, uiS(2))] {
-            c.label(codaLine, x + ox, y + oy, size: CGFloat(size), color: halo, weight: .heavy, shadow: false)
+            c.label(codaLine, x + ox, y + oy, size: CGFloat(size), color: halo, weight: .heavy, shadow: false, opacity: a)
         }
-        c.label(codaLine, x + uiS(1), y, size: CGFloat(size), color: mixRGBA(black, red, a),     weight: .heavy, shadow: false)
-        c.label(codaLine, x - uiS(1), y, size: CGFloat(size), color: mixRGBA(black, cold, a),    weight: .heavy, shadow: false)
-        c.label(codaLine, x,          y, size: CGFloat(size), color: mixRGBA(black, amberHi, a), weight: .heavy, shadow: false,
-                glow: mixRGBA(black, packRGBA(110, 80, 28), a))
+        c.label(codaLine, x + uiS(1), y, size: CGFloat(size), color: red,     weight: .heavy, shadow: false, opacity: a)
+        c.label(codaLine, x - uiS(1), y, size: CGFloat(size), color: cold,    weight: .heavy, shadow: false, opacity: a)
+        c.label(codaLine, x,          y, size: CGFloat(size), color: amberHi, weight: .heavy, shadow: false,
+                glow: packRGBA(110, 80, 28), opacity: a)
     }
 
     /// The title is an ARC subsurface terminal. Most of it is glyph-rain; the brand
@@ -180,13 +183,20 @@ enum FrontEnd {
         if mast > 0.01 {
             // Seal placed off the label's MEASURED width, not a guessed offset — the first attempt
             // used a fixed inset and sat on top of the word it was meant to sit beside.
-            let mastLine = "ARC OFFICE OF RECLAMATION  ·  CITATION", mastSz = uiSf(12)
+            // The citation is issued by HIGH COMMAND and carries ARC's seal beside it, and the seal is
+            // the only thing that names them. Saying "ARC Office of Reclamation" outright explained the
+            // whole trilogy on a letterhead — the mark alone asks the question instead of answering it.
+            let mastLine = "HIGH COMMAND  ·  CITATION", mastSz = uiSf(12)
             let mw = c.labelWidth(mastLine, size: mastSz, weight: .semibold, mono: true)
+            // FADED BY OPACITY, NOT BY DARKENING. Every one of these used to mix its colour toward
+            // black, which is invisible on black and dark text on anything else — over a pale ceremony
+            // plate the citation faded to BLACK LETTERS, most legible exactly when it should have been
+            // gone. The seal already had a real alpha; only its colour needed to stop being mixed.
             arcSeal(c, cx: (W - mw) / 2 - uiS(15), cy: uiS(261), r: uiS(9),
-                    color: mixRGBA(black, coldDim, mast), alpha: 0.85 * mast)
+                    color: coldDim, alpha: 0.85 * mast)
             c.labelCentered(mastLine, uiS(256), size: mastSz,
-                            color: mixRGBA(black, coldDim, mast * 0.9), weight: .semibold,
-                            shadow: false, glow: black, mono: true)
+                            color: coldDim, weight: .semibold,
+                            shadow: false, glow: black, mono: true, opacity: mast * 0.9)
         }
 
         var y = uiS(288)
@@ -195,8 +205,8 @@ enum FrontEnd {
             // than the prose that follows, so the frame has one thing to read first.
             let head = bi == 0 && line == line.uppercased() && !line.contains("·")
             c.labelCentered(line, y, size: head ? uiSf(19) : uiSf(15),
-                            color: mixRGBA(black, head ? cold : ink, a),
-                            weight: head ? .bold : .medium, shadow: false, glow: black)
+                            color: head ? cold : ink,
+                            weight: head ? .bold : .medium, shadow: false, glow: black, opacity: a)
             y += head ? uiS(25) : uiS(21)
         }
     }
@@ -599,7 +609,7 @@ enum FrontEnd {
             c.fillRect(x0 + (pw - 1) * i, y0, 1, ph, packRGBA(70, 140, 170))
         }
         c.labelCentered("CITADEL SECURED", y0 + uiS(16), size: uiSf(30), color: packRGBA(150, 210, 245), weight: .heavy, shadow: true, glow: packRGBA(14, 34, 52))
-        c.labelCentered("\(world.colonyName) retaken · destination \(Progression.planetName(world.level + 1))", y0 + uiS(54), size: uiSf(17), color: ink, weight: .semibold)
+        c.labelCentered("\(world.colonyName) retaken · destination \(Progression.destinationName(after: world.level))", y0 + uiS(54), size: uiSf(17), color: ink, weight: .semibold)
         var y = y0 + uiS(88)
         statRow(c, "KILLS", "\(world.killCount) / \(world.monsterTotal)", y); y += uiS(30)
         if world.secretTotal > 0 { statRow(c, "SECRETS", "\(world.secretsFound) / \(world.secretTotal)", y); y += uiS(30) }
@@ -639,7 +649,7 @@ enum FrontEnd {
         row("CITADEL SECURED", uiS(108), uiSf(30), packRGBA(150, 210, 245), .heavy, 0.7, glow: packRGBA(14, 34, 52))
         row("\(world.colonyName) RETAKEN", uiS(148), uiSf(15), ink, .medium, 1.9)
         row("TELEPORTING TO", uiS(178), uiSf(14), dim, .semibold, 3.1)
-        row(Progression.planetName(world.level + 1), uiS(196), uiSf(44), amber, .heavy, 4.3, glow: packRGBA(60, 48, 0))
+        row(Progression.destinationName(after: world.level), uiS(196), uiSf(44), amber, .heavy, 4.3, glow: packRGBA(60, 48, 0))
         row("SCORE \(commaSep(world.score))", uiS(252), uiSf(16), amber, .bold, 5.6)
     }
 

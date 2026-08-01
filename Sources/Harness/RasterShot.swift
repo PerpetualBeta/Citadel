@@ -1322,7 +1322,13 @@ extension RasterRenderer {
         // sample times are chosen to catch each thing that could silently stop working: a citation
         // block mid-hold, the medal framing, and the window framing after two dissolves.
         if EndingArt.available {
+            // `citation-fade` samples a block PART WAY OUT (a ≈ 0.28), which every other frame here
+            // misses: the three below all sit at full opacity mid-hold, so the fade itself — the only
+            // place the text's transparency is exercised — had no coverage at all. That is where the
+            // citation used to darken toward black instead of thinning out, and over a pale plate it
+            // was most legible at its faintest. A frame at full opacity cannot see that.
             for (name, at) in [("citation", Float(3.0)),
+                               ("citation-fade", EndingArt.blockTime - 0.25),
                                ("medal", EndingArt.citationTime + 2.0),
                                ("window", EndingArt.citationTime + 10.0)] {
                 FrontEnd.ending(canvas, t: at)
@@ -1342,7 +1348,17 @@ extension RasterRenderer {
             FrontEnd.gameOver(canvas, world: tw, input: InputState(), qualifies: false, t: 0.1, victory: true)
             Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.height,
                               scale: 1, to: dir.appendingPathComponent("ending-tally.png"))
-            print("RASTERSHOT: wrote 3 ending frames + the coda + the victory tally (ceremony runs \(String(format: "%.1f", EndingArt.duration))s)")
+            // …and CITADEL SECURED, which had no coverage of any kind and carries the one line that
+            // says where the run goes next. BOTH branches, because `destinationName` forks on the last
+            // floor: mid-run it names the next citadel's planet, and after the sixth there is no
+            // seventh — it names ARC CITY, where the ceremony above is held. The final-floor frame is
+            // seen once per completed run, so it is the rarer of the two and the one that matters.
+            for (name, lvl, ci) in [("secured-mid", 8, 0), ("secured-final", Progression.totalFloors, 5)] {
+                FrontEnd.securedReport(canvas, world: World(level: lvl, colonyIndex: ci, seed: 77), t: 0.1)
+                Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.height,
+                                  scale: 1, to: dir.appendingPathComponent("ending-\(name).png"))
+            }
+            print("RASTERSHOT: wrote 4 ending frames + the coda, the tally and both secured cards (ceremony runs \(String(format: "%.1f", EndingArt.duration))s)")
         } else {
             print("RASTERSHOT: no ending plate — ceremony frames skipped")
         }
