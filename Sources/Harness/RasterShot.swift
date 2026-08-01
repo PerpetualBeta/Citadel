@@ -109,7 +109,15 @@ extension RasterRenderer {
             for yy in 2..<(m.h - 4) where !placed {
                 for xx in 2..<(m.w - 2) where !placed {
                     // a wall to the NORTH, and four clear cells of run to the south to stand back in
-                    guard m.wall[m.idx(xx, yy - 1)] != 0, m.doors[m.idx(xx, yy - 1)] == nil,
+                    // …and NOT against a display. This socket is hand-placed, so it bypasses the
+                    // `socketBadBacking` rule generation obeys — and after an unrelated RNG shift it
+                    // landed on a CRT bank, making the reference frame depict the exact configuration
+                    // the game forbids ("no display should ever have a charge point mounted on it").
+                    // Generation was never wrong; the frame was. Smoke asserts the real rule twice.
+                    let backTex = m.wall[m.idx(xx, yy - 1)]
+                    guard backTex != 0, m.doors[m.idx(xx, yy - 1)] == nil,
+                          backTex != WallTex.computer.rawValue, backTex != WallTex.opsBoard.rawValue,
+                          backTex != WallTex.glass.rawValue, backTex != WallTex.liftWall.rawValue,
                           clear(xx, yy), clear(xx, yy + 1), clear(xx, yy + 2), clear(xx, yy + 3),
                           clear(xx - 1, yy), clear(xx + 1, yy) else { continue }
                     world.props = []; world.drums = []; world.items = []
@@ -370,6 +378,43 @@ extension RasterRenderer {
                 print("RASTERSHOT: wrote raster-effects.png (fire/spark/smoke + plasma bolt at \(cx),\(cy))")
                 break search
             } }
+        }
+
+        // REAL SPILLED PAPERS — a GENERATED scatter, not a stamped one. The frame below stamps its own
+        // decals to exercise the shader branches, which proves the blend and NOTHING about whether papers
+        // ever reach a floor. They didn't, much: measured at 0.6 per floor with 27 of 48 floors bare, so
+        // Jonathan descended two floors and met none. This frames whatever MapGen actually placed, and
+        // fails loudly (no file, explicit line) if a seed sweep finds nothing at all to look at.
+        do {
+            var shot = false
+            // Frame the DENSEST floor found, not the first: `papersPerDesk` clusters land around one
+            // desk, and the question worth a picture is whether that reads as a records spill or as
+            // a paper explosion. The worst case is the one to look at.
+            let bySeed = [3, 7, 11, 19, 23].map { sd -> (Int, Int) in
+                (World(level: 1, colonyIndex: 0, seed: UInt64(sd)).props.filter { $0.kind == .papers }.count, sd)
+            }.sorted { $0.0 > $1.0 }
+            seeds: for (_, sd) in bySeed {
+                let world = World(level: 1, colonyIndex: 0, seed: UInt64(sd))
+                let m = world.map
+                func op(_ x: Int, _ y: Int) -> Bool { m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 }
+                for pr in world.props where pr.kind == .papers {
+                    // stand back from the scatter and look at it, along whichever axis is open behind us
+                    let px = Int(pr.pos.x), py = Int(pr.pos.y)
+                    for (dx, dy, yaw) in [(0, 2, -Float.pi / 2), (0, -2, Float.pi / 2), (2, 0, Float.pi), (-2, 0, Float(0))] {
+                        guard op(px + dx, py + dy), op(px + dx / 2, py + dy / 2) else { continue }
+                        world.player.pos = SIMD2(Float(px + dx) + 0.5, Float(py + dy) + 0.5)
+                        world.player.dir = yaw
+                        _ = rr.render(world, into: canvas)
+                        Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight,
+                                          scale: 1, to: dir.appendingPathComponent("raster-papers.png"))
+                        let n = world.props.filter { $0.kind == .papers }.count
+                        print("RASTERSHOT: wrote raster-papers.png — \(n) generated paper props on seed \(sd), framed at \(px),\(py)")
+                        shot = true
+                        break seeds
+                    }
+                }
+            }
+            if !shot { print("RASTERSHOT: NO GENERATED PAPERS FOUND across 5 seeds — raster-papers.png NOT written") }
         }
 
         // DECALS check (M5): stamp blood / scorch / scattered-papers on the floor of a lamp-lit room and
@@ -1353,8 +1398,13 @@ extension RasterRenderer {
             // floor: mid-run it names the next citadel's planet, and after the sixth there is no
             // seventh — it names ARC CITY, where the ceremony above is held. The final-floor frame is
             // seen once per completed run, so it is the rarer of the two and the one that matters.
+            // Rendered OVER THE WORLD, because that is what it is — an overlay on the floor you just
+            // cleared, not a full-screen card. Drawing it onto whatever the previous capture left in the
+            // canvas put the victory tally behind it and made the reference frame a lie.
             for (name, lvl, ci) in [("secured-mid", 8, 0), ("secured-final", Progression.totalFloors, 5)] {
-                FrontEnd.securedReport(canvas, world: World(level: lvl, colonyIndex: ci, seed: 77), t: 0.1)
+                let sw = World(level: lvl, colonyIndex: ci, seed: 77)
+                _ = rr.render(sw, into: canvas)
+                FrontEnd.securedReport(canvas, world: sw, t: 0.1)
                 Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.height,
                                   scale: 1, to: dir.appendingPathComponent("ending-\(name).png"))
             }

@@ -1176,6 +1176,38 @@ enum SmokeTest {
         check(opsBoardFacesSeen > 0, "…and the board sweep saw real exposed faces (\(opsBoardFacesSeen))")
         check(opsOverExposed == 0,
               "…each showing into the control room ALONE — never round a corner or out the back (\(opsOverExposed))")
+
+        // ── SPILLED PAPERS REACH THE FLOOR, not just the prop list ── three separate things have to
+        // line up and NOTHING checked the chain: MapGen drops a `.papers` MARKER prop (office rooms
+        // only, `area <= 20`, 50% per desk), `buildAftermath` turns each marker into a floor decal
+        // (w > 3), and the renderer uploads only `world.decals.prefix(72)`. Papers are appended LAST —
+        // after the doorway blood and the scattered carnage — so on a busy floor they are the FIRST
+        // thing pushed past the cap, and they vanish per-floor with nothing logged. The existing
+        // `raster-decals` frame cannot see any of this: it stamps a SYNTHETIC paper decal rather than
+        // generating one, so it proves the shader branch and nothing about whether papers ever arrive.
+        var paperProps = 0, paperFloors = 0, decalFloors = 0, papersCut = 0, worstIdx = -1, worstTotal = 0
+        let decalUploadCap = 72
+        for lvl in 1...6 {
+            for sd in 0..<8 {
+                let w = World(level: lvl, colonyIndex: Progression.planetIndex(lvl),
+                              seed: UInt64(sd) &* 6421 &+ UInt64(lvl) &* 97)
+                let n = w.props.filter { $0.kind == .papers }.count
+                paperProps += n
+                worstTotal = max(worstTotal, w.decals.count)
+                guard n > 0 else { continue }
+                paperFloors += 1
+                if let i = w.decals.firstIndex(where: { $0.w > 3 }) {
+                    decalFloors += 1
+                    worstIdx = max(worstIdx, i)
+                    if i >= decalUploadCap { papersCut += 1 }
+                }
+            }
+        }
+        check(paperProps > 0, "office desks scatter paper props (\(paperProps) across \(paperFloors)/48 floors)")
+        check(decalFloors == paperFloors,
+              "…and every floor that has them stamps a floor decal (\(decalFloors) of \(paperFloors))")
+        check(papersCut == 0,
+              "…none pushed past the renderer's \(decalUploadCap)-decal upload (worst paper index \(worstIdx), worst floor total \(worstTotal))")
         // …and refusing the sleeping halls must not cost a floor its control room.
         check(opsFloors == sweptFloors, "…and every floor still gets one (\(opsFloors) of \(sweptFloors))")
         check(socketsSeen > 0, "the socket sweep saw real sockets (\(socketsSeen)) — the check below is not vacuous")
@@ -1353,6 +1385,7 @@ enum SmokeTest {
         // empty boxes. Props carry NO collision, but must still place sensibly: never
         // on the marine's start, on a pickup, in a doorway, or footed inside a wall.
         var propLevels = 0, propOnStart = 0, propOnItem = 0, propInWall = 0, propInDoor = 0
+        var propOnItemKinds = Set<String>()
         // furniture is SOLID and PROTRUDES into the room, so it must never jut across a
         // doorway throat or a 1-wide corridor — that would wall the marine in. We test
         // the actual collision footprint (not just the centre cell) at every such cell.
@@ -1363,7 +1396,16 @@ enum SmokeTest {
             if !w.props.isEmpty { propLevels += 1 }
             for pr in w.props {
                 if vlen(pr.pos - w.player.pos) < 0.6 { propOnStart += 1 }
-                for it in w.items where vlen(pr.pos - it.pos) < 0.6 { propOnItem += 1 }
+                // `.papers` is EXEMPT, and this is a narrowing of scope, not a loosened threshold: it is the
+                // one prop kind that renders NO geometry anywhere (no `.papers` case exists in the raster
+                // path at all) — it is a marker MapGen drops so `buildAftermath` can stamp a flat floor
+                // decal. This check exists to stop set-dressing GEOMETRY intersecting a pickup; a hovering
+                // pickup above a sheet of paper on the floor is not that, and reads fine. If another
+                // geometry-less marker kind is ever added it must be exempted here deliberately, not
+                // discovered by a puzzling failure.
+                for it in w.items where pr.kind != .papers && vlen(pr.pos - it.pos) < 0.6 {
+                    propOnItem += 1; propOnItemKinds.insert("\(pr.kind)")
+                }
                 let cx = Int(pr.pos.x), cy = Int(pr.pos.y)
                 if w.map.blocksMovement(cx, cy) { propInWall += 1 }                 // centre on open floor
                 if w.map.isDoorCell(cx, cy) { propInDoor += 1 }                     // never blocking a doorway
@@ -1392,7 +1434,7 @@ enum SmokeTest {
         }
         check(propLevels >= 6, "rooms are furnished with set-dressing (\(propLevels)/8 levels)")
         check(propOnStart == 0, "no prop spawns on the marine's start (\(propOnStart))")
-        check(propOnItem == 0, "no prop spawns on a pickup (\(propOnItem))")
+        check(propOnItem == 0, "no prop spawns on a pickup (\(propOnItem)\(propOnItemKinds.isEmpty ? "" : " — " + propOnItemKinds.sorted().joined(separator: ", ")))")
         check(propInWall == 0, "every prop foots on open floor, never inside a wall (\(propInWall))")
         check(propInDoor == 0, "no prop sits in a doorway (\(propInDoor))")
         check(doorThroatBlocked == 0, "no solid furniture juts across a doorway throat (\(doorThroatBlocked))")

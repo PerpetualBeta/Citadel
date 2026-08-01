@@ -72,6 +72,7 @@ enum MapGen {
     static let dormSingleRowMinInterior = 3   // interior depth (span−2) ≥ this → one centre row
     static let dormDoubleRowMinInterior = 6   // ≥ this → two centre rows, head-to-head
     static let dormColumnStride = 4      // riveted-steel columns every N cells along a big hall
+    static let papersPerDesk = 3         // sheets shed by a spilled workstation — a scatter, not a sheet
     /// True while generating the citadel's WORKING FLOORS (7–8): the industrial plant. Nobody sleeps and
     /// nobody monitors down here, so dormitories and CRT display banks are both suppressed. Set once at the
     /// top of attemptGen (generation is sequential), like `fuelStoreCells`.
@@ -1907,23 +1908,43 @@ enum MapGen {
                                 ?? slots.first(where: { freeCell($0.pos, 0.85) }) {
                         placeProp(.desk, desk)
                         // the chair sits just in front of the (now wall-flush) desk, facing it
-                        let chairP = desk.pos + desk.inward * 0.62
+                        let chairOut: Float = 0.62
+                        let chairP = desk.pos + desk.inward * chairOut
                         let cx = Int(chairP.x), cy = Int(chairP.y)
                         if map.inBounds(cx, cy), map.wall[map.idx(cx, cy)] == 0, map.doors[map.idx(cx, cy)] == nil,
                            !map.hazard[map.idx(cx, cy)], freeCell(chairP, 0.5) {
                             props.append(Prop(kind: .chair, pos: chairP, yaw: yawFor(-desk.inward), againstWall: false))
                             placed.append(chairP)
                         }
-                        // records spilled across the deck in the panic — a scatter of
-                        // sheets on the floor out in front of the workstation
-                        if FeatureFlags.scatteredPapers, rng.chance(0.5) {
+                        // Records spilled across the deck in the panic — a scatter of sheets on the
+                        // floor out in front of the workstation.
+                        //
+                        // MEASURED at 0.6 scatters per floor with 27 of 48 floors completely bare, i.e.
+                        // a feature you could descend two floors without ever meeting — which is exactly
+                        // what happened. Every desk was there (168 across 48/48 floors); the paper gates
+                        // threw ~83% of them away, for two reasons:
+                        //   · a bare coin flip halved it, for no reason the fiction supports — an
+                        //     evacuated colony's workstations ALL spilled their records; and
+                        //   · the spot was drawn from 0.9…1.35 out while `freeCell` demands 0.4 of
+                        //     clearance and THE CHAIR THIS BRANCH JUST PLACED sits at 0.62, so the whole
+                        //     lower third of the range could never pass. It was competing with itself.
+                        // So the spread now begins where the chair's clearance ends — derived from the
+                        // chair offset and the radius the test actually demands, not a picked number —
+                        // and each desk sheds `papersPerDesk` sheets so it reads as the scatter the
+                        // comment always claimed. Each is its own decal; ~6 a floor against a 72 upload.
+                        if FeatureFlags.scatteredPapers {
                             let tangent = SIMD2<Float>(desk.inward.y, -desk.inward.x)
-                            let pp = desk.pos + desk.inward * rng.f(0.9, 1.35) + tangent * rng.f(-0.4, 0.4)
-                            let px = Int(pp.x), py = Int(pp.y)
-                            if map.inBounds(px, py), map.wall[map.idx(px, py)] == 0, map.doors[map.idx(px, py)] == nil,
-                               !map.hazard[map.idx(px, py)], freeCell(pp, 0.4) {
-                                props.append(Prop(kind: .papers, pos: pp, yaw: rng.f(0, 6.2831853), againstWall: false))
-                                placed.append(pp)
+                            let clear: Float = 0.4                       // the clearance freeCell() below demands
+                            let near = chairOut + clear                  // first distance that can clear the chair
+                            for _ in 0..<MapGen.papersPerDesk {
+                                let pp = desk.pos + desk.inward * rng.f(near, near + 0.5)
+                                       + tangent * rng.f(-0.45, 0.45)
+                                let px = Int(pp.x), py = Int(pp.y)
+                                if map.inBounds(px, py), map.wall[map.idx(px, py)] == 0, map.doors[map.idx(px, py)] == nil,
+                                   !map.hazard[map.idx(px, py)], freeCell(pp, clear) {
+                                    props.append(Prop(kind: .papers, pos: pp, yaw: rng.f(0, 6.2831853), againstWall: false))
+                                    placed.append(pp)
+                                }
                             }
                         }
                         for s in slots where !featureBacked(s) && placeProp(.locker, s) { break }   // a locker must never cover a display/CRT bank
