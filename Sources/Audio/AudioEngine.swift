@@ -125,7 +125,12 @@ final class AudioEngine {
             case .drip: return 0.55
             case .fault: return 0.7
             case .faultHum: return 0.34       // quietened relative to the ambient bed
-            case .machineHum: return 0.30     // a working compressor, not a jet: sits under the ambient bed
+            // The whole machinery curve, both ends. Raised from 0.30 because the two ends have to be
+            // audible AND far apart: World swings this from a between-halls floor to a full-proximity
+            // maximum, and that swing is the only cue telling the marine she is walking toward a
+            // compressor. Trying to fix audibility by lifting only the FLOOR left 3.8 dB of swing and
+            // the ramp stopped reading at all — the level has to move, not just exist.
+            case .machineHum: return 0.45
             // The spark shower, HALVED against what the game actually shipped — set by measuring
             // the old level rather than by halving the old constant, because the old constant was
             // not what came out (see `faultShotNodes`). At the panel the crackle now renders at

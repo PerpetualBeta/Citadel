@@ -199,13 +199,18 @@ final class World {
     // structure, and gating it made the hum flick on and off as pillars and machines passed the eye.
     private var machineSites: [SIMD2<Float>] = []   // compressor positions on this floor (collected once)
     private var machineSitesScanned = false        // …and a floor with NONE must not re-scan every frame
-    private let machineHumRange: Float = 9.0        // audible right across a machine hall
+    // How far one machine's hum carries. NINE cells was half a hall, and a plant floor holds six to
+    // fourteen machines — so their fields overlapped everywhere and the level sat pinned at maximum
+    // wherever you stood. Every individual number was right and there was still no ramp to walk into,
+    // which is what "it doesn't get louder as I approach" actually meant. Four and a half cells gives
+    // each machine a local presence with room to fall away between them.
+    private let machineHumRange: Float = 4.5
     // A PLANT DECK IS NOISY. This is the level between halls, with no machine within range, and it
     // has to beat the far Signal at these depths or the marine hears the transmission and not the
     // plant she is standing on: measured, the Signal reaches +8.0 dB over the calm room tone on
     // floor 8, and this baseline was +2.1 — six decibels the wrong way round, which is why the
     // machinery seemed to have gone silent. The proximity swell above it then runs to +13.
-    private let machineHumFloor: Float = 0.62      // a plant floor is never silent, even between halls
+    private let machineHumFloor: Float = 0.35      // a plant floor is never silent, even between halls
     /// …and the level the sub-deck ramp reaches by the floor just above the plant. Deliberately NOT
     /// `machineHumFloor` any more: that is now loud enough to be a plant deck, and a ramp ending
     /// there would have floor 6 louder than its own Signal and rob floor 7 of its step up. This is
@@ -214,7 +219,7 @@ final class World {
     /// floor measured +1.6 dB over the room tone, which is "felt" in a quiet room and simply absent in
     /// a real one. 0.40 puts floor 6 near +6 dB — plainly there — while staying well under the plant's
     /// own +9.3, so arriving at floor 7 is still a step up rather than a plateau.
-    private let machineHumThroughDeck: Float = 0.40
+    private let machineHumThroughDeck: Float = 0.15
     private var machineHumLevel: Float = 0
     private let machineHumSmooth: Float = 0.55      // slower than the faults': machinery swells, it doesn't snap
     // ── the Queen ──

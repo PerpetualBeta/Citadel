@@ -177,7 +177,7 @@ enum AudioProbe {
         //      The whole ramp lives in about two decibels, because the plant's OWN between-halls
         //      level is its ceiling and that measures only ~+2 dB over the room tone. Reported per
         //      floor next to that ceiling, so a future change to either is visibly a change to both.
-        var plantBetweenHalls: Float = 0
+        var plantBetweenHalls: Float = 0, plantBesideMachine: Float = 0
         let plantFloorLevel = World(level: 7, colonyIndex: 0, seed: 1).machineHumFloorForTest
         let deckEnd = World(level: 1, colonyIndex: 0, seed: 1).machineHumThroughDeckForTest
         for (label, level) in [("floor 1 (the surface)", Float(0)),
@@ -192,6 +192,7 @@ enum AudioProbe {
             report("+ plant through the deck, " + label.padding(toLength: 36, withPad: " ", startingAt: 0)
                    + String(format: "%+.1f dB", vsBed(r)), r)
             if level == plantFloorLevel { plantBetweenHalls = r }
+            if level == 1.0 { plantBesideMachine = r }
         }
 
         // (c) THE FAR SIGNAL, floor by floor, swept across its WHOLE loop — it breathes, swells
@@ -214,12 +215,21 @@ enum AudioProbe {
         // the Signal there; the plant's between-halls level was 6 dB UNDER the floor-8 Signal and the
         // machinery seemed to have gone silent. Asserted against the Signal's SWELL, not its mean,
         // because a bed that only wins on average still disappears every time the transmission surges.
+        // Two claims, and they are different. Jonathan's brief was "we should be able to hear the
+        // machinery WHEN WE ARE NEAR MACHINERY over the Signal" — so that is what the strict test
+        // compares, and it is the swell rather than the mean because a bed that only wins on average
+        // disappears each time the transmission surges. Between halls the Signal may well surge over
+        // the plant; what matters there is simply that the plant is AUDIBLE, which is the second check.
         if let deep = sig.first(where: { $0.floor == Progression.industrialFirstFloor }) {
-            let ok = vsBed(plantBetweenHalls) > vsBed(deep.swell)
-            print("  \(ok ? "PASS  " : "REVIEW")  the plant is heard over the Signal on its own floors — "
-                  + String(format: "plant %+.1f dB vs floor %d Signal swell %+.1f dB",
-                           vsBed(plantBetweenHalls), deep.floor, vsBed(deep.swell)))
+            let near = vsBed(plantBesideMachine), swell = vsBed(deep.swell)
+            print("  \(near > swell + 3 ? "PASS  " : "REVIEW")  machinery reads over the Signal where the machines are — "
+                  + String(format: "beside one %+.1f dB vs floor %d Signal swell %+.1f dB", near, deep.floor, swell))
         }
+        print("  \(vsBed(plantBetweenHalls) >= 5 ? "PASS  " : "REVIEW")  …and the deck is never silent between them — "
+              + String(format: "%+.1f dB over room tone (needs +5)", vsBed(plantBetweenHalls)))
+        print("  \(vsBed(plantBesideMachine) - vsBed(plantBetweenHalls) >= 6 ? "PASS  " : "REVIEW")  …with a swing you can walk into — "
+              + String(format: "%+.1f dB from between halls to beside a machine (needs 6)",
+                       vsBed(plantBesideMachine) - vsBed(plantBetweenHalls)))
 
         // (d) the ONE-SHOTS, each fired over the same calm bed and measured across its onset —
         //     the short-circuit sequence at the panel (the worst case the player can stand in,

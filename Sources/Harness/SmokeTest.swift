@@ -840,6 +840,33 @@ enum SmokeTest {
             check((2...6).allSatisfy { (humByFloor[$0] ?? 0) > (humByFloor[$0 - 1] ?? 0) },
                   "the plant is heard THROUGH the deck, louder the closer you get — "
                   + (1...6).map { String(format: "%.4f", humByFloor[$0] ?? 0) }.joined(separator: " "))
+            // THE RAMP ITSELF. "It should get louder as I approach and quieter as I leave" — nothing
+            // tested that, and a compressed swing (a floor raised to fix audibility) reads as no ramp
+            // at all even though every individual level is correct. Walk in from beyond range.
+            let pw = World(level: Progression.industrialFirstFloor, colonyIndex: 0, seed: 4242)
+            pw.monsters = []              // a swarm hunting her mid-measurement is not part of this test
+            // …and pick the LONELIEST machine: a plant hall is full of them, so a spot 14 m from one is
+            // often 3 m from another, and the walk-in reads as no ramp because the field never dips.
+            let sites = pw.props.filter { $0.kind == .machineCompressor || $0.kind == .machineFilter
+                                       || $0.kind == .machineColumn }
+            if let m = sites.max(by: { a, b in
+                let da = sites.filter { $0.pos != a.pos }.map { vlen($0.pos - a.pos) }.min() ?? 0
+                let db = sites.filter { $0.pos != b.pos }.map { vlen($0.pos - b.pos) }.min() ?? 0
+                return da < db }) {
+                func humAt(_ d: Float) -> Float {
+                    pw.player.pos = m.pos + SIMD2<Float>(d, 0)
+                    for _ in 0..<180 { pw.update(dt: 1.0 / 60, input: InputState(), audio: audio) }
+                    return pw.machineHumLevelForTest
+                }
+                let far = humAt(14), mid = humAt(5), near = humAt(1)
+                check(near > mid && mid > far,
+                      String(format: "the plant hum RISES as she closes on a machine (%.2f → %.2f → %.2f at 14/5/1 m)",
+                             far, mid, near))
+                check(near - far > 0.3,
+                      String(format: "…by enough to hear (%.2f of swing)", near - far))
+                let back = humAt(14)
+                check(back < near - 0.3, String(format: "…and falls again as she leaves (%.2f)", back))
+            }
             check((humByFloor[1] ?? 1) < 0.005,
                   String(format: "…inaudible on the surface (%.4f)", humByFloor[1] ?? 0))
             let plantOwn = World(level: 7, colonyIndex: 0, seed: 1).machineHumFloorForTest
