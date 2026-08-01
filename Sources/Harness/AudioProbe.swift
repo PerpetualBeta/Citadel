@@ -180,6 +180,16 @@ enum AudioProbe {
         var plantBetweenHalls: Float = 0, plantBesideMachine: Float = 0
         let plantFloorLevel = World(level: 7, colonyIndex: 0, seed: 1).machineHumFloorForTest
         let deckEnd = World(level: 1, colonyIndex: 0, seed: 1).machineHumThroughDeckForTest
+        // Does a node volume ABOVE 1.0 actually get louder, or does AVAudioMixing clamp it? The tuned
+        // machinery gain is 1.3, and full proximity multiplies by it — so if the framework clamps, the
+        // top of the ramp silently flattens exactly where the marine is closest to a machine.
+        for v in [Float(0.8), 1.0, 1.3, 1.6] {
+            let r = settle(2) {
+                audio.startMusic(.level, depth: Progression.industrialFirstFloor, farSignalGain: 0); calm()
+                audio.machineHumRawForTest(v)
+            }.mean
+            print(String(format: "    node volume %.2f → rms %.4f  (%+.1f dB vs bed)", v, r, vsBed(r)))
+        }
         for (label, level) in [("floor 1 (the surface)", Float(0)),
                                ("floor 3", deckEnd * 0.4),
                                ("floor 6 (deep workings)", deckEnd * 5 / 6),

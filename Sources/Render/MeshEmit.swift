@@ -342,61 +342,39 @@ extension RasterRenderer {
     /// you looked straight through that annulus into the inside of the sleeve's far wall, and the fitting read
     /// as a torn hollow cage rather than a casting. The pipe emerging through the middle hides the centre of
     /// each disc, so what you see is the flat end face a real cast fitting has.
-    /// A 90° elbow as a SWEPT BEND: the pipe curves through the corner along a quarter-circle, the way
-    /// a real cast elbow does, with a short collar on each leg where the bend meets the run.
+    /// How far back from a corner a bend starts. The straight runs must STOP here and let the bend do
+    /// the turning — that is the difference between a pipe that bends and a pipe with something bolted
+    /// on the corner. Shared with the caller so the two cannot disagree about where the pipe ends.
+    static func pipeBendRadius(_ r: Float) -> Float { r * 2.6 }
+
+    /// A 90° bend: THE PIPE ITSELF, curving. Same diameter, no collar, no cuff, no casting — a welded
+    /// industrial bend, which is what the reference photographs actually show.
     ///
-    /// It used to be two straight sleeves butted together at `p`, which is a MITRE — two tubes cut at
-    /// 45° and jammed into each other. Capping it, colouring it and offsetting it all made that mitre
-    /// tidier without making it a bend, which is why "the elbow is wrong" survived three fixes: each
-    /// one addressed a symptom of the corner being square rather than the corner being square.
+    /// Five attempts got here, and every earlier one added something to the corner instead of bending
+    /// the pipe through it: two mitred sleeves, then capped sleeves, then coloured ones, then a swept
+    /// arc with socket cuffs. The cuffs came from a plumbing-catalogue elbow, which is a real object but
+    /// the wrong one — a colony's service run is welded, not push-fit, and every fitting I added was
+    /// more corner furniture on a join that just needed to curve.
     ///
-    /// The arc is built from `seg` short tubes stepping along it. Each is emitted uncapped and the
-    /// joints overlap slightly (the next segment starts a fraction before the previous one ends), so
-    /// consecutive rings interpenetrate instead of leaving a seam or fighting for the same depth — the
-    /// coplanarity that made the last version read as a pale disc. `capNear` closes the outer face of
-    /// the run-side collar, which is the one surface open to the room at a terminus.
+    /// The straight legs stop at `pipeBendRadius` from the corner and the arc spans that gap, tangent to
+    /// each, so the surface is continuous from one leg to the other with no step to catch the light.
+    /// Twelve steps of 7.5°, each overlapping its neighbour slightly so consecutive rings interpenetrate
+    /// rather than leaving a seam or fighting for one depth.
     static func emitElbow(at p: SIMD3<Float>, legA: SIMD3<Float>, legB: SIMD3<Float>, r: Float, _ body: Mat,
                           capNear: Bool = false, into v: inout [PVert]) {
         let a = simd_length(legA) > 1e-5 ? simd_normalize(legA) : SIMD3<Float>(1, 0, 0)
         let b = simd_length(legB) > 1e-5 ? simd_normalize(legB) : SIMD3<Float>(0, 1, 0)
-        // Centreline radius. 2.1× read as a kink: a long-radius elbow — the kind fluid actually flows
-        // through — turns on about 1.5 pipe DIAMETERS, which is three times the radius.
-        let bendR = r * 3.0
-        let fit = r * 1.10                      // the sweep itself: barely fatter than the pipe it carries
-        // …and the SOCKET CUFFS. A real elbow is not a constant-diameter curve: each end opens into a
-        // short, distinctly wider socket that the straight pipe pushes into, with a visible shoulder
-        // where the cuff steps down to the sweep. That step is most of what reads as "a fitting" rather
-        // than "a bent pipe", and it was the piece still missing after the sweep itself was right.
-        let cuffR = r * 1.44, cuffLen: Float = 0.05
-        // The arc's centre is out along BOTH legs, so the curve leaves each one tangentially: the bend
-        // starts where the straight pipe stops and there is no kink at either hand-off.
-        let centre = p + (a + b) * bendR
-        // Twelve steps of 7.5° rather than six of 15°. Six was still visibly a series of straight
-        // sections; at this radius the facets have to be finer or the curve reads as a mitre with extra
-        // corners, which is precisely the note this is answering.
+        let bendR = pipeBendRadius(r)
+        let centre = p + (a + b) * bendR          // out along BOTH legs: the arc leaves each tangentially
         let seg = 12
-        var prev = centre - b * bendR           // the point on the arc that meets leg A
+        var prev = centre - b * bendR             // where the arc meets leg A
         for i in 1...seg {
             let t = Float(i) / Float(seg) * (Float.pi / 2)
-            // sweep from the leg-A tangent round to the leg-B tangent
             let here = centre - b * (bendR * cosf(t)) - a * (bendR * sinf(t))
-            let overlap = (here - prev) * 0.22   // let each ring bite into the last
-            emitTube(prev - overlap, here + overlap, r: fit, sides: 9, body, caps: false, into: &v)
+            let overlap = (here - prev) * 0.30
+            emitTube(prev - overlap, here + overlap, r: r, sides: 10, body, caps: false, into: &v)
             prev = here
         }
-        // The two sockets, each sitting where the sweep meets its straight leg and opening OUTWARD
-        // along it — the direction the pipe is pushed in from. Capped at the outer end: that disc is
-        // the socket rim, and the pipe running through hides its middle, so what shows is the ring of
-        // shoulder the reference has. The inner end is buried in the sweep and needs nothing.
-        for leg in [a, b] {
-            let mouth = p + leg * bendR
-            emitTube(mouth, mouth + leg * cuffLen, r: cuffR, sides: 9, body, caps: true, nearCap: false, into: &v)
-        }
-        // The corner itself, under the sweep: the straight run and its spur both reach `p` and meet in
-        // a mitre there. The sweep's own tube encloses it — 0.41 × bendR from the corner at radius
-        // `fit` — so nothing of that mitre shows, and at a TERMINUS `capNear` closes the run's own end
-        // disc as a belt-and-braces against a viewing angle that squeaks past the curve.
-        if capNear { emitTube(p - a * 0.012, p + a * (bendR * 0.5), r: fit, sides: 9, body, caps: true, nearCap: true, into: &v) }
     }
 
     /// Wall-mount ONE bulkhead fixture: the imported brass lamp plus its lit, ribbed lens (or the procedural

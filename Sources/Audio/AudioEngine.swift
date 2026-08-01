@@ -113,11 +113,20 @@ final class AudioEngine {
             }
         }
         /// The machinery trim, LIVE-TUNABLE — `defaults write cc.jorviksoftware.Citadel MachineHumGain
-        /// -float 0.9`, read every frame. Three rounds of "still too quiet" have gone by with me picking
-        /// a number, measuring it against the room tone and being wrong about how it lands in a real
-        /// room; a knob turns that loop into one measurement. Default raised 0.45 → 0.75.
+        /// -float 0.9`, read every frame — kept because it is what settled this.
+        ///
+        /// TUNED BY EAR AND LOCKED IN at 1.3 (2026-08-01). Three rounds of "still too quiet" were me
+        /// picking a number, measuring it against the calm room tone and being wrong each time about
+        /// how it lands in a real room; the knob turned that into one session. 1.3 is nearly double my
+        /// last guess, and it puts a machine you are standing beside at +25.6 dB over the room tone —
+        /// well above a plasma shot, which I had been treating as a ceiling. On a working plant deck it
+        /// is not one: the machinery IS the loudest thing in the room, and that was the whole note.
+        ///
+        /// A node volume over 1.0 is fine here — measured, the mixer scales straight through it
+        /// (0.8/1.0/1.3/1.6 → +21.4/+23.4/+25.6/+27.4 dB), so full proximity at this gain is not
+        /// clamped and the approach ramp keeps its full swing right up to the machine.
         static var machineHumGain: Float {
-            (UserDefaults.standard.object(forKey: "MachineHumGain") as? Double).map { Float($0) } ?? 0.75
+            (UserDefaults.standard.object(forKey: "MachineHumGain") as? Double).map { Float($0) } ?? 1.3
         }
         // per-sound trim so one sample doesn't dwarf the rest (1 = unity).
         var gain: Float {
@@ -554,6 +563,10 @@ final class AudioEngine {
         return (n > 0 ? Float((acc / Double(n)).squareRoot()) : 0, peak,
                 Float(b.frameLength) / Float(b.format.sampleRate))
     }
+    /// Harness only: set the machinery loop's NODE volume directly, bypassing the gain table — so the
+    /// probe can ask whether the mixer honours a value above 1.0 or quietly clamps it.
+    func machineHumRawForTest(_ v: Float) { setLoopVolForTest(.machineHum, v) }
+    func setLoopVolForTest(_ s: Sound, _ v: Float) { setLoopVol(s, v) }
     /// Harness only: whether the SAMPLED reactive bed loaded, or the graph fell back to the
     /// synth bed. The two behave differently under measurement — the sampled bed is a steady
     /// loop, the synth bed re-enqueues voices every tick — so the probe has to know which it got.

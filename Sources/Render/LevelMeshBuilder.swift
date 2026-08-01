@@ -391,13 +391,18 @@ struct LevelMeshBuilder {
                         // so its bore was a black hole you could look straight down, framed by the fitting.
                         // The sleeves around it hid nothing: they are wider than the pipe, and the wedge
                         // between the two perpendicular ones is exactly where the bore showed through.
-                        RasterRenderer.emitTube(a, b, r: r, sides: sides, mat, caps: true, into: &v)
+                        // THE STRAIGHT STOPS SHORT AT EACH END and the bend spans the gap — that is what
+                        // makes it one continuous pipe turning a corner rather than a corner with
+                        // something bolted to it. No caps needed on the run any more: both its ends are
+                        // now inside a bend rather than standing open at the wall's end.
+                        let br = RasterRenderer.pipeBendRadius(r)
+                        let axis3 = SIMD3<Float>(axis.x, 0, axis.y)
+                        RasterRenderer.emitTube(a + axis3 * br, b - axis3 * br, r: r, sides: sides, mat, caps: false, into: &v)
                         for (pt, dir) in [(a, SIMD3<Float>(-axis.x, 0, -axis.y)), (b, SIMD3<Float>(axis.x, 0, axis.y))] {
                             let face = pt + intoWall * (off + lateral + 0.04)
-                            // the spur needs NO caps: its near end coincides with the run's own new cap and the
-                            // elbow around it, and its far end is 4 cm inside the wall
-                            RasterRenderer.emitTube(pt, face, r: r, sides: sides, mat, caps: false, into: &v)
-                            RasterRenderer.emitElbow(at: pt, legA: dir * -1, legB: intoWall, r: r, fit, capNear: true, into: &v)
+                            // the spur likewise starts a bend-radius in, and runs on into the wall
+                            RasterRenderer.emitTube(pt + intoWall * br, face, r: r, sides: sides, mat, caps: false, into: &v)
+                            RasterRenderer.emitElbow(at: pt, legA: dir * -1, legB: intoWall, r: r, mat, into: &v)
                             RasterRenderer.emitTube(face - intoWall * 0.012, face + intoWall * 0.012, r: r * 1.6, sides: 8, fit, into: &v)
                         }
                     }
