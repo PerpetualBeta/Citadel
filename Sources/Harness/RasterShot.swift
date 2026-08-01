@@ -93,6 +93,40 @@ extension RasterRenderer {
         // corridor light-STABILITY check (matches Jonathan's view; headlamp off): look down a
         // long straight run from two positions 3 cells apart. The far lamp pools should be
         // present and IDENTICAL between the two — any pop/occlusion of a distant pool shows here.
+        // THE CHARGE POINT, square on. A player-facing surface with no coverage until now — which is
+        // exactly why three attempts to fix its indicator shipped unseen, and why the fourth was a
+        // redesign. Built on floor 1 with props CLEARED: earlier attempts framed a plant floor, where
+        // the machinery is baked into the STATIC mesh and cannot be cleared, so the panel was always
+        // behind a compressor. The socket is placed by hand rather than taken from the generator,
+        // because the first one on a floor is as often as not in a corner.
+        do {
+            let world = World(level: 1, colonyIndex: 0, seed: 7)
+            let m = world.map
+            func clear(_ x: Int, _ y: Int) -> Bool {
+                m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil && !m.hazard[m.idx(x, y)]
+            }
+            var placed = false
+            for yy in 2..<(m.h - 4) where !placed {
+                for xx in 2..<(m.w - 2) where !placed {
+                    // a wall to the NORTH, and four clear cells of run to the south to stand back in
+                    guard m.wall[m.idx(xx, yy - 1)] != 0, m.doors[m.idx(xx, yy - 1)] == nil,
+                          clear(xx, yy), clear(xx, yy + 1), clear(xx, yy + 2), clear(xx, yy + 3),
+                          clear(xx - 1, yy), clear(xx + 1, yy) else { continue }
+                    world.props = []; world.drums = []; world.items = []
+                    world.monsters = []; world.colonists = []; world.deployedMines = []
+                    world.sockets = [Socket(pos: SIMD2(Float(xx) + 0.5, Float(yy) + 0.5),
+                                            yaw: 0, charge: 260, maxCharge: 400)]   // wall to the NORTH → inward (0,1) → yawFor = 0
+                    world.player.pos = SIMD2(Float(xx) + 0.5, Float(yy) + 2.9)
+                    world.player.dir = -.pi / 2                      // face north, straight at the panel
+                    _ = rr.render(world, into: canvas)
+                    Captures.writePNG(canvas.framebuffer, w: RenderConfig.width, h: RenderConfig.viewHeight, scale: 1,
+                                      to: dir.appendingPathComponent("raster-socket.png"))
+                    print("RASTERSHOT: wrote raster-socket.png (charge point hand-placed at \(xx),\(yy))")
+                    placed = true
+                }
+            }
+        }
+
         do {
             let world = World(level: 1, colonyIndex: 0, seed: 7)
             let m = world.map

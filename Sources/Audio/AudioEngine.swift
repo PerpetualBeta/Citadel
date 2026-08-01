@@ -112,6 +112,13 @@ final class AudioEngine {
             default: return false
             }
         }
+        /// The machinery trim, LIVE-TUNABLE — `defaults write cc.jorviksoftware.Citadel MachineHumGain
+        /// -float 0.9`, read every frame. Three rounds of "still too quiet" have gone by with me picking
+        /// a number, measuring it against the room tone and being wrong about how it lands in a real
+        /// room; a knob turns that loop into one measurement. Default raised 0.45 → 0.75.
+        static var machineHumGain: Float {
+            (UserDefaults.standard.object(forKey: "MachineHumGain") as? Double).map { Float($0) } ?? 0.75
+        }
         // per-sound trim so one sample doesn't dwarf the rest (1 = unity).
         var gain: Float {
             switch self {
@@ -130,7 +137,7 @@ final class AudioEngine {
             // maximum, and that swing is the only cue telling the marine she is walking toward a
             // compressor. Trying to fix audibility by lifting only the FLOOR left 3.8 dB of swing and
             // the ramp stopped reading at all — the level has to move, not just exist.
-            case .machineHum: return 0.45
+            case .machineHum: return Sound.machineHumGain
             // The spark shower, HALVED against what the game actually shipped — set by measuring
             // the old level rather than by halving the old constant, because the old constant was
             // not what came out (see `faultShotNodes`). At the panel the crackle now renders at

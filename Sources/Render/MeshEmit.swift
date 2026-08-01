@@ -359,7 +359,9 @@ extension RasterRenderer {
                           capNear: Bool = false, into v: inout [PVert]) {
         let a = simd_length(legA) > 1e-5 ? simd_normalize(legA) : SIMD3<Float>(1, 0, 0)
         let b = simd_length(legB) > 1e-5 ? simd_normalize(legB) : SIMD3<Float>(0, 1, 0)
-        let bendR = r * 2.1                     // centreline radius — a cast elbow bends wide, not tight
+        // Centreline radius. 2.1× read as a kink: a long-radius elbow — the kind fluid actually flows
+        // through — turns on about 1.5 pipe DIAMETERS, which is three times the radius.
+        let bendR = r * 3.0
         let fit = r * 1.10                      // the sweep itself: barely fatter than the pipe it carries
         // …and the SOCKET CUFFS. A real elbow is not a constant-diameter curve: each end opens into a
         // short, distinctly wider socket that the straight pipe pushes into, with a visible shoulder
@@ -369,7 +371,10 @@ extension RasterRenderer {
         // The arc's centre is out along BOTH legs, so the curve leaves each one tangentially: the bend
         // starts where the straight pipe stops and there is no kink at either hand-off.
         let centre = p + (a + b) * bendR
-        let seg = 6
+        // Twelve steps of 7.5° rather than six of 15°. Six was still visibly a series of straight
+        // sections; at this radius the facets have to be finer or the curve reads as a mitre with extra
+        // corners, which is precisely the note this is answering.
+        let seg = 12
         var prev = centre - b * bendR           // the point on the arc that meets leg A
         for i in 1...seg {
             let t = Float(i) / Float(seg) * (Float.pi / 2)

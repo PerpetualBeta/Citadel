@@ -849,40 +849,59 @@ enum GPURaymarch {
     // Authored back-to-wall (−Z) with the readout facing +Z into the room; packSockets
     // mounts it on the wall via yaw + the flush-to-wall shift, at its authored height
     // (NOT floored). The lit segments are over-bright so the kernel self-glows them.
+    /// THE CHARGE POINT — redesigned from scratch, 2026-08-01, after three attempts to repair the old
+    /// one each made it worse. Every one of those failures was the same shape of mistake: a curved
+    /// surface pushed a few millimetres into a flat one, so the panel sliced the lamp and the two
+    /// fought for the same depth. Tuning the millimetres was never going to fix it.
+    ///
+    /// So this is built to a rule instead: EVERY PIECE IS A BOX, AND NO TWO SHARE A DEPTH. Each layer
+    /// starts where the one behind it ends, with clear air between the faces. There is no sphere, no
+    /// tangency to get wrong, and nothing that can be cut by the thing it sits on. It is also simply a
+    /// better fit for the fiction — the colony's fixtures are pressed steel and flush panels, not
+    /// bulbs, and this reads as equipment rather than as a toy.
+    ///
+    /// Layered front to back, each in its own z band:
+    ///   0.000…0.028  backplate — the bolted mounting plate, widest, slight bevel
+    ///   0.028…0.062  housing   — the body, inset from the plate so the plate reads as a rim
+    ///   0.045…0.058  well      — a dark recess sunk INTO the housing face, holding the bar
+    ///   0.058…0.070  segments  — four capacity bars standing in the well, proud of its floor
+    ///   0.062…0.086  port      — the plug block, standing proud of the housing beside the bar
+    ///   0.086…0.092  status    — a flat lozenge on the port's face, the indicator
     static func socketShapes(chargeFrac: Float, depleted: Bool = false) -> [GShape] {
-        let housing = SIMD3<Float>(0.17, 0.19, 0.23), face = SIMD3<Float>(0.07, 0.08, 0.10)
-        let lit = SIMD3<Float>(0.40, 1.45, 1.70), off = SIMD3<Float>(0.10, 0.13, 0.15)
-        // drained: every lamp on the panel turns RED until the reserve re-arms
-        let redLit = SIMD3<Float>(3.30, 0.16, 0.10), redOff = SIMD3<Float>(0.34, 0.05, 0.04)   // over-bright so the drained indicator still self-glows: red carries low luminance, so it must be high to cross the emissive gate — keeps the panel lit rather than winking out (which read as a local "dim")
+        let plate = SIMD3<Float>(0.13, 0.14, 0.17)          // bolted mounting plate, darkest
+        let body  = SIMD3<Float>(0.20, 0.22, 0.26)          // pressed-steel housing
+        let well  = SIMD3<Float>(0.05, 0.055, 0.07)         // the sunk recess: near black
+        let lit   = SIMD3<Float>(0.40, 1.45, 1.70)          // a charged segment
+        let off   = SIMD3<Float>(0.09, 0.11, 0.13)          // …and a spent one
+        // Drained: the panel goes red. Over-bright deliberately — red carries low luminance and has to
+        // clear the emissive gate, or the indicator winks out and reads as the room going dim.
+        let redLit = SIMD3<Float>(3.30, 0.16, 0.10), redOff = SIMD3<Float>(0.34, 0.05, 0.04)
         let frac = max(0, min(1, chargeFrac))
-        let cy: Float = 0.52                                                                   // chest height
+        let cy: Float = 0.52                                 // chest height
+
         var out: [GShape] = [
-            iBox(SIMD3(0, cy, 0.02), SIMD3(0.135, 0.17, 0.035), 0.012, housing, 0.006),        // recessed housing (shallow)
-            iBox(SIMD3(0, cy, 0.05), SIMD3(0.115, 0.15, 0.012), 0.004, face, 0.003),           // dark inset faceplate
+            iBox(SIMD3(0, cy, 0.014), SIMD3(0.150, 0.185, 0.014), 0.010, plate, 0.005),   // backplate
+            iBox(SIMD3(0, cy, 0.045), SIMD3(0.128, 0.163, 0.017), 0.012, body,  0.006),   // housing
+            iBox(SIMD3(-0.040, cy, 0.0515), SIMD3(0.070, 0.135, 0.0065), 0.004, well, 0.002),  // the well
         ]
-        let segs = 4                                                                            // capacity bar
+        // FOUR CAPACITY BARS standing in the well. Their front face is at 0.070, the well floor behind
+        // them at 0.058 — they sit IN it with air on every side, so nothing is flush with anything.
+        let segs = 4
         for k in 0..<segs {
             let f = (Float(k) + 0.5) / Float(segs)
             let col = depleted ? (k == 0 ? redLit : redOff) : (f <= frac ? lit : off)
-            out.append(iBox(SIMD3(-0.055, cy - 0.10 + Float(k) * 0.067, 0.062), SIMD3(0.05, 0.026, 0.006), 0.002, col, 0.0015))
+            out.append(iBox(SIMD3(-0.040, cy - 0.098 + Float(k) * 0.0655, 0.064),
+                            SIMD3(0.056, 0.024, 0.006), 0.002, col, 0.0015))
         }
-        out.append(iBox(SIMD3(0.07, cy, 0.06), SIMD3(0.04, 0.05, 0.008), 0.006, face, 0.003))   // plug-in port recess
-        // PORT LAMP — a bead sitting ON the faceplate, TANGENT to it, which is the only placement that
-        // cannot be cut. Three attempts tuned how deeply it sat instead of removing the intersection:
-        // at z 0.066 its equator was 2 mm behind the recess face (0.06 + 0.008 = 0.068) and it showed
-        // as more than half a ball with the panel slicing across it; at exactly 0.068 the equator was
-        // COPLANAR with that face, which is worse — two surfaces at one depth, fighting; at 0.072 it
-        // still overlapped, showing a 60%-of-diameter cap that reads as three-quarters of a sphere from
-        // an angle. Every one of those was a different amount of the same mistake.
-        //
-        // Centre at 0.088 puts the sphere's back exactly ON the face (0.068 + its 0.02 radius). Tangent
-        // is a single point of contact: no interpenetration, no shared plane, nothing to cut it and
-        // nothing to fight. It reads as an indicator bead seated on the panel, which is what it is.
-        //
-        // NOT VERIFIED BY EYE. Nothing in the 69-frame set views this panel, and four attempts to frame
-        // one — generated and hand-placed — all failed on other geometry. This is arithmetic.
-        out.append(iSphere(SIMD3(0.07, cy, 0.088), 0.02,
-                           depleted ? SIMD3<Float>(0.85, 0.14, 0.10) : SIMD3<Float>(0.22, 0.50, 0.60)))
+        // THE PLUG BLOCK, proud of the housing beside the bar, with a dark slot sunk into ITS face —
+        // the socket the marine's cable goes into, and the reason the fixture exists.
+        out.append(iBox(SIMD3(0.072, cy, 0.074), SIMD3(0.046, 0.058, 0.012), 0.008, body, 0.004))
+        out.append(iBox(SIMD3(0.072, cy - 0.012, 0.0845), SIMD3(0.026, 0.020, 0.004), 0.002, well, 0.0015))
+        // …and the STATUS INDICATOR: a flat lozenge on the block's face, standing 6 mm proud of it. A
+        // flat emissive face cannot be sliced by the panel behind it, which is exactly what the old
+        // spherical bead kept being.
+        out.append(iBox(SIMD3(0.072, cy + 0.030, 0.089), SIMD3(0.024, 0.010, 0.003), 0.003,
+                        depleted ? SIMD3<Float>(2.60, 0.14, 0.09) : SIMD3<Float>(0.34, 1.25, 1.45), 0.0015))
         return out
     }
 
