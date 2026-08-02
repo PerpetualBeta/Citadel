@@ -1,3 +1,4 @@
+#if CITADEL_HARNESS
 // Citadel — RIG PROBE (CITADEL_RIGPROBE). Dev-only R&D.
 //
 // Before building the humanoid poser we must know exactly what ModelIO exposes
@@ -80,3 +81,4 @@ enum RigProbe {
         print("RigProbe: done")
     }
 }
+#endif

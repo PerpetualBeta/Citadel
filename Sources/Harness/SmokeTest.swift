@@ -1,3 +1,4 @@
+#if CITADEL_HARNESS
 // Citadel — headless smoke test (CITADEL_SMOKE=1).
 //
 // Exercises the renderer-independent logic — procedural map generation +
@@ -2398,3 +2399,4 @@ enum SmokeTest {
         return false
     }
 }
+#endif

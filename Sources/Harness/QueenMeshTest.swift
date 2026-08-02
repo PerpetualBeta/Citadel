@@ -1,3 +1,4 @@
+#if CITADEL_HARNESS
 // Citadel — QUEEN 3D-MESH look-test (CITADEL_QUEENMESH). Dev-only R&D.
 //
 // The next question after "can we get a mesh": does a real 3D model of the queen
@@ -409,3 +410,4 @@ enum QueenMeshTest {
         print("Citadel: colonist verify — \(Colonist.modelCount) variants to \(dir.path)")
     }
 }
+#endif

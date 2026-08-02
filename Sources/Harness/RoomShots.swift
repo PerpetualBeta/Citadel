@@ -1,3 +1,4 @@
+#if CITADEL_HARNESS
 // Citadel — furnished-room capture (CITADEL_ROOMS[=dir]).
 //
 // A dev harness for judging the room set-dressing: for a few levels it finds the
@@ -497,3 +498,4 @@ enum RoomShots {
         print("Citadel: wrote \(n) room shots to \(dir.path)")
     }
 }
+#endif

@@ -975,10 +975,17 @@ final class RasterRenderer {
         nVerts = built.verts.count
         vbuf = built.verts.isEmpty ? nil
              : device.makeBuffer(bytes: built.verts, length: MemoryLayout<PVert>.stride * built.verts.count)
+        // Harness reporting, and gated as such. `machineKind` lives inside `#if CITADEL_HARNESS`
+        // while this call did not, so the file compiled for every DEV build — which is ad-hoc signed
+        // and therefore defines CITADEL_HARNESS — and failed for a SIGNED one, which does not. The
+        // first signed build Citadel ever attempted is the one that found it. A diagnostic print
+        // belongs behind the flag regardless; a shipping game has nowhere to print to.
+        #if CITADEL_HARNESS
         let machineProps = world.props.filter { RasterRenderer.machineKind($0.kind) }.count
         if machineVerts > 0 || machineProps > 0 {
             print("RasterRenderer: machinery — \(machineProps) placed, \(machineVerts) static verts")
         }
+        #endif
         mapW = world.map.w; mapH = world.map.h
         var lc = [SIMD4<Float>](repeating: .zero, count: mapW * mapH)
         for k in 0..<lc.count { let c = world.map.lightColor[k]; lc[k] = SIMD4(c.x, c.y, c.z, 1) }   // mirror liTex upload

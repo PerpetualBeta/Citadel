@@ -1,3 +1,4 @@
+#if CITADEL_HARNESS
 // Citadel — headless audio probe (CITADEL_AUDIOPROBE=1).
 //
 // The whole AVAudioEngine graph runs in OFFLINE manual-rendering mode (see
@@ -387,3 +388,4 @@ enum AudioProbe {
         mutedOne("elevatorMove")        { audio.elevatorMove(true) }; audio.elevatorMove(false)
     }
 }
+#endif

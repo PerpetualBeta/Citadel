@@ -1,3 +1,4 @@
+#if CITADEL_HARNESS
 // Citadel — material swatch sheet (design preview).
 //
 // Behind CITADEL_MATERIALS: renders every procedural wall + flat texture as a
@@ -135,3 +136,4 @@ enum MaterialPreview {
         }
     }
 }
+#endif

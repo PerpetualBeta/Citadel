@@ -9,6 +9,7 @@ import AppKit
 import Metal
 
 enum Captures {
+    #if CITADEL_HARNESS
     static func run(outDir: String?) {
         let dir = URL(fileURLWithPath: outDir ?? FileManager.default.currentDirectoryPath
                         .appending("/docs/screenshots"))
@@ -283,6 +284,8 @@ enum Captures {
         print("Citadel: wrote \(n) screenshots to \(dir.path)")
     }
 
+    #endif   // CITADEL_HARNESS — writePNG below is SHIPPING code (screenshot key, automap export)
+
     /// Upscale the framebuffer `scale`× nearest-neighbour and write a PNG.
     static func writePNG(_ fb: UnsafeMutablePointer<UInt32>, w: Int, h: Int, scale: Int, to url: URL) {
         guard let native = NSBitmapImageRep(
@@ -313,6 +316,7 @@ enum Captures {
 // frames (the screens animate off `world.elapsed`, the shader's `time`) as PNGs
 // for ffmpeg to stitch into a silent preview video — a headless, muted "sneak
 // peek" with no game window.
+#if CITADEL_HARNESS
 enum DisplayVid {
     // `fault` stages an electrical fault mid-clip (the lights sag + the screens
     // stutter, then recover) so the fault-stutter behaviour can be captured.
@@ -380,3 +384,4 @@ enum DisplayVid {
         print("Citadel: wrote \(frames) frames (\(secs)s @ \(fps)fps) to \(dir.path)")
     }
 }
+#endif
