@@ -316,6 +316,23 @@ enum SmokeTest {
         // the visor redesign: the 3-D view owns the whole framebuffer
         check(RenderConfig.viewHeight == RenderConfig.height, "the 3-D view fills the visor (no status bar)")
 
+        // ── NO DEAD WEIGHT IN THE AUDIO BUNDLE ── 86 of the repo's files are audio, and NOTHING
+        // could see a bad one before this. Two distinct failures, both silent:
+        //   · ORPHANS — a file no `Sound` case will ever ask for (a renamed base, a variant numbered
+        //     past the loader's 1…16). The bank never looks it up, so it cannot make a sound; it is
+        //     bytes in the download and nothing else.
+        //   · UNDECODABLE — a file a Sound DOES want, that ships, and that `AVAudioFile` refuses.
+        //     `findAndLoad` returns nil and the engine falls back to synth without a word, so the
+        //     asset is paid for and never heard. Ogg is the live risk: `exts` accepts it and whether
+        //     Vorbis decodes is an OS-version question rather than a settled one.
+        let bundleAudio = AudioEngine()
+        bundleAudio.muted = true
+        let orphanAudio = bundleAudio.orphanAudioFiles, deadAudio = bundleAudio.undecodableAudioFiles
+        check(orphanAudio.isEmpty,
+              "every shipped audio file is one the bank asks for\(orphanAudio.isEmpty ? "" : " — ORPHANS: " + orphanAudio.joined(separator: ", "))")
+        check(deadAudio.isEmpty,
+              "…and every one of them actually decodes\(deadAudio.isEmpty ? "" : " — UNDECODABLE: " + deadAudio.joined(separator: ", "))")
+
         // the teleport flow end-to-end: a defeated Queen + a body on the pad arms
         // the report; a FRESH fire press charges; full charge completes the level
         let tAudio = AudioEngine()

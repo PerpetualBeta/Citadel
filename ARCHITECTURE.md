@@ -87,7 +87,7 @@ fallback for a missing sample. See [CREDITS.md](CREDITS.md).
 | `AudioEngine.swift` | Sampled SFX, looping stems, reactive bed, the ceremony's crowd; synth fallback |
 | **Harness** (headless, never in a signed build) | |
 | `SmokeTest.swift` | The suite: generation, solvability, combat, saves, determinism fingerprint |
-| `RasterShot.swift` | ~65 frames covering every environment feature — the shotcheck input |
+| `RasterShot.swift` | ~75 frames covering every environment feature — the shotcheck input |
 | `Captures.swift` / `RoomShots.swift` / `MaterialPreview.swift` / `ProofRoom.swift` | Screenshot + room / material / proof captures |
 | `AudioProbe.swift` | Offline audio-graph render; per-path RMS + the mix asserted as ratios |
 | `SettleProbe.swift` | Sweeps the mesh-settle solver's inputs; asserts a drawn body never teleports |

@@ -512,6 +512,50 @@ final class AudioEngine {
     }
 
     #if CITADEL_HARNESS
+    /// Every name `loadBank` would ever ask the bundle for: each Sound's base, plus its 1…16 variants.
+    private static var wantedAudioStems: Set<String> {
+        var out = Set<String>()
+        for s in Sound.allCases {
+            out.insert(s.base)
+            for i in 1...16 { out.insert("\(s.base)\(i)") }
+        }
+        return out
+    }
+
+    /// Harness only: audio files shipped in the bundle that NO `Sound` case will ever ask for —
+    /// bytes in the download that cannot make a sound. Nothing else can see these: the bank simply
+    /// never looks them up, so they are invisible to the probe, the smoke suite and the ear alike.
+    /// A renamed Sound base or a file numbered past 16 lands here rather than being noticed at
+    /// release time (or never).
+    var orphanAudioFiles: [String] {
+        let wanted = AudioEngine.wantedAudioStems
+        var out: [String] = []
+        for ext in AudioEngine.exts {
+            for url in Bundle.main.urls(forResourcesWithExtension: ext, subdirectory: "Audio") ?? [] {
+                if !wanted.contains(url.deletingPathExtension().lastPathComponent) {
+                    out.append(url.lastPathComponent)
+                }
+            }
+        }
+        return out.sorted()
+    }
+
+    /// Harness only: files a `Sound` DOES want, that ship, and that fail to decode — the nastier
+    /// case, because `findAndLoad` returns nil and the engine falls back to synth **silently**. The
+    /// bytes are paid for in the download and never heard. Ogg is the live risk (`exts` accepts it,
+    /// and whether AVAudioFile decodes Vorbis is an OS-version question, not a settled one).
+    var undecodableAudioFiles: [String] {
+        let wanted = AudioEngine.wantedAudioStems
+        var out: [String] = []
+        for ext in AudioEngine.exts {
+            for url in Bundle.main.urls(forResourcesWithExtension: ext, subdirectory: "Audio") ?? [] {
+                guard wanted.contains(url.deletingPathExtension().lastPathComponent) else { continue }
+                if loadBuffer(url) == nil { out.append(url.lastPathComponent) }
+            }
+        }
+        return out.sorted()
+    }
+
     /// Harness only: the synthesised machinery loop, so CITADEL_AUDIOPROBE can assert its spectrum
     /// and its loop seam. This sound cannot be auditioned in office mode, so it is verified by
     /// measurement instead of by ear.

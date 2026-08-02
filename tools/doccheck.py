@@ -29,6 +29,7 @@ is complete and the references resolve. Read the prose too.
 """
 
 import argparse
+import json
 import pathlib
 import re
 import sys
@@ -41,6 +42,35 @@ DELIBERATELY_UNDOCUMENTED = {
     "FallenColonists": "naming it spoils a discovery — the README must not describe what it strips",
     "Updater": "an override on a default the BUILD decides (on when shipped, off when local) — "
                "documenting it would advertise a switch whose useful setting is already the default",
+    # ── STRIP AND TRIM SWITCHES ── these DO live in FeatureFlags.swift and were documented, and
+    #    Jonathan took them out of the README (2026-08-02) because they are not public-facing. The
+    #    six that remain are cheats and testing aids — things a player might reasonably want. These
+    #    four are different in kind: each one turns OFF authored work or re-tunes the art direction,
+    #    so publishing them amounts to inviting a player to un-make the game and then judge it.
+    "OverheadLight":   "a lighting trim whose DEFAULT is the tuned, moody look — the only thing "
+                       "documenting it achieves is helping someone flatten it",
+    "Headlamp":        "strips the helmet lamp; the honest description of the result is 'you will "
+                       "not see much', which is not a feature",
+    "Aftermath":       "strips the battle-damage dressing — an A/B left from a performance hunt, "
+                       "kept because it is useful to ME, not to a player",
+    "ScatteredPapers": "likewise strips the spilled-records decals",
+    # ── TUNING KNOBS AND DIAGNOSTICS ── these live OUTSIDE FeatureFlags.swift and so were invisible
+    #    to this check until its scan was widened to the whole of Sources/ (2026-08-01). None is a
+    #    player-facing feature: the README documents what a player might want to switch, and a mix
+    #    trim or a log file is not that. They are recorded here so the decision is on the record and
+    #    a genuinely new flag still fails the build.
+    "MachineHumGain":   "a mix trim, baked at the value it was tuned to; the knob survives because it "
+                        "is what settled the tuning, not because a player should turn it",
+    "ParticleGain":     "likewise a brightness trim on the GPU particles",
+    "MeshQueenHeadYaw": "a per-mesh pose offset — authoring calibration, meaningless without the mesh",
+    "frameLog":         "diagnostic: writes ~/Library/Logs/Citadel/frame.log, off unless asked for",
+    "audioLog":         "diagnostic: writes ~/Library/Logs/Citadel/audio.log, off unless asked for",
+    "muteBuses":        "office-mode silence for the headless harnesses",
+    "muteSounds":       "office-mode silence for the headless harnesses",
+    "muteSynth":        "office-mode silence for the headless harnesses",
+    "creatureReadback": "the pre-2026-07-28 CPU creature merge, kept as the reference the GPU path is "
+                        "diffed against (CreatureMergeProbe) and as an escape hatch — a fallback a "
+                        "player should never need to know exists",
 }
 
 # Assets whose absence from CREDITS is intentional (none so far — keep it that way).
@@ -98,7 +128,18 @@ def main() -> int:
                 findings.append(f"{doc}: references `{named}`, which does not exist")
 
     # 4. Every feature flag is either documented or recorded as deliberately not.
-    flags = sorted(set(re.findall(r'forKey:\s*"([A-Za-z]+)"', read("Sources/App/FeatureFlags.swift"))))
+    #    SCANS THE WHOLE OF Sources/, not just FeatureFlags.swift. It used to read that one file, which
+    #    made the check's scope narrower than its promise: nine `defaults` keys lived elsewhere — the
+    #    machinery mix trim in AudioEngine, the particle gain and frame log in RasterRenderer, the mesh
+    #    pose offset in MeshCreature, the office-mode mutes — and every one was invisible here. A knob
+    #    is a knob wherever it is read, and "documented or deliberately not" has to mean all of them.
+    #    GameSettings.swift is excluded: those keys are the player's own saved preferences (mouse
+    #    sensitivity, bindings), written by the settings screen, not switches anybody sets by hand.
+    flag_src = "\n".join(
+        p.read_text() for p in sorted((ROOT / "Sources").rglob("*.swift"))
+        if p.name != "GameSettings.swift"
+    )
+    flags = sorted(set(re.findall(r'forKey:\s*"([A-Za-z][A-Za-z0-9_]*)"', flag_src)))
     for f in flags:
         checks += 1
         if f not in readme and f not in DELIBERATELY_UNDOCUMENTED:
@@ -114,6 +155,42 @@ def main() -> int:
         checks += 1
         if not re.search(r"\bFour\b|\bfour\b", text.split("## Source map")[0].split("## The game")[0]):
             findings.append(f"{doc}: the asset-exception count near the top no longer reads 'four' — recount it")
+
+    # 6. A quoted COUNT drifts silently, because nothing recomputes prose. Both documents advertised
+    #    the shot sweep as "~65 frames" while the baseline held 74 — nobody lied, the number simply
+    #    aged. Any approximate figure in a doc needs an authority to be checked against; this one has
+    #    a committed baseline, so use it. Tolerance is deliberately loose (the tilde means "about"),
+    #    tight enough to catch a decade of drift and not so tight that adding one frame edits prose.
+    baseline = ROOT / "tools" / "shot-baseline.json"
+    if baseline.exists():
+        data = json.loads(baseline.read_text())
+        actual = len(data.get("frames", data))
+        for doc, text in (("README.md", readme), ("ARCHITECTURE.md", arch)):
+            for quoted in re.findall(r"~(\d+) frames", text):
+                checks += 1
+                if abs(int(quoted) - actual) > max(5, actual // 10):
+                    findings.append(f"{doc}: claims ~{quoted} shot frames, baseline has {actual}")
+
+    # 7. Screenshots: every one a document points at must exist, and every one on disk must be
+    #    pointed at. Both halves were broken at once — the docs embedded six frames while ten more
+    #    sat unreferenced, and the numbering had collided (07-intel-5/07-weapons, 08-briefing/
+    #    08-items, 10-highscores/10-atmosphere) because Captures.swift numbers most frames from a
+    #    running counter and hardcodes the rest. An orphan is dead weight; a dangling reference is a
+    #    broken image in the README. Neither is visible without comparing the two lists.
+    shots = ROOT / "docs" / "screenshots"
+    if shots.is_dir():
+        on_disk = {p.name for p in shots.glob("*.png")}
+        referenced: set[str] = set()
+        for text in (readme, arch, credits):
+            referenced |= set(re.findall(r"screenshots/([A-Za-z0-9._-]+\.png)", text))
+        for name in sorted(referenced):
+            checks += 1
+            if name not in on_disk:
+                findings.append(f"docs: a document references screenshots/{name}, which does not exist")
+        for name in sorted(on_disk - referenced):
+            checks += 1
+            findings.append(f"docs: screenshots/{name} is referenced by no document — "
+                            f"use it or delete it")
 
     if findings:
         print(f"doccheck: {len(findings)} finding(s) across {checks} checks\n")

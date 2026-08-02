@@ -52,14 +52,29 @@ enum Captures {
             }
             return true
         }
-        for k in 0..<24 {
-            let ang = world.player.dir + Float(k) * (.pi * 2 / 24)
-            if clearAhead(ang, 2.7) {
-                world.player.dir = ang
-                let dv = SIMD2<Float>(cos(ang), sin(ang))
-                world.drums.append(Drum(pos: world.player.pos + dv * 2.3, fuel: 150, health: 24))
-                break
+        // …AND SOMETHING TO SHOOT AT. The shot the README leads its gameplay row with was a fuel drum
+        // alone in an empty corridor — an honest picture of the renderer and a poor picture of the
+        // GAME. A drone put down the same sightline gives the frame the thing it is about. Placed
+        // rather than waited for: a marketing frame that depends on the AI wandering into view is one
+        // that silently becomes empty the day generation shifts.
+        //
+        // The reach DEGRADES rather than failing. Asking for a single fixed 4.4-cell sightline found
+        // no angle at all on this seed, so nothing was placed and the marine was left facing a wall —
+        // a staging requirement that can fail closed will eventually produce a blank marketing shot
+        // with nobody watching. Longest first, and the drone stands wherever the winning reach allows.
+        for reach in [Float(4.4), 3.4, 2.7] {
+            guard let ang = (0..<24).lazy
+                    .map({ world.player.dir + Float($0) * (.pi * 2 / 24) })
+                    .first(where: { clearAhead($0, reach) }) else { continue }
+            world.player.dir = ang
+            let dv = SIMD2<Float>(cos(ang), sin(ang))
+            world.drums.append(Drum(pos: world.player.pos + dv * (reach * 0.52), fuel: 150, health: 24))
+            if let di = world.monsters.firstIndex(where: { $0.kind == .alien }) {
+                world.monsters[di].pos = world.player.pos + dv * (reach * 0.88)
+                world.monsters[di].dir = ang + .pi          // facing the marine
+                world.monsters[di].state = .chase
             }
+            break
         }
         let game = Canvas2D()
         draw3D(world, into: game)
@@ -114,8 +129,8 @@ enum Captures {
         draw3D(world, into: dark)
         HUD().draw(world, into: dark)
         writePNG(dark.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: scale,
-                 to: dir.appendingPathComponent("10-atmosphere.png"))
-        print("  wrote 10-atmosphere.png")
+                 to: dir.appendingPathComponent("16-atmosphere.png"))
+        print("  wrote 16-atmosphere.png")
 
         // door — part a sliding door halfway and frame it head-on from a couple
         // cells back, so the centre-split (two panels retracting to the jambs, the
@@ -157,10 +172,38 @@ enum Captures {
             let intel = Canvas2D(); FrontEnd.intel(intel, t: 5.0, page: page); save(intel, "intel-\(page + 1)")
         }
         let brief = Canvas2D(); FrontEnd.briefing(brief, t: 0.5); save(brief, "briefing")
+        // FLOOR CLEARED, with a tally it actually EARNED. This card used to be drawn over the same
+        // lightly-simulated world as the combat shot, so it advertised a cleared floor with 0/20
+        // kills, 0/1 secrets and a score of zero — a screenshot that reads as a bug report. The tally
+        // is not faked in: drones are walked in front of the marine and genuinely shot, so `World`
+        // does the damage, the deaths and the scoring by its own rules and the numbers on the card
+        // are ones the sim produced. A marketing frame may be staged; it may not lie.
+        // …in its OWN world. Reusing the combat world meant inheriting three shots' worth of staging:
+        // a drone forced to `.dead` for the fire frame (which bypasses `damageMonster`, so the HUD's
+        // live-state count and the card's `killCount` legitimately disagreed), a spent flamethrower,
+        // and a camera parked in the darkest cell for the atmosphere frame. A summary card wants a
+        // clean floor behind it.
+        let cw = World(level: 3, colonyIndex: 4, seed: 90210)
+        cw.player.giveWeapon(.plasma); cw.player.current = .plasma
+        let killInput = InputState(); killInput.kb.fire = true
+        for _ in 0..<9 {
+            guard let di = cw.monsters.firstIndex(where: { $0.alive && $0.kind == .alien }) else { break }
+            let dv = SIMD2<Float>(cos(cw.player.dir), sin(cw.player.dir))
+            cw.monsters[di].pos = cw.player.pos + dv * 2.6
+            cw.player.giveAmmo(.cells, 40)
+            var frames = 0
+            while cw.monsters[di].alive && frames < 400 {
+                cw.player.health = Player.maxHealth             // the marine is not the subject here
+                cw.update(dt: 1.0 / 60, input: killInput, audio: audio)
+                frames += 1
+            }
+        }
+        cw.player.health = Player.maxHealth
+        cw.player.muzzle = 0; cw.player.fireAnim = 0
         let cleared = Canvas2D()
-        draw3D(world, into: cleared)
-        HUD().draw(world, into: cleared)
-        FrontEnd.descendReport(cleared, world: world, t: 1.0)   // the diegetic panel shown inside the exit car
+        draw3D(cw, into: cleared)
+        HUD().draw(cw, into: cleared)
+        FrontEnd.descendReport(cleared, world: cw, t: 1.0)      // the diegetic panel shown inside the exit car
         save(cleared, "cleared")
         let scores = Canvas2D(); FrontEnd.highScores(scores, hs: hs, t: 0.5); save(scores, "highscores")
 
@@ -185,8 +228,8 @@ enum Captures {
             }
             wsheet.label(k.def.name, i * wW + 24, 20, size: 28, color: packRGBA(236, 202, 96), weight: .bold)
         }
-        writePNG(wsheet.framebuffer, w: wsheet.width, h: wsheet.height, scale: 1, to: dir.appendingPathComponent("07-weapons.png"))
-        print("  wrote 07-weapons.png")
+        writePNG(wsheet.framebuffer, w: wsheet.width, h: wsheet.height, scale: 1, to: dir.appendingPathComponent("14-weapons.png"))
+        print("  wrote 14-weapons.png")
 
         // item contact sheet
         let icols = 4, irows = (ItemKind.allCases.count + icols - 1) / icols
@@ -200,8 +243,8 @@ enum Captures {
             isheet.strokeRect(gx + 1, gy + 1, icw - 2, icw - 2, packRGBA(56, 58, 70))
             isheet.blitBitmap(spr.pixels, spr.w, spr.h, gx + (icw - spr.w) / 2, gy + (icw - spr.h) / 2)
         }
-        writePNG(isheet.framebuffer, w: icols * icw, h: irows * icw, scale: 2, to: dir.appendingPathComponent("08-items.png"))
-        print("  wrote 08-items.png")
+        writePNG(isheet.framebuffer, w: icols * icw, h: irows * icw, scale: 2, to: dir.appendingPathComponent("15-items.png"))
+        print("  wrote 15-items.png")
 
         // (the creatures' dossier busts are the mesh portraits shown in the codex —
         //  see the Field Intel pages below; there is no SDF monster contact sheet.)
