@@ -139,3 +139,24 @@ ENTITLEMENTS     := Citadel.entitlements
 DEV_ONLY_DEFINES := CITADEL_HARNESS
 
 include ../jorvik-release/release.mk
+
+# ── SHIPPING-CONFIGURATION COMPILE CHECK ──────────────────────────────────────
+# `gmake build` compiles the DEV configuration: ad-hoc SIGN_ID "-" keeps
+# CITADEL_HARNESS defined, so the whole test/capture surface comes along. A signed
+# release strips it — a genuinely different program, and for months it was one
+# nobody had ever compiled. The first attempt at 1.0.0 failed at the compiler on
+# three separate harness-only symbols reachable from shipping code, after a full
+# build-sign-notarise round trip had already been paid for.
+#
+# This target compiles that configuration in seconds and needs NO credentials: the
+# define is gated purely on SIGN_ID being the ad-hoc "-", so any other value is
+# enough to strip it. Outputs go to their own directory so a shipcheck never
+# leaves a harness-less binary in .build for the smoke suite to trip over.
+#
+# Run it before every release, and after touching anything under Sources/Harness.
+.PHONY: shipcheck
+shipcheck:
+	@$(MAKE) --no-print-directory build \
+	    SIGN_ID="shipcheck-not-a-real-identity" \
+	    OUT_DIR="$(CURDIR)/.build-shipcheck"
+	@echo "✅ shipcheck: the SHIPPING configuration compiles (CITADEL_HARNESS undefined)"

@@ -16,3 +16,4 @@ perf/
 
 # Claude Code local worktree state (transient agent checkouts, never source)
 .claude/worktrees/
+.build-shipcheck/

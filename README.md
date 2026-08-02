@@ -207,6 +207,11 @@ CITADEL_RASTERSHOT=/tmp/shots ./.build/Citadel.app/Contents/MacOS/Citadel
 tools/shotcheck.py                # compare
 tools/shotcheck.py --update       # accept the current renders
 
+# the SHIPPING configuration compiles — a signed release strips CITADEL_HARNESS,
+# so it is a different program from the one `gmake build` produces, and it is the
+# one nobody ever compiles until release day. Needs no signing credentials:
+gmake shipcheck
+
 # …and the same idea for the DOCS: every shipped asset accounted for in CREDITS,
 # every source file in ARCHITECTURE's map, no document pointing at a deleted file,
 # every feature flag either documented or recorded as deliberately not:
@@ -224,9 +229,8 @@ and the objects (drums, sockets, mines, pickups) built as geometry at level load
 and shaded procedurally, HDR-lit and graded on the GPU — with the alien bestiary
 drawn as 3-D meshes over shared depth, and the HUD and front-end screens
 composited over it in a software 2-D canvas, blit-upscaled nearest-neighbour.
-(An SDF raymarcher drew the world until 2026-07; the rasteriser replaced it and
-the kernel was deleted.) See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the rendering
-pipeline and a per-file source map.
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the rendering pipeline and a
+per-file source map.
 
 ## Support
 
