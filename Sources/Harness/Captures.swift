@@ -109,28 +109,70 @@ enum Captures {
                  to: dir.appendingPathComponent("13-fire.png"))
         print("  wrote 13-fire.png")
 
-        // atmosphere — drop the marine into the darkest cell of the level, facing
-        // the Queen's lair, so the auto-headlamp does the seeing. Showcases the
-        // dark pass; explicit filename so the 03–09 doc references don't shift.
-        var darkI = -1; var darkL = Float.greatestFiniteMagnitude
-        let dm = world.map
-        for i in 0..<(dm.w * dm.h) where dm.wall[i] == 0 && dm.doors[i] == nil {
-            let c = dm.lightColor[i]; let l = c.x * 0.299 + c.y * 0.587 + c.z * 0.114
-            if l < darkL { darkL = l; darkI = i }
-        }
-        if darkI >= 0 {
-            world.player.pos = SIMD2(Float(darkI % dm.w) + 0.5, Float(darkI / dm.w) + 0.5)
-            if let q = world.monsters.first(where: { $0.kind == .queen }) {
-                world.player.dir = atan2(q.pos.y - world.player.pos.y, q.pos.x - world.player.pos.x)
+        // atmosphere — THE PLANT FLOORS (7–8) ARE LIT BY WALL BULKHEADS, not by the ceiling grid the
+        // surface floors use, and a long straight corridor lined with them is the clearest statement
+        // the game makes about its lighting: warm amber pools falling away into the dark, every one
+        // thrown by a fixture you can see. The old shot dropped the marine into the darkest cell of a
+        // SURFACE floor facing the Queen's lair — where the auto-ramping helmet lamp compensates, so
+        // the frame came back looking like an ordinary lit corridor. Technically honest, and a poor
+        // advertisement for the one thing it existed to show.
+        // Swept across BOTH plant floors and several seeds, because one floor's corridors are not
+        // guaranteed to carry fixtures: the depths lose most of their lamps by design, and a single
+        // hard-coded seed produced first a black rock tunnel and then a built corridor with no lamp
+        // on it at all. The sweep picks the best corridor that actually exists rather than hoping.
+        var aw = World(level: 7, colonyIndex: 0, seed: 5150)
+        var runBest = (lamps: 0, len: 0, sx: 0, sy: 0, dx: 1, dy: 0)
+        for lvl in [7, 8] {
+            for sd in [5150, 7, 31, 404, 1234, 90210] {
+                let w = World(level: lvl, colonyIndex: 0, seed: UInt64(sd))
+                let m = w.map
+                func openA(_ x: Int, _ y: Int) -> Bool {
+                    m.inBounds(x, y) && m.wall[m.idx(x, y)] == 0 && m.doors[m.idx(x, y)] == nil
+                }
+                // The flanks must be BUILT wall, not blasted rock: the fixtures are bolted to the
+                // built sections, and the depths deliberately lose most of their lamps.
+                let rock: Set<Int> = [WallTex.stone.rawValue, WallTex.stoneSteel.rawValue]
+                func builtWall(_ x: Int, _ y: Int) -> Bool {
+                    guard m.inBounds(x, y) else { return false }
+                    let t = m.wall[m.idx(x, y)]
+                    return t != 0 && !rock.contains(t)
+                }
+                let sites = LevelMeshBuilder.plantLampSites(m).map { $0.pos }
+                for (dx, dy) in [(1, 0), (0, 1)] {
+                    let px = dy, py = dx
+                    for y in 1..<(m.h - 1) {
+                        for x in 1..<(m.w - 1) {
+                            var n = 0
+                            while openA(x + dx * n, y + dy * n),
+                                  builtWall(x + dx * n + px, y + dy * n + py),
+                                  builtWall(x + dx * n - px, y + dy * n - py) { n += 1 }
+                            guard n >= 4 else { continue }
+                            let lit = sites.filter { pt in
+                                let t = Float(dx) * (pt.x - Float(x)) + Float(dy) * (pt.y - Float(y))
+                                let off = abs(Float(px) * (pt.x - Float(x) - 0.5) + Float(py) * (pt.y - Float(y) - 0.5))
+                                return t >= -0.5 && t <= Float(n) + 1.5 && off < 2.2
+                            }.count
+                            if (lit, n) > (runBest.lamps, runBest.len) {
+                                runBest = (lit, n, x, y, dx, dy); aw = w
+                            }
+                        }
+                    }
+                }
             }
         }
-        world.player.muzzle = 0
+        if runBest.len >= 4 {
+            aw.player.pos = SIMD2(Float(runBest.sx) + 0.5, Float(runBest.sy) + 0.5)
+            aw.player.dir = atan2(Float(runBest.dy), Float(runBest.dx))
+        }
+        aw.player.giveWeapon(.plasma); aw.player.current = .plasma
+        aw.player.muzzle = 0; aw.player.fireAnim = 0
         let dark = Canvas2D()
-        draw3D(world, into: dark)
-        HUD().draw(world, into: dark)
+        draw3D(aw, into: dark)
+        HUD().draw(aw, into: dark)
         writePNG(dark.framebuffer, w: RenderConfig.width, h: RenderConfig.height, scale: scale,
                  to: dir.appendingPathComponent("16-atmosphere.png"))
-        print("  wrote 16-atmosphere.png")
+        print("  wrote 16-atmosphere.png (floor \(Progression.floorInBuilding(aw.level)), "
+              + "\(runBest.len)-cell corridor, \(runBest.lamps) bulkheads)")
 
         // door — part a sliding door halfway and frame it head-on from a couple
         // cells back, so the centre-split (two panels retracting to the jambs, the
@@ -231,45 +273,12 @@ enum Captures {
         writePNG(wsheet.framebuffer, w: wsheet.width, h: wsheet.height, scale: 1, to: dir.appendingPathComponent("14-weapons.png"))
         print("  wrote 14-weapons.png")
 
-        // item contact sheet
-        let icols = 4, irows = (ItemKind.allCases.count + icols - 1) / icols
-        let ispr = ItemKind.allCases.map { Sprites.shared.item($0) }
-        let icw = (ispr.map { max($0.w, $0.h) }.max() ?? 1) + 24   // square cells, sized to sprites
-        let isheet = Canvas2D(width: icols * icw, height: irows * icw)
-        isheet.clear(packRGBA(26, 26, 32))
-        for (i, _) in ItemKind.allCases.enumerated() {
-            let spr = ispr[i]
-            let gx = (i % icols) * icw, gy = (i / icols) * icw
-            isheet.strokeRect(gx + 1, gy + 1, icw - 2, icw - 2, packRGBA(56, 58, 70))
-            isheet.blitBitmap(spr.pixels, spr.w, spr.h, gx + (icw - spr.w) / 2, gy + (icw - spr.h) / 2)
-        }
-        writePNG(isheet.framebuffer, w: icols * icw, h: irows * icw, scale: 2, to: dir.appendingPathComponent("15-items.png"))
-        print("  wrote 15-items.png")
-
-        // (the creatures' dossier busts are the mesh portraits shown in the codex —
-        //  see the Field Intel pages below; there is no SDF monster contact sheet.)
-
-        // prop contact sheet — the fuel drum + proximity mine
-        let pspr = PropKind.allCases.map { Sprites.shared.prop($0) }
-        let pcw = (pspr.map { $0.w }.max() ?? 1) + 24
-        let ph = (pspr.map { $0.h }.max() ?? 1) + 28
-        let psheet = Canvas2D(width: PropKind.allCases.count * pcw, height: ph)
-        psheet.clear(packRGBA(22, 22, 28))
-        for (i, k) in PropKind.allCases.enumerated() {
-            let spr = pspr[i]
-            let gx = i * pcw
-            psheet.strokeRect(gx + 1, 1, pcw - 2, ph - 2, packRGBA(56, 58, 70))
-            psheet.blitBitmap(spr.pixels, spr.w, spr.h, gx + (pcw - spr.w) / 2, ph - spr.h - 8)
-            let name: String
-            switch k {
-            case .fuelDrum: name = "FUEL DRUM"
-            case .proxMine: name = "PROX MINE"
-            case .socket:   name = "RECHARGE"
-            }
-            psheet.label(name, gx + 6, ph - 16, size: 12, color: packRGBA(236, 200, 150), weight: .bold)
-        }
-        writePNG(psheet.framebuffer, w: PropKind.allCases.count * pcw, h: ph, scale: 2, to: dir.appendingPathComponent("11-props.png"))
-        print("  wrote 11-props.png")
+        // The pickup-icon and world-hardware CONTACT SHEETS used to be written here (15-items,
+        // 11-props). Both drew from `Sprites` — the billboard-era icon art — and Jonathan pulled them
+        // from the README because they no longer match the game: the rasteriser draws drums, mines,
+        // sockets and pickups as real geometry, so a sheet of the old sprites documents something
+        // that is not on screen any more. `Sprites` itself stays (the codex still falls back to it),
+        // but a reference sheet that shows the wrong thing is worse than no sheet at all.
 
         print("Citadel: wrote \(n) screenshots to \(dir.path)")
     }

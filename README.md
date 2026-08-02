@@ -100,35 +100,27 @@ Every frame below is rendered by the headless capture harness — `CITADEL_SHOTS
 
 *The flamethrower opens up, and a drone goes into the gout.*
 
-| | |
+| A drone comes over the fuel drum. Shoot the drum, or shoot the drone. | The doors part down the middle, and something is usually behind them. |
 |---|---|
 | ![Combat and the visor HUD](docs/screenshots/02-combat.png) | ![A drone door parting](docs/screenshots/12-door.png) |
-| A drone comes over the fuel drum. Shoot the drum, or shoot the drone. | The doors part down the middle, and something is usually behind them. |
-| ![The dark, lit only by the helmet lamp](docs/screenshots/16-atmosphere.png) | ![Floor cleared](docs/screenshots/09-cleared.png) |
-| Underground, all light is man-made. This is what the helmet lamp buys you. | Floor cleared — the panel inside the freight car, before the ride down. |
+| **Underground, all light is man-made.** | **Floor cleared — the panel inside the freight car.** |
+| ![The dark, lit only by the bulkhead lamps](docs/screenshots/16-atmosphere.png) | ![Floor cleared](docs/screenshots/09-cleared.png) |
 
 ### The front end
 
-| | |
+| The occupation, in brief. | The Hall of the Fallen — name, score, depth and colony. |
 |---|---|
 | ![Mission briefing](docs/screenshots/08-briefing.png) | ![The Hall of the Fallen](docs/screenshots/10-highscores.png) |
-| The occupation, in brief. | The Hall of the Fallen — name, score, depth and colony. |
 
 **FIELD INTEL** — a five-page dossier, opened with **I** from the title:
 
-| | |
+| CASTE I · the pack hunter. | CASTE II · the broodmother. |
 |---|---|
 | ![Field intel — the drone](docs/screenshots/03-intel-1.png) | ![Field intel — the Queen](docs/screenshots/04-intel-2.png) |
-| CASTE I · the pack hunter. | CASTE II · the broodmother. |
+| **The arsenal, with real magazine sizes.** | **What you can pick up, and what it gives you.** |
 | ![Field intel — the arsenal](docs/screenshots/05-intel-3.png) | ![Field intel — field supply](docs/screenshots/06-intel-4.png) |
-| The arsenal, with real magazine sizes. | What you can pick up, and what it gives you. |
+| **What hurts you, and how badly.** | **The three weapons as held, lit in-world.** |
 | ![Field intel — what hurts](docs/screenshots/07-intel-5.png) | ![The three viewmodels](docs/screenshots/14-weapons.png) |
-| What hurts you, and how badly. | The three weapons as held, lit in-world. |
-
-| | |
-|---|---|
-| ![Pickup icons](docs/screenshots/15-items.png) | ![World hardware](docs/screenshots/11-props.png) |
-| Every pickup, drawn to match its in-world geometry. | The fuel drum, the proximity mine and the recharge socket. |
 
 ## Run it
 
@@ -144,7 +136,7 @@ open .build/Citadel.app     # descend
 
 ### Controls
 
-| | |
+| Key | Action |
 |---|---|
 | **W A S D** | move / strafe |
 | **← / →** · **Mouse** | turn / look |
