@@ -224,9 +224,21 @@ enum GPURaymarch {
             let rel = m.pos - pp
             pyres.append((rel.x * rel.x + rel.y * rel.y, e))
         }
-        let budget = 16 - out.count
+        // THE 16 IS A FRAME BUDGET, and it bound only the PYRES: fireballs are appended above with no cap at
+        // all. Past sixteen of them `budget` goes NEGATIVE, `pyres.count > budget` is true even at zero pyres,
+        // and `prefix(-n)` TRAPS — so more than sixteen simultaneous fireballs killed the process. Sixteen is
+        // reachable: drum ruptures chain and a fireball lives three seconds.
+        let budget = max(0, 16 - out.count)
         if pyres.count > budget { pyres.sort { $0.d < $1.d }; pyres = Array(pyres.prefix(budget)) }
         out.append(contentsOf: pyres.map { $0.e })
+        // And cap the whole list the way the pyres already were — nearest kept — because the fireballs alone
+        // can exceed the budget and the shader loops over however many it is handed.
+        if out.count > 16 {
+            let pc = world.player.pos
+            out.sort { simd_length_squared(SIMD2($0.p0.x, $0.p0.z) - pc)
+                     < simd_length_squared(SIMD2($1.p0.x, $1.p0.z) - pc) }
+            out = Array(out.prefix(16))
+        }
         return out
     }
 
