@@ -59,6 +59,8 @@ final class RasterRenderer {
     private let zTex: MTLTexture
     private let perpTex: MTLTexture             // r32Float: per-pixel perp-depth (dot(wp-eye, camFwd)) so mesh creatures composite with correct occlusion
     private var perpScratch: [Float]            // CPU read-back of perpTex (W·H) — read ONCE per frame, for the particle compositor
+    /// Set once per frame from the fire emitters; read by the creature passes' wash gate.
+    private var frameFireStrength: Float = 1
     private let colSnap: MTLTexture             // the tonemapped frame BEFORE any creature drew (the creature fire-wash samples it)
     private let perpSnap: MTLTexture            // perpTex BEFORE any creature drew (the creature depth test samples it)
     /// Fall back to the pre-2026-07-28 creature merge: offscreen pass → flush → read colour+perp
@@ -540,6 +542,10 @@ final class RasterRenderer {
         // perp-depth): bg·transmittance + emission → fireHDR. Runs BEFORE the gun + creatures so a corpse
         // reads over its own pyre; the whole HDR frame is bloomed + tonemapped below.
         let fireEmitters = GPURaymarch.gatherFireEmitters(world)
+        // How much REAL fire is in this frame, for the creature fire-wash gate. Without it that wash keys
+        // off a saturated-orange bright BACKGROUND, which describes a blaze and equally describes an amber
+        // door lamp — so a creature standing in front of one washed toward transparency.
+        frameFireStrength = fireEmitters.isEmpty ? 0 : min(1, fireEmitters.map { $0.p2.x }.max() ?? 0)
         if !fireEmitters.isEmpty {
             var fu = FireU(invVP: cam.mvp.inverse, eye: SIMD4(eye, world.elapsed),
                            camFwd: SIMD4(camFwd, 1.0), misc: SIMD4(Float(fireEmitters.count), Float(W), Float(H), 0))
@@ -895,14 +901,16 @@ final class RasterRenderer {
                                           sector: WorldLight.lightAt(world.map, $0.pos.x, $0.pos.y))
             }
             mesh.compositeColonists(into: frame(), eye: eye, camDir: dir, instances: insts,
-                                    lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
+                                    lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH),
+                                    fireNear: frameFireStrength)
         }
         // the mesh Queen(s)
         if let mc = meshQueen {
             for q in vis.queens {
                 mc.composite(into: frame(), eye: eye, dir: dir, pos: q.pos, faceTarget: p.pos,
                              sector: WorldLight.lightAt(world.map, q.pos.x, q.pos.y), time: world.elapsed, map: world.map,
-                             death: q.deathProgress, burn: q.burn, ashed: q.ashed, lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
+                             death: q.deathProgress, burn: q.burn, ashed: q.ashed, lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH),
+                             fireNear: frameFireStrength)
             }
         }
         // the drone pack, one batched pass
@@ -918,7 +926,8 @@ final class RasterRenderer {
                                               sector: WorldLight.lightAt(world.map, m.pos.x, m.pos.y))
             }
             md.compositeDrones(into: frame(), eye: eye, camDir: dir, instances: insts,
-                               lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH))
+                               lights: creatureLights, wallField: distTex, mapW: Float(mapW), mapH: Float(mapH),
+                               fireNear: frameFireStrength)
         }
     }
 

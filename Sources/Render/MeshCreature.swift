@@ -48,6 +48,7 @@ final class MeshCreature {
         float4 tune;        // lightGain, death, 0, 0
         float4 wall;        // a.xyz = local plane gradient, w = cl : worldSD(lp)=dot(a,lp)-cl
         float4 wallX;       // x = eased amt (0=inert), y = margin, z = maxPush(fallback), w = 0
+        float4 fire;        // x = how much real fire is in this frame (0 = none) · yzw spare
     };
     struct VIn  { float3 pos [[attribute(0)]]; float3 nrm [[attribute(1)]]; float2 uv [[attribute(2)]]; };
     struct VOut { float4 clip [[position]]; float3 wpos; float3 wnrm; float2 uv; float fdepth; };
@@ -395,7 +396,11 @@ final class MeshCreature {
             float3 bg = sceneCol.read(px).rgb;
             float orange = clamp(((bg.r - bg.b) - 0.40) / 0.30, 0.0, 1.0);   // 0 below Δ0.40 → 1 at Δ0.70
             float bright = clamp((max(bg.r, bg.g) - 0.5) / 0.4, 0.0, 1.0);   // flame is bright, not a dark red tint
-            float fireness = orange * bright;
+            // The background test alone cannot tell FIRE from a HOT SURFACE: both are saturated orange and
+            // bright, so a creature standing in front of an amber door lamp washed toward transparency as
+            // though it were in a blaze. Gate it on whether this frame actually contains fire emitters — the
+            // same set that draws the flames — so a fire still overwhelms a body and a warning light does not.
+            float fireness = orange * bright * C.fire.x;
             if (fireness > 0.02) col = mix(clamp(col, 0.0, 1.0), bg, min(1.0, fireness));
         }
         FOut o; o.color = float4(col, 1.0); o.depth = in.fdepth; return o;
@@ -413,6 +418,9 @@ final class MeshCreature {
         var tune: SIMD4<Float>
         var wall: SIMD4<Float>
         var wallX: SIMD4<Float>
+        /// x = the frame's fire strength. Defaults to 1 — today's behaviour — deliberately: a caller that
+        /// forgets to pass it keeps the wash rather than silently losing it.
+        var fire: SIMD4<Float> = SIMD4(1, 0, 0, 0)
     }
 
     private let device: MTLDevice
@@ -917,7 +925,8 @@ final class MeshCreature {
                    faceTarget: SIMD2<Float>, sector: SIMD3<Float>, time: Float,
                    map: GameMap, death: Float, burn: Float, ashed: Float,
                    lights: [GPURaymarch.GPULight] = [],
-                   wallField: MTLTexture?, mapW: Float, mapH: Float) {
+                   wallField: MTLTexture?, mapW: Float, mapH: Float,
+                   fireNear: Float = 1) {
         let height = Self.f("MeshQueenHeight", 0.92)
         let lightGain = Self.f("MeshQueenLight", 1.75)
         let animSpeed = Self.f("MeshQueenAnimSpeed", 1.4)
@@ -970,7 +979,8 @@ final class MeshCreature {
                       anim: SIMD4(headYaw, headPitch, breathe, sway),
                       misc: SIMD4(localHeight, 0.03 * aliveF, 0.02 * aliveF, time * 8.0 * animSpeed),   // .w = rapid howl-thrash phase
                       tune: SIMD4(lightGain, deathC, max(0, min(1, burn)), max(0, min(2, ashed))),
-                      wall: wall, wallX: SIMD4(on, 0, 0, sink.isDirect ? 1 : 0))
+                      wall: wall, wallX: SIMD4(on, 0, 0, sink.isDirect ? 1 : 0),
+                      fire: SIMD4(fireNear, 0, 0, 0))
 
         encode(sink, wallField: wallField, lights: lights) { enc in
             enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
@@ -1105,7 +1115,8 @@ final class MeshCreature {
     func compositeDrones(into sink: Sink,
                          eye: SIMD3<Float>, camDir: Float, instances: [DroneInst],
                          lights: [GPURaymarch.GPULight] = [],
-                         wallField: MTLTexture?, mapW: Float, mapH: Float) {
+                         wallField: MTLTexture?, mapW: Float, mapH: Float,
+                         fireNear: Float = 1) {
         guard !instances.isEmpty else { return }
         let height = Self.f("MeshDroneHeight", 0.90)
         let lightGain = Self.f("MeshDroneLight", 1.9)
@@ -1130,7 +1141,8 @@ final class MeshCreature {
                               anim: SIMD4(inst.gait, inst.move, inst.rear, inst.dissolve),
                               misc: SIMD4(localHeight, inst.seed, 0, 0),
                               tune: SIMD4(lightGain, max(0, min(1, inst.death)), max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))),
-                              wall: wall, wallX: SIMD4(on, 0, 0, directFlag))
+                              wall: wall, wallX: SIMD4(on, 0, 0, directFlag),
+                              fire: SIMD4(fireNear, 0, 0, 0))
                 enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
                 enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
                 drawSubmeshes(enc)
@@ -1155,7 +1167,8 @@ final class MeshCreature {
     func compositeColonists(into sink: Sink,
                             eye: SIMD3<Float>, camDir: Float, instances: [ColonistInst],
                             lights: [GPURaymarch.GPULight] = [],
-                            wallField: MTLTexture?, mapW: Float, mapH: Float) {
+                            wallField: MTLTexture?, mapW: Float, mapH: Float,
+                            fireNear: Float = 1) {
         guard !instances.isEmpty else { return }
         let height = Self.f("MeshColonistHeight", 0.95)  // standing-height reference; seated reads smaller. Live-tunable.
         let lightGain = Self.f("MeshColonistLight", 1.9)
@@ -1178,7 +1191,8 @@ final class MeshCreature {
                               anim: .zero,
                               misc: SIMD4(localHeight, inst.seed, 1.0, 0),   // .z = corpse flag (see fmain)
                               tune: SIMD4(lightGain, 0, max(0, min(1, inst.burn)), max(0, min(2, inst.ashed))),
-                              wall: .zero, wallX: SIMD4(0, 0, 0, directFlag))
+                              wall: .zero, wallX: SIMD4(0, 0, 0, directFlag),
+                              fire: SIMD4(fireNear, 0, 0, 0))
                 enc.setVertexBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
                 enc.setFragmentBytes(&cam, length: MemoryLayout<Cam>.stride, index: 1)
                 drawSubmeshes(enc)
