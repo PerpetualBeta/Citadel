@@ -15,6 +15,68 @@ enum FeatureFlags {
     /// the Desktop.
     static var screenshotKey: Bool { d.bool(forKey: "ScreenshotKey") }
 
+    // ── Optics ────────────────────────────────────────────────────────────────
+    //
+    // Both default to OFF, and deliberately so: Citadel is shipped and public, and
+    // neither of these should change what an existing player sees until they have
+    // been looked at frame by frame against the shot baseline. They are live knobs
+    // rather than booleans because the right value is a judgement made by eye —
+    // dial it, look, and bake the number in when it is right.
+
+    /// Lens flare strength, 0 = off. Sensible range 0.1 – 0.6.
+    ///
+    /// **Why this is defensible in a Doom-idiom game.** Not as a camera artefact —
+    /// there is no camera — but as **glass**: the player is looking through a
+    /// helmet visor, which Citadel already draws. Flare is what a bright source
+    /// does to a visor, and the game already ships HDR bloom, an ACES tonemap and
+    /// a vignette, none of which existed in 1993 either.
+    ///
+    /// It is *occasional* by construction rather than by a timer: the effect rides
+    /// only the bright energy above a threshold, so it appears when you are looking
+    /// at a lamp, a fire or the plant, and is absent the rest of the time. Nothing
+    /// randomises it.
+    static var lensFlare: Double { d.double(forKey: "LensFlare") }
+
+    /// Distance at which the lens flare reaches half strength, in world units.
+    ///
+    /// The streak is a fixed fraction of frame width — a property of the optic — while
+    /// a source's apparent size goes as 1/depth, so the streak only reads as *light*
+    /// when it is long relative to the source. Close sources are large on screen and
+    /// the same smear becomes a smudge across their edges. This is the knee of the
+    /// `d/(d+d0)` falloff that fades them out.
+    ///
+    /// Defaults to 5. Larger pushes flare further away (only distant points streak);
+    /// smaller lets nearer sources flare again.
+    static var flareNearFade: Double {
+        let v = d.double(forKey: "FlareNearFade")
+        return v > 0 ? v : 5
+    }
+
+    /// Depth-of-field strength, 0 = off. Sensible range 0.2 – 1.0.
+    ///
+    /// **Read `dofFocus` before turning this up in gameplay.** Blurring distance in
+    /// a shooter attacks the thing the player most needs — reading a drone at range
+    /// — and the frame is 1280×800 blitted *nearest-neighbour*, so a blur upscales
+    /// into soft blocks rather than a soft image. It earns its keep on the surfaces
+    /// where legibility is not at stake: the automap, the lift ride, the endgame.
+    static var depthOfField: Double { d.double(forKey: "DepthOfField") }
+
+    /// Focus distance in world units for `depthOfField`.
+    ///
+    /// **Zero means far-field**: everything softens with distance and the near
+    /// field stays sharp, which is the only variant that is safe in play. A
+    /// positive value focuses *at* that distance and softens either side of it,
+    /// which is the cinematic look and belongs on cinematic surfaces.
+    static var dofFocus: Double { d.double(forKey: "DofFocus") }
+
+    /// How far from focus a pixel has to be to reach full blur, in world units.
+    /// Larger is gentler. Defaults to 12 rather than 0, because a zero range would
+    /// mean "everything not exactly in focus is fully blurred".
+    static var dofRange: Double {
+        let v = d.double(forKey: "DofRange")
+        return v > 0 ? v : 12
+    }
+
     /// Start the Sparkle auto-updater at launch.
     ///
     /// The default is decided by WHICH BUILD THIS IS, not by a `defaults` key, because the two

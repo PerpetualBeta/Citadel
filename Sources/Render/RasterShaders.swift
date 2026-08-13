@@ -636,7 +636,7 @@ extension RasterRenderer {
 
     struct FireEmitter { float4 p0, p1, p2; };
     struct FireU { float4x4 invVP; float4 eye; float4 camFwd; float4 misc; };   // eye.w=time · camFwd.w=ceilH · misc=(count,W,H,0)
-    struct Fx { float4 a; };                                                    // blur: a=(dirX,dirY,W,H) · composite: a=(bloomGain,0,W,H)
+    struct Fx { float4 a; float4 b; float4 c; };                                // blur: a=(dirX,dirY,W,H) · composite: a=(bloomGain,0,W,H) · b=(dofStrength,dofFocus,flare,dofRange) · c=(flareNearFade,0,0,0)
     struct FSOut { float4 clip [[position]]; };
 
     // ── ported verbatim from GPURaymarch (the raymarcher's fire) ──
@@ -787,7 +787,7 @@ extension RasterRenderer {
     // tonemap, gamma and vignette, all applied ONCE to the whole composited frame → 8-bit. (X.a.x = bloom gain.)
     fragment float4 composite_frag(FSOut in [[stage_in]], constant Fx& X [[buffer(0)]],
                                    texture2d<float> hdr [[texture(0)]], texture2d<float> bloom [[texture(1)]],
-                                   texture2d<float> perp [[texture(2)]]) {
+                                   texture2d<float> perp [[texture(2)]], texture2d<float> dof [[texture(3)]]) {
         float2 uv = in.clip.xy / X.a.zw;
         constexpr sampler s(filter::linear, address::clamp_to_edge);
         // ── BLOOM, BY ORIGIN ── the WORLD's bloom is still kept off the gun (perp < 0), because a lamp
@@ -800,7 +800,111 @@ extension RasterRenderer {
         float bLum = dot(bl.rgb, float3(0.299, 0.587, 0.114));
         float vmShare = clamp(bl.a / max(bLum, 1e-4), 0.0, 1.0);
         float worldMask = perp.sample(s, uv).r < 0.0 ? 0.0 : 1.0;
-        float3 c = hdr.sample(s, uv).rgb + X.a.x * bl.rgb * mix(worldMask, 1.0, vmShare);
+
+        // ── DEPTH OF FIELD (X.b.x = strength, .y = focus distance, .w = range) ──
+        // Mixed in LINEAR HDR, before the grade, because that is where defocus
+        // physically happens: blur after the tonemap smears the *grade* instead of
+        // the light, and bright highlights stop blooming into their neighbours the
+        // way an out-of-focus lamp actually does.
+        float3 scene = hdr.sample(s, uv).rgb;
+        if (X.b.x > 0.0) {
+            float d = perp.sample(s, uv).r;
+            // The held weapon (perp < 0) is NEVER defocused. It is inches from the eye,
+            // it is the one thing on screen that must stay readable, and softening it
+            // reads instantly as a broken frame rather than as an effect.
+            if (d >= 0.0) {
+                float coc = clamp(abs(d - X.b.y) / max(X.b.w, 1e-3), 0.0, 1.0);
+                scene = mix(scene, dof.sample(s, uv).rgb, coc * X.b.x);
+            }
+        }
+
+        float3 c = scene + X.a.x * bl.rgb * mix(worldMask, 1.0, vmShare);
+
+        // ── LENS FLARE (X.b.z = strength) ── the VISOR, not a camera. Citadel has no
+        // camera, but it does have glass in front of the player's eye, and this is what
+        // a bright source does to glass.
+        //
+        // It rides the bloom texture, which the bright pass has already reduced to
+        // emissive energy only — so the flare costs no new pass and no new mask.
+        //
+        // **Threshold 1.0 is not a tuning value.** In linear HDR, 1.0 is displayable
+        // white; everything above it is what the ACES curve is compressing back into
+        // range. Taking only that excess means flare comes from sources genuinely
+        // brighter than white — fire, the plant, a lamp looked at directly — and is
+        // absent the rest of the time. That is what makes it *occasional* without a
+        // timer or a random number anywhere near it.
+        if (X.b.z > 0.0) {
+            float2 cc = uv - 0.5;
+            float3 f = float3(0.0);
+            float wsum = 0.0;
+
+            // **Every tap is WEIGHTED AND AVERAGED, never summed.** The first version
+            // added thirteen taps together, so the flare contributed roughly an order of
+            // magnitude more light than the source it came from: the ghosts landed as
+            // opaque blobs and the streak washed the whole frame red, lifting walls,
+            // floor and HUD into a haze. A flare redistributes a source's light — it
+            // cannot add more than the source has — so the normalisation is not a
+            // taste knob, it is the physics.
+            //
+            // **No ghosts.** Mirrored ghosts were tried and removed. The only bright
+            // source available here is the *blurred* bloom, so mirroring it through the
+            // optical centre can produce nothing but a big soft blob — which is exactly
+            // how it read: two yellow crescents hanging in the ceiling, obviously wrong
+            // at any strength, and the one part of the effect that was clearly visible.
+            // Real ghosts need a small point source, which means isolating bright peaks
+            // in a pass of their own. That is a different feature, not a tuning problem,
+            // so the machinery came out rather than getting another coat of paint.
+            //
+            // **Sampled off the HDR frame, not the bloom.** The bloom was the obvious
+            // input and it was the wrong one: it is already blurred, so smearing it
+            // horizontally produced a marginally wider soft blob and nothing that read
+            // as a streak. A streak needs a small, SHARP, bright core to smear, which is
+            // what the unblurred HDR frame has.
+            //
+            // Masked by `a`, which is the same emissive mask `bright_frag` uses — so the
+            // flare fires on the things the game itself calls glowing (fire cores, lamp
+            // filaments, plasma, the plant) and never on a merely well-lit wall. Reusing
+            // that definition rather than inventing a second one is the point.
+            // **The WORLD flares; the held weapon does not.** The gun's own LEDs are the
+            // brightest small emissives on screen and they sit at the bottom of the frame,
+            // so letting them streak painted blue wings straight across the translucent
+            // HUD panel — HEALTH and ARMOUR with light smeared over them, which reads as
+            // a rendering fault rather than an optic. `perp < 0` already marks viewmodel
+            // pixels, and this renderer already keeps the world's bloom off the gun for
+            // the same class of reason, so the distinction is one this frame already knows
+            // how to make.
+            for (int i = 1; i <= 5; i++) {
+                float o = float(i) * 0.009;
+                float w = 1.0 - float(i) / 6.0;
+                float2 up = uv + float2(o, 0.0), um = uv - float2(o, 0.0);
+                float4 hp = hdr.sample(s, up);
+                float4 hm = hdr.sample(s, um);
+                float dp = perp.sample(s, up).r, dm = perp.sample(s, um).r;
+                // **Fades with proximity, and this is a derivation not a fudge.** The
+                // streak is a fixed fraction of frame width — a property of the optic, as
+                // it is in reality — while a source's apparent size goes as 1/depth. So
+                // the ratio of streak length to source size is proportional to depth: a
+                // distant lamp is a point and the streak dwarfs it, which reads as light;
+                // a fire two metres away is larger on screen than the whole streak, so the
+                // same smear can only push its edges sideways. That looked like a smudge
+                // rather than light, which is exactly how it was described.
+                //
+                // `d/(d+d0)` saturates: far sources keep full strength, near ones fall off
+                // smoothly, and there is no distance at which it switches on with a snap.
+                float ap = dp / (dp + X.c.x), am = dm / (dm + X.c.x);
+                float3 ep = max(hp.rgb * clamp(hp.a, 0.0, 1.0) - 1.0, 0.0) * step(0.0, dp) * ap;
+                float3 em = max(hm.rgb * clamp(hm.a, 0.0, 1.0) - 1.0, 0.0) * step(0.0, dm) * am;
+                f += (ep + em) * w * float3(0.60, 0.75, 1.00);
+                wsum += w * 2.0;
+            }
+            f /= max(wsum, 1e-4);
+
+            // Weakest at the edges: a visor flares most when you are looking INTO the
+            // source, and the vignette below would fight a bright rim anyway.
+            f *= 1.0 - 0.5 * clamp(dot(cc, cc) * 2.0, 0.0, 1.0);
+            c += f * X.b.z;
+        }
+
         c *= 0.9;                                                             // headlamp dim
         float lum = dot(c, float3(0.299, 0.587, 0.114));
         c = mix(c * float3(0.84, 0.96, 1.16), c * float3(1.14, 1.0, 0.80), clamp(lum, 0.0, 1.0));   // cool shadows, warm highs

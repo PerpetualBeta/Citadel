@@ -66,10 +66,22 @@ def compare(base, cur):
     return max(d), sum(d) / len(d)
 
 
+# The baseline is the SHIPPING look, so the optics knobs are pinned off rather than
+# inherited. This harness reads UserDefaults, so without this a developer who had set
+# `LensFlare` or `DepthOfField` on their machine got 52 "changed" frames that were
+# nothing but their own knobs — and, far worse, a real regression could hide among
+# them. Passed as arguments, which take precedence over the preferences domain.
+#
+# If either effect ever ships ON by default, change the value here to match and
+# regenerate the baseline; the point is that this file states what the baseline means
+# instead of depending on whoever runs it.
+OPTICS_OFF = ["-LensFlare", "0", "-DepthOfField", "0"]
+
+
 def render(outdir, app):
     """Run the shot harness into `outdir`."""
     env = {"CITADEL_RASTERSHOT": str(outdir), "PATH": "/usr/bin:/bin"}
-    r = subprocess.run([str(app)], env=env, capture_output=True, text=True, timeout=900)
+    r = subprocess.run([str(app), *OPTICS_OFF], env=env, capture_output=True, text=True, timeout=900)
     if r.returncode != 0:
         print(r.stdout[-2000:], file=sys.stderr)
         sys.exit(f"shotcheck: harness exited {r.returncode}")

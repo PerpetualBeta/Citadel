@@ -99,6 +99,41 @@ enum GPUProbe {
                 print(String(format: "   lights ≤ %-3d                           %5.2f ms  (%+.2f)", c, bestOf[c]!, bestOf[c]! - baseline))
             }
 
+            // ── 1b. the OPTICS post-passes ──
+            // One world, one renderer, interleaved: only the uniforms change between samples, so the
+            // difference IS the effect. This is the measurement the preamble said it could not make
+            // "without shader switches" — these are shader switches, so now it can.
+            //
+            // Depth of field adds two half-res blur passes and one texture read in the composite;
+            // the flare adds ten taps to a pass that already runs. Both are skipped entirely at 0,
+            // so "off" is the shipping cost and each row is a true marginal figure.
+            let opticSets: [(String, (dof: Float, focus: Float, flare: Float, range: Float, nearFade: Float))] = [
+                ("off (as shipped)",     (0.0, 0, 0.0, 14, 5)),
+                ("depth of field 0.7",   (0.7, 0, 0.0, 14, 5)),
+                ("lens flare 1.2",       (0.0, 0, 1.2, 14, 5)),
+                ("both",                 (0.7, 0, 1.2, 14, 5)),
+            ]
+            var bestOptic = [String: Double]()
+            for (label, _) in opticSets { bestOptic[label] = .greatestFiniteMagnitude }
+            for _ in 0..<40 {
+                for (label, set) in opticSets {
+                    rr.debugOptics = set
+                    bestOptic[label] = min(bestOptic[label]!, one(rr, world))
+                }
+            }
+            rr.debugOptics = nil
+            let opticBase = bestOptic["off (as shipped)"]!
+            print("   ── optics ──")
+            for (label, _) in opticSets {
+                let t = bestOptic[label]!
+                // Padded in Swift, printed with %@. **Not `%-38s`** — that expects a C
+                // string, receives an NSString pointer, and `strlen` walks off into
+                // unmapped memory: an instant SIGSEGV that took the whole probe down
+                // before any of its output was flushed.
+                let name = label.padding(toLength: 34, withPad: " ", startingAt: 0)
+                print(String(format: "   %@ %5.2f ms  (%+.2f)", name, t, t - opticBase))
+            }
+
             // ── 2. vertex load ── own renderer per variant, so the level cache holds across rounds
             guard let rrNoMach = RasterRenderer(device: device), let rrNoProps = RasterRenderer(device: device) else { continue }
             let noMach = build(); noMach.props.removeAll { RasterRenderer.machineKind($0.kind) }

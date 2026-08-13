@@ -95,6 +95,18 @@ final class RasterRenderer {
     private var machineVerts = 0               // vertices the static plant machinery contributes (reported by the harness)
     #if CITADEL_HARNESS
     var debugLightCap = -1                     // ≥0 → clamp the per-frame light list (CITADEL_GPUPROBE)
+
+    /// Probe-only override of the optics uniforms — `nil` reads the live flags.
+    ///
+    /// Exists so `CITADEL_GPUPROBE` can measure the depth-of-field and flare cost the only
+    /// way this renderer can be measured honestly: **interleaved**, variant by variant
+    /// within a single round. Two separate probe runs would be exactly the mistake the
+    /// probe's own preamble documents — consecutive runs of the same baseline measured
+    /// 7.05 ms and 4.60 ms, so a difference taken across runs says nothing.
+    ///
+    /// It also closes a gap the probe admits to: it could not isolate the post chain
+    /// "without shader switches", and these are shader switches.
+    var debugOptics: (dof: Float, focus: Float, flare: Float, range: Float, nearFade: Float)?
     static func machineKind(_ k: FurnitureKind) -> Bool { machineSpec(k) != nil }
     /// Render, and hand back the per-pixel PERPENDICULAR depth as well as the frame.
     ///
@@ -194,6 +206,7 @@ final class RasterRenderer {
     private let hdrTex: MTLTexture             // rgba16Float: the linear-HDR world + viewmodel (before fire/bloom/tonemap)
     private let fireHDR: MTLTexture            // rgba16Float: world + fire composited in HDR
     private let bloomA, bloomB: MTLTexture     // rgba16Float ping-pong for the bright-pass blur
+    private let dofA, dofB: MTLTexture         // rgba16Float HALF-RES ping-pong for the depth-of-field blur
     private let firePS, brightPS, blurPS, compositePS: MTLRenderPipelineState
     // ── particle billboards (smoke · embers · steam · sparks · flame) ──
     /// One quad per particle, built on the CPU so the projection is the SAME arithmetic the CPU
@@ -213,7 +226,10 @@ final class RasterRenderer {
     private var sprScratch: [SprVert] = []
     private var nSprVerts = 0
     private struct FireU { var invVP: simd_float4x4; var eye, camFwd, misc: SIMD4<Float> }
-    private struct Fx { var a: SIMD4<Float> }
+    /// `a` = the existing per-pass vector (blur direction, or bloom gain + size).
+    /// `b` = the optics: (dofStrength, dofFocus, flareStrength, dofRange). Defaulted so
+    /// every existing `Fx(a:)` call site is untouched.
+    private struct Fx { var a: SIMD4<Float>; var b: SIMD4<Float> = .zero; var c: SIMD4<Float> = .zero }
     private let wallArrTex: MTLTexture?        // the baked wall-texture array (the SAME art the raymarcher samples) → textured walls
 
     // ── M4 creatures: the animated Tripo meshes (reused verbatim from the raymarch path;
@@ -276,6 +292,14 @@ final class RasterRenderer {
         self.fireHDR = tex(.rgba16Float, W, H, .private, [.renderTarget, .shaderRead])
         self.bloomA  = tex(.rgba16Float, W, H, .private, [.renderTarget, .shaderRead])
         self.bloomB  = tex(.rgba16Float, W, H, .private, [.renderTarget, .shaderRead])
+        // Depth-of-field ping-pong at HALF resolution. Half because an out-of-focus
+        // image has no high-frequency content worth carrying — the downsample is free
+        // blur, and it makes the two extra passes cost a quarter of what a full-res
+        // pair would. Allocated unconditionally (two 640×400 half-float targets is
+        // under 2 MB) rather than lazily, so turning the knob on mid-session can never
+        // hit a nil texture on the frame it is first read.
+        self.dofA    = tex(.rgba16Float, max(1, W / 2), max(1, H / 2), .private, [.renderTarget, .shaderRead])
+        self.dofB    = tex(.rgba16Float, max(1, W / 2), max(1, H / 2), .private, [.renderTarget, .shaderRead])
         guard let flib = try? device.makeLibrary(source: RasterRenderer.fireSrc, options: nil) else {
             print("RasterRenderer: fire shader compile failed"); return nil
         }
@@ -591,7 +615,41 @@ final class RasterRenderer {
         fullscreen(blurPS, to: bloomB) { e in e.setFragmentBytes(&bh, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(bloomA, index: 0) }
         var bv = Fx(a: SIMD4(0, 1.0 / Float(H), Float(W), Float(H)))
         fullscreen(blurPS, to: bloomA) { e in e.setFragmentBytes(&bv, length: MemoryLayout<Fx>.stride, index: 0); e.setFragmentTexture(bloomB, index: 0) }
-        var cx = Fx(a: SIMD4(0.7, 0, Float(W), Float(H)))                            // bloom gain (dialled back — less blown-out)
+        // ── OPTICS ── read live from the flags so a `defaults write` lands on the next
+        // frame. Both are 0 by default, and at 0 the two DoF passes below are not encoded
+        // at all: an existing player pays nothing, which is the whole point of shipping
+        // this as a knob on a released game rather than as a change.
+        // The flags are the shipping source of truth; the probe override exists only in
+        // harness builds, so it is applied behind the same guard that declares it. Reading
+        // `debugOptics` unconditionally compiled fine under `gmake build` — which defines
+        // CITADEL_HARNESS — and broke the shipping configuration, which is precisely the
+        // break `gmake shipcheck` was added to catch.
+        var o = (dof: Float(FeatureFlags.depthOfField),
+                 focus: Float(FeatureFlags.dofFocus),
+                 flare: Float(FeatureFlags.lensFlare),
+                 range: Float(FeatureFlags.dofRange),
+                 nearFade: Float(FeatureFlags.flareNearFade))
+        #if CITADEL_HARNESS
+        if let override = debugOptics { o = override }
+        #endif
+        let dofStrength = o.dof
+        let optics = SIMD4<Float>(o.dof, o.focus, o.flare, o.range)
+
+        // The defocused frame: blur the HDR world into the half-res pair. Pass 1 reads the
+        // FULL-RES frame at half-res UVs, so the linear sampler does the downsample as part
+        // of the horizontal blur and no separate downsample pass is needed.
+        if dofStrength > 0 {
+            let hw = Float(dofA.width), hh = Float(dofA.height)
+            var dh = Fx(a: SIMD4(1.0 / hw, 0, hw, hh))
+            fullscreen(blurPS, to: dofA) { e in e.setFragmentBytes(&dh, length: MemoryLayout<Fx>.stride, index: 0)
+                                               e.setFragmentTexture(frame, index: 0) }
+            var dv = Fx(a: SIMD4(0, 1.0 / hh, hw, hh))
+            fullscreen(blurPS, to: dofB) { e in e.setFragmentBytes(&dv, length: MemoryLayout<Fx>.stride, index: 0)
+                                               e.setFragmentTexture(dofA, index: 0) }
+        }
+
+        var cx = Fx(a: SIMD4(0.7, 0, Float(W), Float(H)), b: optics,
+                    c: SIMD4(o.nearFade, 0, 0, 0))                                   // bloom gain (dialled back — less blown-out)
         // With creatures merging on the GPU the tonemap lands in colSnap, because the creature passes
         // both WRITE colTex and READ the pre-creature frame (a render target can't be sampled by the
         // pass writing it). Nothing to draw — or the legacy read-back path — → straight to colTex.
@@ -599,6 +657,9 @@ final class RasterRenderer {
         fullscreen(compositePS, to: directCreatures ? colSnap : colTex) { e in
             e.setFragmentBytes(&cx, length: MemoryLayout<Fx>.stride, index: 0)
             e.setFragmentTexture(frame, index: 0); e.setFragmentTexture(bloomA, index: 1); e.setFragmentTexture(perpTex, index: 2)
+            // Bound whether or not DoF is on: an unbound texture argument is undefined
+            // behaviour even on the branch that never samples it.
+            e.setFragmentTexture(dofB, index: 3)
         }
         fpMark("encode")
         // ── M4 creatures — rasterised STRAIGHT into the tonemapped frame, in THIS command buffer.

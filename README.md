@@ -188,6 +188,46 @@ defaults write cc.jorviksoftware.Citadel FixedSeed     -int  1234   # pin the le
 defaults write cc.jorviksoftware.Citadel StartLevel    -int  9      # warp new runs to a floor (1-indexed; testing)
 ```
 
+#### Optics
+
+Two post-process effects, both **off** and both live knobs rather than switches,
+because the right value is a judgement made by eye. Set one, look, adjust.
+
+```sh
+defaults write cc.jorviksoftware.Citadel LensFlare     -float 1.2   # visor flare, 0 = off (try 0.8–1.6)
+defaults write cc.jorviksoftware.Citadel FlareNearFade -float 5     # distance at which flare is half strength
+defaults write cc.jorviksoftware.Citadel DepthOfField  -float 0.7   # defocus strength, 0 = off
+defaults write cc.jorviksoftware.Citadel DofFocus      -float 0     # 0 = far-field; >0 focuses AT that distance
+defaults write cc.jorviksoftware.Citadel DofRange      -float 14    # world units from focus to full blur
+```
+
+**Lens flare** is the visor, not a camera — Citadel has no camera, but it does draw
+glass in front of the player's eye. A horizontal anamorphic streak is thrown by
+world emissives whose energy exceeds displayable white, which is what makes it
+*occasional*: fire, the plant and a lamp looked at directly produce it, and an
+ordinary corridor produces none. Nothing randomises it. The **held weapon does not
+flare** — its LEDs are the brightest small sources on screen and streaking them
+painted light across the translucent HUD panels.
+
+**It also fades with proximity** (`FlareNearFade`), and that is a derivation rather
+than a preference. The streak is a fixed fraction of frame width — a property of the
+optic, as it is in reality — while a source's apparent size goes as 1/depth. So the
+ratio of streak to source is proportional to depth: a distant lamp is a point and the
+streak dwarfs it, which reads as light, whereas a fire two metres away is larger on
+screen than the whole streak and the same smear only pushes its edges sideways, which
+reads as a smudge. Raise `FlareNearFade` to restrict flare to distant points; lower it
+to let nearer sources flare again.
+
+**Depth of field** keeps the weapon sharp always. `DofFocus 0` is the only variant
+that is safe in play: distance softens, the near field stays sharp. A positive focus
+distance softens *either side* of it — the cinematic look, and it belongs on
+surfaces where reading a drone at range does not matter. Blurring distance in a
+shooter fights the player, so treat anything above a whisper in gameplay as a
+deliberate choice rather than a default.
+
+Both are inert when 0: the depth-of-field passes are not encoded at all, and
+`shotcheck` reports no visual change against the 74-frame baseline.
+
 ### Headless harnesses
 
 ```sh
