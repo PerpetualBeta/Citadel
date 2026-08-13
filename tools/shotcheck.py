@@ -75,7 +75,16 @@ def compare(base, cur):
 # If either effect ever ships ON by default, change the value here to match and
 # regenerate the baseline; the point is that this file states what the baseline means
 # instead of depending on whoever runs it.
-OPTICS_OFF = ["-LensFlare", "0", "-DepthOfField", "0"]
+#
+# The SWITCHES are what actually gate the effects (Settings ▸ LENS EFFECTS, stored as
+# `lensDoF` / `lensAnamorphic`); the two float keys only tune strength once a switch is
+# on. Both are pinned, because pinning the strengths alone would stop working the moment
+# someone enabled an effect in the game's own settings — which is now a normal thing for
+# a player, and a developer, to do.
+OPTICS_OFF = [
+    "-lensDoF", "0", "-lensAnamorphic", "0",
+    "-LensFlare", "0", "-DepthOfField", "0",
+]
 
 
 def render(outdir, app):

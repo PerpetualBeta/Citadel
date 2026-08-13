@@ -47,6 +47,21 @@ DELIBERATELY_UNDOCUMENTED = {
     #    six that remain are cheats and testing aids — things a player might reasonably want. These
     #    four are different in kind: each one turns OFF authored work or re-tunes the art direction,
     #    so publishing them amounts to inviting a player to un-make the game and then judge it.
+    # ── OPTICS TUNING ── the on/off decision is the player's, in Settings ▸ LENS EFFECTS, and
+    #    those two switches are `GameSettings` keys (excluded from this scan as player prefs).
+    #    What is left here is the STRENGTH of each effect: one number per effect, with one good
+    #    setting found by eye. Documenting them would offer a dial where the honest answer is
+    #    "the switch". Kept in the source so the next person tuning by eye has them, and
+    #    recorded here so their absence from the README is a decision rather than a gap.
+    "DepthOfField":    "strength behind the DEPTH OF FIELD switch; 0.7 is the accepted setting and "
+                       "a player wants the switch, not the number",
+    "DofFocus":        "0 = far-field, which is the only variant safe in play; a positive focus is "
+                       "for cinematic surfaces and is not a player-facing choice",
+    "DofRange":        "how far from focus reaches full blur — a shape parameter of the falloff, "
+                       "meaningless without DofFocus",
+    "LensFlare":       "strength behind the ANAMORPHIC switch; 1.2 is the accepted setting",
+    "FlareNearFade":   "the knee of the proximity falloff, derived from the streak-to-source ratio "
+                       "rather than chosen — there is no reason for a player to move it",
     "OverheadLight":   "a lighting trim whose DEFAULT is the tuned, moody look — the only thing "
                        "documenting it achieves is helping someone flatten it",
     "Headlamp":        "strips the helmet lamp; the honest description of the result is 'you will "

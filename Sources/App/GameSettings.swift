@@ -23,6 +23,8 @@ final class GameSettings {
         static let deadzone      = "deadzone"
         static let padBindings   = "padBindings"
         static let keyBindings   = "keyBindings"
+        static let lensDoF       = "lensDoF"
+        static let lensAnamorphic = "lensAnamorphic"
     }
 
     private init() {
@@ -35,6 +37,13 @@ final class GameSettings {
             Key.turnSpeed:     1.0,
             Key.autorun:       false,
             Key.deadzone:      0.22,
+            // **Both lens effects OFF.** Registered explicitly rather than relying on
+            // `bool(forKey:)` returning false for a missing key, so the default is stated
+            // where every other default is. These change how the game LOOKS, and an
+            // existing player must not have their picture altered by an update they only
+            // agreed to because Sparkle offered it.
+            Key.lensDoF:        false,
+            Key.lensAnamorphic: false,
         ])
     }
 
@@ -49,6 +58,13 @@ final class GameSettings {
     var turnSpeed: Float        { get { d.float(forKey: Key.turnSpeed) }        set { d.set(newValue, forKey: Key.turnSpeed) } }
     var autorun: Bool           { get { d.bool(forKey: Key.autorun) }           set { d.set(newValue, forKey: Key.autorun) } }
     var deadzone: Float         { get { d.float(forKey: Key.deadzone) }         set { d.set(newValue, forKey: Key.deadzone) } }
+
+    // Lens effects — on/off only. The strength of each is a hidden tuning knob
+    // (`FeatureFlags`), deliberately not exposed here: two switches is the whole
+    // decision a player wants to make about this, and a slider would invite fiddling
+    // with a value that has one good setting.
+    var lensDoF: Bool         { get { d.bool(forKey: Key.lensDoF) }         set { d.set(newValue, forKey: Key.lensDoF) } }
+    var lensAnamorphic: Bool  { get { d.bool(forKey: Key.lensAnamorphic) }  set { d.set(newValue, forKey: Key.lensAnamorphic) } }
 
     // Controller button rebinds: [PadAction.rawValue: control name]. Empty until
     // the player changes something; Gamepad falls back to per-action defaults.

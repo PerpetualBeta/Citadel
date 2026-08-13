@@ -39,7 +39,11 @@ final class OptionsSheet: NSObject {
 
     private init(audio: AudioEngine, gamepad: Gamepad, highScores: HighScores, parent: NSWindow) {
         self.audio = audio; self.gamepad = gamepad; self.highScores = highScores; self.parent = parent
-        sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 360),
+        // Taller for the LENS EFFECTS section: `rows` is pinned to the top and the buttons
+        // to the bottom, so rows that outgrow the gap would run underneath Done rather
+        // than making the sheet scroll. Three new rows plus the section heading and its
+        // spacing is about 95pt; 470 leaves margin.
+        sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 470),
                          styleMask: [.titled], backing: .buffered, defer: false)
         super.init()
         build()
@@ -59,6 +63,9 @@ final class OptionsSheet: NSObject {
             sliderRow("TURN SPEED", Double(GameSettings.shared.turnSpeed), 0.4, 2.0, turnVal, #selector(turnChanged(_:))),
             sliderRow("DEADZONE", Double(gamepad.deadzone), 0.05, 0.5, dzVal, #selector(deadzoneChanged(_:))),
             toggleRow("ALWAYS RUN", GameSettings.shared.autorun, #selector(autorunToggled(_:))),
+            sectionRow("LENS EFFECTS"),
+            toggleRow("DEPTH OF FIELD", GameSettings.shared.lensDoF, #selector(lensDoFToggled(_:))),
+            toggleRow("ANAMORPHIC", GameSettings.shared.lensAnamorphic, #selector(lensAnamorphicToggled(_:))),
         ])
         rows.orientation = .vertical
         rows.alignment = .leading
@@ -106,6 +113,23 @@ final class OptionsSheet: NSObject {
         return row
     }
 
+    /// A section heading inside the sheet's single column.
+    ///
+    /// Returned as a one-view `NSStackView` so it drops into the same `rows` list as every
+    /// other row without the caller needing to know it is not a control. Indented to the
+    /// same leading edge as the labels, and spaced above by padding rather than by a
+    /// separator: the sheet is nine rows of monospaced text, and a rule across it would
+    /// weigh more than the grouping it announces.
+    private func sectionRow(_ name: String) -> NSStackView {
+        let label = NSTextField(labelWithString: name)
+        label.font = mono(11, .bold)
+        label.textColor = .secondaryLabelColor
+        let row = NSStackView(views: [label])
+        row.orientation = .horizontal
+        row.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
+        return row
+    }
+
     private func toggleRow(_ name: String, _ on: Bool, _ action: Selector) -> NSStackView {
         let nameLabel = NSTextField(labelWithString: name)
         nameLabel.font = mono(11)
@@ -134,6 +158,11 @@ final class OptionsSheet: NSObject {
     @objc private func turnChanged(_ s: NSSlider) { GameSettings.shared.turnSpeed = Float(s.doubleValue); updateValues() }
     @objc private func deadzoneChanged(_ s: NSSlider) { gamepad.deadzone = Float(s.doubleValue); updateValues() }
     @objc private func autorunToggled(_ b: NSButton) { GameSettings.shared.autorun = b.state == .on }
+
+    // Nothing to notify: `FeatureFlags` reads these on every frame, so flipping either
+    // switch takes effect on the next one — visibly, while the sheet is still open.
+    @objc private func lensDoFToggled(_ b: NSButton) { GameSettings.shared.lensDoF = b.state == .on }
+    @objc private func lensAnamorphicToggled(_ b: NSButton) { GameSettings.shared.lensAnamorphic = b.state == .on }
 
     @objc private func resetScores() {
         let alert = NSAlert()

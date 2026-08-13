@@ -17,11 +17,16 @@ enum FeatureFlags {
 
     // ── Optics ────────────────────────────────────────────────────────────────
     //
-    // Both default to OFF, and deliberately so: Citadel is shipped and public, and
-    // neither of these should change what an existing player sees until they have
-    // been looked at frame by frame against the shot baseline. They are live knobs
-    // rather than booleans because the right value is a judgement made by eye —
-    // dial it, look, and bake the number in when it is right.
+    // **The on/off decision belongs to the player, in Settings ▸ LENS EFFECTS.** These
+    // are the *tuning* knobs behind those two switches, and they are undocumented on
+    // purpose: each has one good setting, found by eye, and a player who wants the
+    // effect wants it to look right rather than to be given a dial.
+    //
+    // So each effect reads as: off unless the player switched it on, and at the baked
+    // strength unless someone is deliberately tuning. Overriding the strength alone is
+    // **not** enough to enable an effect — that would let a stray `defaults write` alter
+    // a shipped game's appearance, which is the exact thing the switches exist to
+    // prevent.
 
     /// Lens flare strength, 0 = off. Sensible range 0.1 – 0.6.
     ///
@@ -35,7 +40,14 @@ enum FeatureFlags {
     /// only the bright energy above a threshold, so it appears when you are looking
     /// at a lamp, a fire or the plant, and is absent the rest of the time. Nothing
     /// randomises it.
-    static var lensFlare: Double { d.double(forKey: "LensFlare") }
+    ///
+    /// Gated on Settings ▸ LENS EFFECTS ▸ ANAMORPHIC. `LensFlare` tunes the strength
+    /// when it is on; 1.2 is the setting it was accepted at.
+    static var lensFlare: Double {
+        guard GameSettings.shared.lensAnamorphic else { return 0 }
+        let v = d.double(forKey: "LensFlare")
+        return v > 0 ? v : 1.2
+    }
 
     /// Distance at which the lens flare reaches half strength, in world units.
     ///
@@ -59,7 +71,14 @@ enum FeatureFlags {
     /// — and the frame is 1280×800 blitted *nearest-neighbour*, so a blur upscales
     /// into soft blocks rather than a soft image. It earns its keep on the surfaces
     /// where legibility is not at stake: the automap, the lift ride, the endgame.
-    static var depthOfField: Double { d.double(forKey: "DepthOfField") }
+    ///
+    /// Gated on Settings ▸ LENS EFFECTS ▸ DEPTH OF FIELD. `DepthOfField` tunes the
+    /// strength when it is on; 0.7 is the setting it was accepted at.
+    static var depthOfField: Double {
+        guard GameSettings.shared.lensDoF else { return 0 }
+        let v = d.double(forKey: "DepthOfField")
+        return v > 0 ? v : 0.7
+    }
 
     /// Focus distance in world units for `depthOfField`.
     ///
