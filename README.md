@@ -124,21 +124,36 @@ Every frame below is rendered by the headless capture harness — `CITADEL_SHOTS
 
 ## Run it
 
-Install it with [Homebrew](https://brew.sh):
+**Requires an Apple silicon Mac** (M1 or later), macOS 14 or newer. Citadel is the one Jorvik app
+that isn't a universal binary, and that is deliberate: it is a real-time Metal renderer tuned to a
+16.7 ms frame budget, every measurement behind that tuning was taken on Apple silicon, and an
+Intel slice would have shipped without ever running on the hardware it claimed to support.
+
+Three ways in — the first two are signed and notarised, pick whichever suits:
+
+- **[Installer (`.pkg`)](https://github.com/PerpetualBeta/Citadel/releases/latest/download/Citadel.pkg)** — recommended for a first install. Double-click to run; macOS Installer places the game in `/Applications` without quarantine or App Translocation.
+- **[Download (`.zip`)](https://github.com/PerpetualBeta/Citadel/releases/latest)** — unzip and drag `Citadel.app` to your Applications folder.
+
+Or install it with [Homebrew](https://brew.sh):
 
 ```sh
 brew install --cask perpetualbeta/jorvik/citadel
 ```
 
-Or build it yourself. **Requires an Apple silicon Mac** (M1 or later), macOS 14 or newer. Citadel is the one Jorvik app
-that isn't a universal binary, and that is deliberate: it is a real-time Metal renderer tuned to a
-16.7 ms frame budget, every measurement behind that tuning was taken on Apple silicon, and an
-Intel slice would have shipped without ever running on the hardware it claimed to support.
+### Building it yourself
+
+The build is driven by the shared [`release.mk`](https://github.com/PerpetualBeta/jorvik-release) Make include, so it needs a checkout of `jorvik-release` **sitting beside this one** — the Makefile looks for it at `../jorvik-release/`. macOS ships GNU Make 3.81 as `make`, which is too old, so `gmake` comes from Homebrew.
 
 ```sh
-gmake build                 # arm64 .app via the shared jorvik-release pipeline
-open .build/Citadel.app     # descend
+brew install make       # GNU Make 4+, if you do not already have gmake
+git clone https://github.com/PerpetualBeta/jorvik-release.git
+git clone https://github.com/PerpetualBeta/Citadel.git
+cd Citadel
+gmake build             # arm64 .app, written to .build/
+open .build/Citadel.app # descend
 ```
+
+Both clones have to share a parent directory; that is the only layout requirement. `gmake build` is all you need to play it. `gmake release` is the signed and notarised pipeline instead, and without `SIGN_ID` / `INSTALLER_SIGN_ID` / `NOTARY_PROFILE` it falls back to ad-hoc signing and skips notarisation — fine for checking the recipe parses, not for shipping. The full variable contract is documented in [`jorvik-release`](https://github.com/PerpetualBeta/jorvik-release).
 
 ### Controls
 
