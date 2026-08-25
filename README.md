@@ -112,7 +112,7 @@ Every frame below is rendered by the headless capture harness — `CITADEL_SHOTS
 |---|---|
 | ![Mission briefing](docs/screenshots/08-briefing.png) | ![The Hall of the Fallen](docs/screenshots/10-highscores.png) |
 
-**FIELD INTEL** — a five-page dossier, opened with **I** from the title:
+**FIELD INTEL** — a five-page dossier, opened with `I` from the title:
 
 | CASTE I · the pack hunter. | CASTE II · the broodmother. |
 |---|---|
@@ -159,22 +159,22 @@ Both clones have to share a parent directory; that is the only layout requiremen
 
 | Key | Action |
 |---|---|
-| **W A S D** | move / strafe |
-| **← / →** · **Mouse** | turn / look |
-| **Shift** | run (hold) |
-| **Space** | fire |
-| **E** | use / open door / hit switch / recover a nearby mine |
-| **G** | deploy a proximity mine |
-| **1 2 3** · **[ ]** | select / cycle weapon |
-| **Tab** | automap |
-| **P** · **M** | pause · mute |
-| **B** / **I** | briefing / field intel (from the title) |
-| **K** / **C** | keyboard / controller setup |
-| **⌘S** / **⌘O** | save game · load game (ten named slots, from the menu) |
-| **⌘,** | settings (volumes, sensitivity, lens effects, reset scores) |
-| **Esc** · **⌘Q** | back · quit |
+| `W` `A` `S` `D` | move / strafe |
+| `left` / `right` · **Mouse** | turn / look |
+| `shift` | run (hold) |
+| `space` | fire |
+| `E` | use / open door / hit switch / recover a nearby mine |
+| `G` | deploy a proximity mine |
+| `1` `2` `3` · `[` `]` | select / cycle weapon |
+| `tab` | automap |
+| `P` · `M` | pause · mute |
+| `B` / `I` | briefing / field intel (from the title) |
+| `K` / `C` | keyboard / controller setup |
+| `command` `S` / `command` `O` | save game · load game (ten named slots, from the menu) |
+| `command` `,` | settings (volumes, sensitivity, lens effects, reset scores) |
+| `esc` · `command` `Q` | back · quit |
 
-Every gameplay key is **reconfigurable** from the Keyboard sheet (**K**); the
+Every gameplay key is **reconfigurable** from the Keyboard sheet (`K`); the
 bindings above are the defaults. A connected controller (Xbox / DualShock / any
 Extended Gamepad) is detected automatically — left stick moves, right stick
 turns, triggers and bumpers fire and switch weapons, and the **d-pad left/right
@@ -186,7 +186,7 @@ Keyboard always works alongside.
 
 ### Saving
 
-Save whenever you like (**⌘S**), into any of **ten named slots**. A save records
+Save whenever you like (`command` `S`), into any of **ten named slots**. A save records
 the **checkpoint** — the state you *arrived on the current floor with* — and
 loading rides the lift back down to that floor, so you always resume on a clean
 floor start rather than half way through a fought room.

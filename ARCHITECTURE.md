@@ -45,7 +45,7 @@ fallback for a missing sample. See [CREDITS.md](CREDITS.md).
 |------|------|
 | **App** | |
 | `main.swift` | Entry point; the `CITADEL_*` harness dispatch (all force-muted) or GUI launch |
-| `AppDelegate.swift` | Maximised window, menu bar (incl. Save/Load ⌘S/⌘O), About, Sparkle focus-guard |
+| `AppDelegate.swift` | Maximised window, menu bar (incl. Save/Load `command` `S`/`command` `O`), About, Sparkle focus-guard |
 | `GameView.swift` | `MTKView` subclass; keyboard capture + rebinding, mouse-look, name entry |
 | `Renderer.swift` | Game-state machine, frame loop, faded transitions, compositing + present/blit |
 | `InputState.swift` / `Gamepad.swift` | Effective input (keyboard OR'd with gamepad); controller polling + action map |
