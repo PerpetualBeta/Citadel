@@ -51,6 +51,7 @@ fallback for a missing sample. See [CREDITS.md](CREDITS.md).
 | `InputState.swift` / `Gamepad.swift` | Effective input (keyboard OR'd with gamepad); controller polling + action map |
 | `GameSettings.swift` / `FeatureFlags.swift` | UserDefaults settings; hidden `defaults write` cheats + strip switches |
 | `KeyboardSheet.swift` / `ControllerSheet.swift` / `OptionsSheet.swift` | Config sheets |
+| `JorvikAboutView.swift` / `JorvikWindowHelper.swift` / `JorvikLocalization.swift` | The standard Jorvik About window, vendored from JorvikKit (`Sources/JorvikKit/`): version, public domain declaration, Source Code and Product Page links, opened on the current space |
 | **Game** | |
 | `MapGen.swift` | Procedural generation + keyed-BFS solvability, room types, the survivor cast |
 | `GameMap.swift` | The cell grid: doors, flats, light, hazard, pipe routing, ceiling height, room-effect cells |

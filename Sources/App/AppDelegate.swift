@@ -144,33 +144,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSApp.windowsMenu = winMenu
     }
 
+    /// The standard Jorvik About window: version, the public domain declaration,
+    /// and the Source Code and Product Page links. This used AppKit's standard
+    /// panel, which has none of those. The shared window also opens on the
+    /// current space (`JorvikWindowHelper`).
     @objc private func showAbout() {
-        NSApp.activate(ignoringOtherApps: true)
-        orderFrontAboutPanelOnActiveSpace(options: [
-            .applicationName: "Citadel",
-            .applicationVersion: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.1",
-            .credits: NSAttributedString(
-                string: "A first-person retake of the occupied colonies — set in the Strataris universe. Procedural citadels, descended floor by floor.\n\nA Jorvik Software game.",
-                attributes: [.font: NSFont.systemFont(ofSize: 11)]),
-        ])
+        JorvikAboutView.showWindow(appName: "Citadel", repoName: "Citadel", productPage: "games/citadel")
     }
 
-    /// Shows the standard About panel on the space the user is on.
-    ///
-    /// AppKit makes the panel once and shows that same panel each time, where
-    /// it was last left. One left open, or closed, on another space would
-    /// switch spaces to reach it. Marked `.moveToActiveSpace` it comes here
-    /// instead. The flag stays set, because it acts when the panel becomes
-    /// active, after `activate` has finished (measured on macOS 27.0.1,
-    /// 2026-10-11, as for JorvikKit's `showOnActiveSpace`).
-    private func orderFrontAboutPanelOnActiveSpace(options: [NSApplication.AboutPanelOptionKey: Any]) {
-        let before = Set(NSApp.windows.map(ObjectIdentifier.init))
-        NSApp.orderFrontStandardAboutPanel(options: options)
-        for window in NSApp.windows where !before.contains(ObjectIdentifier(window)) {
-            window.collectionBehavior.insert(.moveToActiveSpace)
-        }
-        NSApp.activate(ignoringOtherApps: true)
-    }
 
     @objc private func checkForUpdates(_ sender: Any?) {
         NSRunningApplication.current.activate(options: [.activateAllWindows])

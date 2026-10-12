@@ -53,6 +53,9 @@ SWIFT_FRAMEWORKS := Cocoa Metal MetalKit QuartzCore AVFoundation GameController
 #   Harness  — headless test/capture/proof tools (smoke, shots, labs)
 SWIFT_SOURCES    := Sources/App/main.swift \
                     Sources/App/AppDelegate.swift \
+                    Sources/JorvikKit/JorvikAboutView.swift \
+                    Sources/JorvikKit/JorvikWindowHelper.swift \
+                    Sources/JorvikKit/JorvikLocalization.swift \
                     Sources/App/GameView.swift \
                     Sources/App/Renderer.swift \
                     Sources/App/InputState.swift \
